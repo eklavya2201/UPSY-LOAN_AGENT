@@ -1,0 +1,20 @@
+{
+  "name": "upsy-loan-agent",
+  "version": "0.1.0",
+  "description": "AI education-loan agent prototype modeled on the Kuhoo journey: requests documents in order, explains why each is required, and cross-checks uploads against the expected format.",
+  "type": "module",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "node --watch backend/server.js",
+    "eval": "node backend/eval-cards.js",
+    "eval:income": "node backend/eval-income.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "tesseract.js": "^7.0.0"
+  }
+}

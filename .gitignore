@@ -1,0 +1,17 @@
+node_modules/
+*.log
+data/
+.env
+
+# Real test fixtures dropped into the project root during development
+# (ITRs, Form 16, payslips, computation sheets — contain real personal/financial data)
+*.pdf
+
+# Downloaded runtime asset (tesseract OCR model), not source code
+eng.traineddata
+
+# Windows folder metadata
+desktop.ini
+
+# Local dev-tooling config (Claude Code launch config), not app source
+.claude/
