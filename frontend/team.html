@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>UPSY Admin — Applications</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet"/>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        primary: "#2563eb", "primary-dark": "#1d4ed8", "primary-soft": "#eef3fb",
+        "primary-line": "#dbe1ff", secondary: "#595f66", outline: "#737686",
+        "outline-variant": "#c3c6d7", surface: "#f8f9ff", "surface-container": "#eff4ff",
+        "surface-high": "#dce9ff", "on-surface": "#0b1c30", "on-surface-variant": "#434655",
+        success: "#16a34a", "success-soft": "#ecfdf3", amber: "#b45309",
+        "amber-soft": "#fffbeb", danger: "#dc2626", "danger-soft": "#fef2f2",
+      },
+      fontFamily: { sans: ["Inter", "sans-serif"] },
+      borderRadius: { "2xl": "14px" },
+    } },
+  };
+</script>
+<style>
+  body { font-family: "Inter", sans-serif; background: #f8f9ff; -webkit-font-smoothing: antialiased; }
+  .material-symbols-outlined { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: normal; line-height: 1; letter-spacing: normal; text-transform: none; white-space: nowrap; direction: ltr; font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24; vertical-align: middle; }
+  .card-shadow { box-shadow: 0 4px 20px rgba(37, 99, 235, 0.05); }
+  .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+  .fade-in { animation: fade .3s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body class="text-on-surface min-h-screen">
+
+<!-- Side navigation -->
+<aside class="h-screen w-64 fixed left-0 top-0 bg-surface-container border-r border-outline-variant/60 flex-col p-4 gap-2 z-40 hidden md:flex">
+  <div class="text-xl font-black text-primary mb-8 px-2 tracking-tight">UPSY Admin</div>
+  <div class="flex items-center gap-3 px-3 py-3 mb-4 bg-white/60 rounded-xl">
+    <div class="w-10 h-10 rounded-full bg-primary text-white grid place-items-center font-bold">U</div>
+    <div>
+      <p class="text-sm font-bold">UPSY Team</p>
+      <p class="text-xs text-on-surface-variant">Loan operations</p>
+    </div>
+  </div>
+  <nav class="flex-1 space-y-1">
+    <a class="flex items-center gap-3 px-4 py-3 bg-primary text-white rounded-lg font-bold" href="#">
+      <span class="material-symbols-outlined">description</span>
+      <span class="text-sm">Applications</span>
+    </a>
+    <a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-white/70 rounded-lg transition" href="/" target="_blank">
+      <span class="material-symbols-outlined">open_in_new</span>
+      <span class="text-sm">Applicant view</span>
+    </a>
+  </nav>
+  <div class="text-[11px] text-on-surface-variant px-2" id="sidebarFoot"></div>
+</aside>
+
+<!-- Main canvas -->
+<main class="md:ml-64 min-h-screen p-6 md:p-10">
+  <div class="max-w-[1200px] mx-auto">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold" id="pageTitle">Applications</h1>
+      <p class="text-on-surface-variant mt-1" id="pageSub">Live borrower files from the UPSY assistant.</p>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Applicant list -->
+      <aside class="lg:col-span-4">
+        <div class="relative mb-4">
+          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline">search</span>
+          <input id="search" class="w-full h-12 pl-10 pr-4 bg-white rounded-xl border border-outline-variant focus:border-primary focus:ring-1 focus:ring-primary outline-none transition text-sm" placeholder="Search applicants…" type="text"/>
+        </div>
+        <div id="appList" class="space-y-3 max-h-[calc(100vh-16rem)] overflow-y-auto custom-scrollbar pr-1"></div>
+      </aside>
+
+      <!-- Borrower file -->
+      <section id="detail" class="lg:col-span-8">
+        <div class="h-64 grid place-items-center text-on-surface-variant bg-white/50 border border-dashed border-outline-variant rounded-2xl">
+          Select an application to open its borrower file.
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script src="team.js"></script>
+</body>
+</html>

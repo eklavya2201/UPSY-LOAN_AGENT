@@ -1,0 +1,537 @@
+// UPSY Admin — borrower-file dashboard (left-sidebar layout).
+// Everything rendered here is real backend data: format checks, OCR name/DOB,
+// cross-document flags, the rule-based eligibility memo, reminders and the
+// email packet. No invented signals.
+
+const $ = (s) => document.querySelector(s);
+let selected = null;
+let activeTab = "extract";
+let apps = [];
+
+const STATUS = {
+  in_progress: { label: "In progress", cls: "bg-primary-soft text-primary-dark" },
+  documents_complete: { label: "Docs complete", cls: "bg-success-soft text-success" },
+  approved: { label: "Approved", cls: "bg-success-soft text-success" },
+  rejected: { label: "Rejected", cls: "bg-danger-soft text-danger" },
+};
+const DOC_STATUS = {
+  verified: { label: "Verified", dot: "bg-success", txt: "text-success" },
+  on_file: { label: "On file", dot: "bg-primary", txt: "text-primary" },
+  pending: { label: "Pending", dot: "bg-outline-variant", txt: "text-on-surface-variant" },
+  reupload: { label: "Re-upload requested", dot: "bg-amber", txt: "text-amber" },
+};
+
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
+const rupees = (n) => {
+  if (!n) return "—";
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
+  if (n >= 100000) return `₹${(n / 100000).toFixed(1)} L`;
+  return `₹${n.toLocaleString("en-IN")}`;
+};
+const prettyEvent = (e) => ({
+  agent_session_started: "Applicant started the assistant",
+  intake_captured: "Smart intake captured",
+  document_verified: "Document verified",
+  all_documents_collected: "All documents collected",
+  application_approved: "Application approved",
+  application_rejected: "Application rejected",
+  reupload_requested: "Re-upload requested",
+  name_mismatch: "⚠ Name mismatch",
+  cross_document_mismatch: "⚠ Cross-document mismatch",
+  reminder_sent: "📨 Reminder sent",
+  documents_emailed: "📧 Packet emailed",
+  packet_emailed: "📧 Packet emailed",
+  lender_draft_created: "✉️ Lender email drafted",
+  lender_email_shared: "📤 Email shared with lender",
+  income_extracted: "💰 Income verified from document",
+  document_deleted: "🗑 Document deleted by applicant",
+}[e] || e);
+
+// ---------- list ----------
+async function loadList() {
+  apps = await (await fetch("/api/applications")).json();
+  renderList();
+}
+
+function renderList() {
+  const q = ($("#search").value || "").toLowerCase();
+  const list = apps.filter((a) => !q || (a.profile.name || "").toLowerCase().includes(q) || (a.profile.phone || "").includes(q));
+  $("#pageSub").textContent = `${apps.length} borrower file${apps.length === 1 ? "" : "s"} · live from the UPSY assistant.`;
+  if (!list.length) {
+    $("#appList").innerHTML = `<div class="p-6 text-sm text-on-surface-variant bg-white rounded-2xl border border-outline-variant/50">No applications yet. Start one in the applicant view.</div>`;
+    return;
+  }
+  $("#appList").innerHTML = list.map((a) => {
+    const pct = a.total ? Math.round((a.done / a.total) * 100) : 0;
+    const st = STATUS[a.status] || STATUS.in_progress;
+    const sel = selected === a.leadId;
+    return `
+    <div data-id="${a.leadId}" class="app-card cursor-pointer bg-white rounded-2xl p-4 border transition card-shadow ${sel ? "border-primary border-l-4" : "border-outline-variant/50 hover:border-primary/50"}">
+      <div class="flex justify-between items-start mb-1">
+        <div>
+          <h3 class="font-bold">${a.profile.name || "New applicant"}</h3>
+          <p class="text-xs text-on-surface-variant">${a.profile.course || "—"} · ${a.profile.phone || a.leadId}</p>
+        </div>
+        <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${st.cls}">${st.label}</span>
+      </div>
+      <div class="flex gap-1 mb-2">
+        ${a.eligible === true ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-success-soft text-success">Eligible</span>` : ""}
+        ${a.eligible === false ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-soft text-amber">Needs review</span>` : ""}
+        ${a.stale ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-soft text-amber">Stalled</span>` : ""}
+      </div>
+      <div class="flex justify-between text-[11px] font-bold text-on-surface-variant mb-1"><span>Documents</span><span>${a.done} / ${a.total ?? "?"}</span></div>
+      <div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden"><div class="bg-primary h-full rounded-full" style="width:${pct}%"></div></div>
+      <div class="flex items-center justify-between mt-2.5">
+        <button data-draftmail="${a.leadId}" class="text-[11px] font-bold text-primary bg-primary-soft border border-primary-line hover:bg-primary hover:text-white rounded-full px-3 py-1.5 transition inline-flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">outgoing_mail</span> Draft email</button>
+        <div class="text-[11px] text-on-surface-variant">${fmtTime(a.updatedAt)}</div>
+      </div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll(".app-card").forEach((el) => el.addEventListener("click", () => selectApp(el.dataset.id)));
+  // "Draft email" jumps straight to this lead's Lenders tab (doesn't bubble to the card click).
+  document.querySelectorAll("[data-draftmail]").forEach((b) => b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    selectApp(b.dataset.draftmail, "lenders");
+  }));
+}
+
+// Keep the selected lead + tab in the URL (?lead=LD-1001&tab=lenders) so the
+// browser Back/Forward buttons walk through selections instead of leaving the page.
+const EMPTY_DETAIL = `<div class="h-64 grid place-items-center text-on-surface-variant bg-white/50 border border-dashed border-outline-variant rounded-2xl">Select an application to open its borrower file.</div>`;
+
+function syncUrl() {
+  const params = new URLSearchParams();
+  if (selected) { params.set("lead", selected); params.set("tab", activeTab); }
+  const target = params.toString() ? `${location.pathname}?${params}` : location.pathname;
+  if (location.pathname + location.search !== target) history.pushState({}, "", target);
+}
+
+async function selectApp(leadId, tab, fromHistory = false) {
+  selected = leadId;
+  if (tab) activeTab = tab;
+  if (!fromHistory) syncUrl();
+  renderList();
+  const d = await (await fetch(`/api/applications/${leadId}`)).json();
+  if (selected !== leadId) return; // user clicked elsewhere while we fetched
+  renderDetail(d);
+}
+
+// ---------- detail ----------
+function renderDetail(d) {
+  const p = d.profile || {};
+  const st = STATUS[d.status] || STATUS.in_progress;
+  const flagCount = (d.flags || []).length;
+
+  $("#detail").innerHTML = `
+  <div class="fade-in space-y-6">
+    <!-- Profile card -->
+    <div class="bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40">
+      <div class="flex justify-between items-start mb-6 flex-wrap gap-4">
+        <div class="flex items-center gap-5">
+          <div class="w-16 h-16 rounded-2xl bg-primary-soft text-primary grid place-items-center text-2xl font-black">${(p.name || "?")[0]}</div>
+          <div>
+            <h1 class="text-2xl font-bold">${p.name || "New applicant"}${p.nameSource === "document" ? ` <span class="text-xs font-normal text-on-surface-variant">(read from document)</span>` : ""}</h1>
+            <div class="flex items-center gap-2 mt-1 flex-wrap">
+              <span class="bg-primary-soft text-primary px-3 py-1 rounded-full text-xs font-bold">${p.course || "—"}${p.institute ? " · " + p.institute : ""}</span>
+              <span class="text-xs font-bold uppercase tracking-wider px-2 py-1 rounded-full ${st.cls}">${st.label}</span>
+            </div>
+          </div>
+        </div>
+        ${d.status === "in_progress" ? nudgeRow(d) : ""}
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-y-5 gap-x-10 border-t border-outline-variant/40 pt-6">
+        ${fact("Phone", p.phone)}
+        ${fact("Lead source", p.source)}
+        ${fact("Loan type", p.loanType)}
+        ${fact("Co-applicant", p.coApplicantType)}
+        ${fact("Co-applicant name", d.coApplicantNameOnFile ? `${d.coApplicantNameOnFile} (from document)` : null)}
+        ${fact("Co-applicant phone", d.coApplicantContact?.phoneNumber ? `${d.coApplicantContact.phoneNumber} (from bank statement)` : null)}
+        ${fact("Partner institute", d.partnerInstitute ? `🎓 ${d.partnerInstitute.name}` : "No")}
+        ${fact("Documents", `${d.done} / ${d.total}`)}
+        ${fact("Reminders sent", d.nudgeCount ? `${d.nudgeCount} (last ${fmtTime(d.lastNudgeAt)})` : "None")}
+      </div>
+    </div>
+
+    ${creditMemo(d)}
+    ${packetCard(d)}
+
+    <!-- Tabs -->
+    <div class="border-b border-outline-variant/60 flex gap-8 px-1">
+      ${tabBtn("extract", "Extract")}
+      ${tabBtn("fraud", `Fraud Check${flagCount ? ` <span class="ml-1 text-[10px] font-bold bg-danger text-white rounded-full px-1.5 py-0.5">${flagCount}</span>` : ""}`)}
+      ${tabBtn("lenders", `Lenders${(d.lenderDrafts || []).length ? ` <span class="ml-1 text-[10px] font-bold bg-primary text-white rounded-full px-1.5 py-0.5">${d.lenderDrafts.length}</span>` : ""}`)}
+      ${tabBtn("activity", "Activity")}
+    </div>
+    <div id="tabBody"></div>
+  </div>`;
+
+  document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { activeTab = b.dataset.tab; syncUrl(); renderDetail(d); }));
+  renderTab(d);
+  wireActions(d);
+}
+
+const fact = (k, v) => `
+  <div>
+    <p class="text-[11px] font-bold text-outline uppercase tracking-wider">${k}</p>
+    <p class="text-sm font-medium capitalize mt-0.5">${v || "—"}</p>
+  </div>`;
+
+const tabBtn = (id, label) => `
+  <button data-tab="${id}" class="pb-3 text-sm font-${activeTab === id ? "bold text-primary border-b-2 border-primary" : "medium text-on-surface-variant hover:text-primary"} transition">${label}</button>`;
+
+function nudgeRow(d) {
+  return `
+  <div class="flex items-center gap-3 text-sm text-on-surface-variant">
+    ${d.stale ? `<span class="text-amber font-semibold">Gone quiet</span>` : ""}
+    <button id="nudgeBtn" class="bg-amber-soft text-amber text-xs font-bold px-4 py-2 rounded-full hover:bg-amber hover:text-white transition">Send reminder now</button>
+  </div>`;
+}
+
+// Credit memo — strictly what the rule-based eligibility engine computed.
+function creditMemo(d) {
+  const e = d.eligibility;
+  if (!e) return "";
+  const decided = d.status === "approved" || d.status === "rejected";
+  const verdict = e.eligible
+    ? `<div class="px-4 py-1.5 bg-success-soft border border-success/20 rounded-full flex items-center gap-2"><span class="w-2 h-2 bg-success rounded-full"></span><span class="text-success text-sm font-semibold">Eligible</span></div>`
+    : `<div class="px-4 py-1.5 bg-danger-soft border border-danger/20 rounded-full flex items-center gap-2"><span class="w-2 h-2 bg-danger rounded-full"></span><span class="text-danger text-sm font-semibold">Needs review</span></div>`;
+
+  const insights = [
+    ...(e.incomeNote ? [e.incomeNote] : []),
+    ...(e.eligible ? [`Estimated facility ${rupees(e.estimatedAmount)} within the ${rupees(e.loanRange.min)}–${rupees(e.loanRange.max)} band.`, `Moratorium: ${e.moratoriumMonths} months (course + grace).`] : []),
+    ...(e.reasons || []),
+    ...(e.warnings || []),
+  ];
+
+  return `
+  <section class="bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40">
+    <div class="flex justify-between items-start mb-6 flex-wrap gap-3">
+      <div>
+        <h2 class="text-xl font-semibold mb-1">Credit memo</h2>
+        <p class="text-xs text-on-surface-variant">Rule-based preliminary assessment — final decision stays with you.</p>
+      </div>
+      ${verdict}
+    </div>
+    ${e.eligible ? `
+    <div class="bg-primary-soft rounded-xl p-6 mb-6 border border-primary-line">
+      <div class="text-[11px] font-bold text-on-surface-variant uppercase tracking-widest mb-1">Recommended facility</div>
+      <div class="flex items-baseline gap-2"><span class="text-3xl font-bold text-primary">${rupees(e.estimatedAmount)}</span><span class="text-on-surface-variant">at ${(e.ratePreview || "").split(" (")[0]}</span></div>
+    </div>` : ""}
+    <ul class="space-y-2 mb-6">
+      ${insights.map((r) => `<li class="flex items-start gap-3 text-sm"><span class="material-symbols-outlined ${e.eligible ? "text-success" : "text-amber"} text-[20px] mt-0.5">${e.eligible ? "check_circle" : "warning"}</span>${r}</li>`).join("")}
+    </ul>
+    ${decided
+      ? `<div class="pt-5 border-t border-outline-variant/40 text-sm font-semibold ${d.status === "approved" ? "text-success" : "text-danger"}">${d.status === "approved" ? "✓ Approved" : "✕ Rejected"}${d.decisionNote ? ` — <span class="font-normal text-on-surface-variant">${d.decisionNote}</span>` : ""}</div>`
+      : `<div class="flex flex-wrap gap-3 pt-5 border-t border-outline-variant/40">
+          <button id="approveBtn" class="px-7 py-2.5 bg-success text-white rounded-full text-sm font-semibold hover:opacity-90 active:scale-[0.98] transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">done_all</span>Approve</button>
+          <button id="rejectBtn" class="px-7 py-2.5 bg-danger-soft text-danger rounded-full text-sm font-semibold hover:bg-danger hover:text-white active:scale-[0.98] transition">Reject</button>
+        </div>`}
+  </section>`;
+}
+
+function packetCard(d) {
+  if (d.done < d.total) return "";
+  return `
+  <section class="bg-surface-high/50 rounded-2xl p-6 border border-primary/10 flex flex-col md:flex-row justify-between items-center gap-4">
+    <div class="flex items-center gap-4">
+      <div class="w-12 h-12 rounded-2xl bg-primary grid place-items-center"><span class="material-symbols-outlined text-white text-[26px]">inventory_2</span></div>
+      <div>
+        <h3 class="font-semibold">Document packet — all documents received</h3>
+        <p class="text-sm text-on-surface-variant" id="packetStatus">Email the full packet to the ops inbox.</p>
+      </div>
+    </div>
+    <button id="packetBtn" class="px-6 py-2.5 bg-primary text-white rounded-full text-sm font-semibold hover:bg-primary-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">forward_to_inbox</span>Send packet email</button>
+  </section>`;
+}
+
+// ---------- tabs ----------
+function renderTab(d) {
+  const body = $("#tabBody");
+  if (activeTab === "extract") body.innerHTML = extractTab(d);
+  else if (activeTab === "fraud") body.innerHTML = fraudTab(d);
+  else if (activeTab === "lenders") { renderLendersTab(d); return; }
+  else body.innerHTML = activityTab(d);
+  document.querySelectorAll("[data-reupload]").forEach((b) => b.addEventListener("click", () => askReupload(d.leadId, b.dataset.reupload)));
+}
+
+function extractTab(d) {
+  const byStage = {};
+  d.documents.forEach((doc) => (byStage[doc.stage] ||= []).push(doc));
+  const rows = Object.entries(byStage).map(([stage, docs]) => `
+    <tr><td colspan="4" class="px-6 py-2 bg-surface-container text-[11px] font-bold text-outline uppercase tracking-wider">${stage}</td></tr>
+    ${docs.map((doc) => {
+      const s = DOC_STATUS[doc.status] || DOC_STATUS.pending;
+      return `
+      <tr class="hover:bg-surface transition">
+        <td class="px-6 py-3.5"><div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full ${s.dot}"></span><span class="text-xs font-bold ${s.txt}">${s.label}</span></div></td>
+        <td class="px-6 py-3.5">
+          <div class="text-sm font-semibold">${doc.label}${doc.required ? "" : ` <span class="font-normal text-on-surface-variant">(optional)</span>`}</div>
+          ${doc.filename ? `<div class="text-[11px] text-outline">${doc.filename}${doc.at ? " · " + fmtTime(doc.at) : ""}</div>` : ""}
+          ${doc.nameOnDoc ? `<div class="text-[11px] ${doc.nameMatch === false ? "text-danger font-semibold" : "text-on-surface-variant"}">Name on card: ${doc.nameOnDoc}${doc.nameMatch === true ? " ✓" : doc.nameMatch === false ? " ✕ doesn't match lead" : ""}${doc.dobOnDoc ? ` · DOB ${doc.dobOnDoc}` : ""}</div>` : ""}
+          ${doc.addressOnDoc ? `<div class="text-[11px] text-on-surface-variant">Address on doc: ${doc.addressOnDoc}</div>` : ""}
+          ${doc.incomeOnDoc ? `<div class="text-[11px] text-success font-semibold">Income verified: ₹${(doc.incomeOnDoc.monthlyIncomeInr || 0).toLocaleString("en-IN")}/month (${doc.incomeOnDoc.basis || doc.incomeOnDoc.docType})${doc.incomeOnDoc.holderName ? ` · ${doc.incomeOnDoc.holderName}` : ""}</div>` : ""}
+          ${doc.bankInfoOnDoc?.phoneNumber ? `<div class="text-[11px] text-success font-semibold">Co-applicant contact verified: ${doc.bankInfoOnDoc.phoneNumber}</div>` : ""}
+          ${doc.reuploadNote ? `<div class="text-[11px] text-amber">Re-upload asked: ${doc.reuploadNote}</div>` : ""}
+        </td>
+        <td class="px-6 py-3.5">${doc.score != null ? `<span class="text-xs font-bold text-primary bg-primary-soft px-2 py-0.5 rounded-full">${doc.score}% checks</span>` : `<span class="text-xs text-outline">—</span>`}</td>
+        <td class="px-6 py-3.5">
+          <div class="flex gap-1.5">
+            ${doc.fileUrl ? `<a class="text-primary hover:bg-primary-soft p-1.5 rounded-lg transition" href="${doc.fileUrl}" target="_blank" rel="noopener" title="View file"><span class="material-symbols-outlined text-[20px]">visibility</span></a>` : ""}
+            ${doc.status === "verified" ? `<button data-reupload="${doc.id}" class="text-outline hover:bg-amber-soft hover:text-amber p-1.5 rounded-lg transition" title="Request re-upload"><span class="material-symbols-outlined text-[20px]">replay</span></button>` : ""}
+          </div>
+        </td>
+      </tr>`;
+    }).join("")}`).join("");
+
+  return `
+  <div class="fade-in bg-white border border-outline-variant/40 rounded-2xl overflow-hidden card-shadow">
+    <div class="overflow-x-auto">
+      <table class="w-full text-left border-collapse min-w-[640px]">
+        <thead><tr class="bg-surface-container border-b border-outline-variant/50">
+          <th class="px-6 py-3 text-[11px] font-bold text-outline uppercase tracking-wider">Status</th>
+          <th class="px-6 py-3 text-[11px] font-bold text-outline uppercase tracking-wider">Document</th>
+          <th class="px-6 py-3 text-[11px] font-bold text-outline uppercase tracking-wider">Checks</th>
+          <th class="px-6 py-3 text-[11px] font-bold text-outline uppercase tracking-wider">Actions</th>
+        </tr></thead>
+        <tbody class="divide-y divide-outline-variant/30">${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function fraudTab(d) {
+  const flags = d.flags || [];
+  const flagPanel = flags.length ? `
+    <section class="bg-danger-soft border border-danger/20 rounded-2xl p-7 card-shadow">
+      <div class="flex items-start gap-4">
+        <div class="bg-danger text-white w-10 h-10 rounded-full grid place-items-center shrink-0"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">warning</span></div>
+        <div class="flex-1">
+          <h2 class="text-lg font-semibold text-danger mb-4">${flags.length} issue${flags.length > 1 ? "s" : ""} — needs review</h2>
+          <div class="space-y-3">
+            ${flags.map((f) => `
+            <div class="bg-white/70 p-4 rounded-xl border border-danger/15 flex items-center gap-4">
+              <span class="material-symbols-outlined text-danger">${f.type === "cross_document" ? (f.field === "name" ? "badge" : "event") : "badge"}</span>
+              <p class="text-sm">${f.type === "cross_document"
+                ? `The <b>${f.label}</b> shows ${f.field} <b>${f.thisValue}</b>, but the <b>${f.withLabel}</b> shows <b>${f.otherValue}</b> — these should be the same document set.`
+                : `On the <b>${f.label}</b> the name reads <b>${f.nameOnDoc}</b>, but the lead record says <b>${f.expected || "—"}</b>.`}</p>
+            </div>`).join("")}
+          </div>
+        </div>
+      </div>
+    </section>`
+    : `<section class="bg-success-soft border border-success/20 rounded-2xl p-6 flex items-center gap-4 card-shadow">
+        <div class="bg-success text-white w-9 h-9 rounded-full grid place-items-center"><span class="material-symbols-outlined text-[20px]" style="font-variation-settings:'FILL' 1">check_circle</span></div>
+        <p class="text-sm font-bold text-success uppercase tracking-wider">No cross-document conflicts found</p>
+      </section>`;
+
+  const evidence = d.documents.filter((doc) => doc.nameOnDoc || doc.dobOnDoc || doc.addressOnDoc);
+  const evidenceGrid = evidence.length ? `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
+      ${evidence.map((doc) => {
+        const conflict = doc.nameMatch === false || (doc.crossDocConflicts || []).length;
+        return `
+        <div class="bg-white rounded-2xl p-5 card-shadow border border-outline-variant/40">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-bold text-outline uppercase tracking-wider">${doc.label}</span>
+            <span class="${conflict ? "bg-danger-soft text-danger" : "bg-success-soft text-success"} px-3 py-1 rounded-full text-[11px] font-bold">${conflict ? "Conflict found" : "Consistent"}</span>
+          </div>
+          <p class="text-sm text-on-surface-variant">Extracted name: <b class="text-on-surface">${doc.nameOnDoc || "—"}</b></p>
+          <p class="text-sm text-on-surface-variant">Extracted DOB: <b class="text-on-surface">${doc.dobOnDoc || "—"}</b></p>
+          ${doc.addressOnDoc ? `<p class="text-sm text-on-surface-variant">Extracted address: <b class="text-on-surface">${doc.addressOnDoc}</b></p>` : ""}
+          ${doc.fileUrl ? `<a class="inline-flex items-center gap-1 text-primary text-sm font-semibold mt-3 hover:underline" href="${doc.fileUrl}" target="_blank" rel="noopener"><span class="material-symbols-outlined text-[18px]">visibility</span>View document</a>` : ""}
+        </div>`;
+      }).join("")}
+    </div>` : `<p class="text-sm text-on-surface-variant mt-6">No ID documents with readable name/DOB yet — evidence appears here as cards are verified.</p>`;
+
+  return `<div class="fade-in">${flagPanel}${evidenceGrid}</div>`;
+}
+
+// ---------- Lenders tab: match → generate draft → open in Outlook → mark shared ----------
+let expandedLender = null; // which lender's draft editor is open
+
+async function renderLendersTab(d) {
+  const body = $("#tabBody");
+  body.innerHTML = `<div class="fade-in bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40 text-sm text-on-surface-variant flex items-center gap-2"><span class="material-symbols-outlined animate-spin">progress_activity</span> Matching partner lenders…</div>`;
+  let data;
+  try { data = await (await fetch(`/api/applications/${d.leadId}/lenders`)).json(); }
+  catch { body.innerHTML = `<div class="fade-in bg-danger-soft rounded-2xl p-6 text-danger text-sm">Couldn't load lenders — try again.</div>`; return; }
+  if (activeTab !== "lenders" || selected !== d.leadId) return; // user moved on while we fetched
+
+  const lenders = data.lenders || [];
+  body.innerHTML = `
+  <div class="fade-in space-y-4">
+    ${data.partnerInstitute ? `<div class="bg-success-soft border border-success/20 rounded-2xl p-4 text-sm flex items-start gap-2"><span class="material-symbols-outlined text-success text-[20px]">school</span><span><b>${data.partnerInstitute.name}</b> is a partner institute — flag this in the referral for preferential processing.</span></div>` : ""}
+    <p class="text-xs text-on-surface-variant px-1">Demo lender catalogue — matched by loan type, amount, academics and citizenship. Generate a referral draft, review it, open it in Outlook (verified documents attached) and send; then mark it shared so the timeline records it.</p>
+    ${lenders.map((l) => lenderCard(d, l)).join("")}
+  </div>`;
+  wireLenderCards(d, lenders);
+}
+
+function lenderCard(d, l) {
+  const draft = l.draft;
+  const open = expandedLender === l.id && draft;
+  const status = draft
+    ? draft.sharedAt
+      ? `<span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-success-soft text-success">Shared ${fmtTime(draft.sharedAt)}</span>`
+      : `<span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary-soft text-primary">Drafted ${fmtTime(draft.draftedAt)}</span>`
+    : "";
+  return `
+  <div class="bg-white rounded-2xl p-6 card-shadow border ${l.fit ? "border-outline-variant/40" : "border-outline-variant/40 opacity-60"}">
+    <div class="flex justify-between items-start flex-wrap gap-3">
+      <div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <h3 class="font-bold">${l.name}</h3>
+          <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${l.type === "Bank" ? "bg-success-soft text-success" : "bg-primary-soft text-primary"}">${l.type}</span>
+          <span class="text-[11px] text-on-surface-variant">${l.rateRange} p.a.</span>
+          ${status}
+        </div>
+        <p class="text-xs text-on-surface-variant mt-1">${l.blurb}</p>
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          ${l.reasons.map((r) => `<span class="text-[11px] rounded-full px-2.5 py-1 ${l.fit ? "bg-success-soft text-success" : "bg-amber-soft text-amber"}">${l.fit ? "✓" : "✕"} ${r}</span>`).join("")}
+        </div>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        ${draft
+          ? `<button data-toggle="${l.id}" class="px-4 py-2 text-xs font-bold rounded-full border border-primary text-primary hover:bg-primary-soft transition">${open ? "Hide draft" : "View draft"}</button>
+             <button data-generate="${l.id}" class="px-4 py-2 text-xs font-bold rounded-full text-on-surface-variant hover:bg-surface-container transition" title="Regenerate from scratch">Regenerate</button>`
+          : `<button data-generate="${l.id}" class="px-5 py-2 text-xs font-bold rounded-full bg-primary text-white hover:bg-primary-dark transition inline-flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">auto_awesome</span> Generate draft</button>`}
+      </div>
+    </div>
+    ${open ? `
+    <div class="mt-5 pt-5 border-t border-outline-variant/40 space-y-3">
+      <div class="text-xs text-on-surface-variant">To: <b class="text-on-surface">${draft.to}</b> · ${draft.attachmentsCount} verified document${draft.attachmentsCount === 1 ? "" : "s"} will be attached</div>
+      <input data-subject="${l.id}" value="${(draft.subject || "").replace(/"/g, "&quot;")}" class="w-full h-11 px-3 bg-surface border border-outline-variant rounded-xl text-sm font-semibold focus:border-primary outline-none transition"/>
+      <textarea data-body="${l.id}" rows="12" class="w-full p-3 bg-surface border border-outline-variant rounded-xl text-sm leading-relaxed focus:border-primary outline-none transition font-mono">${(draft.body || "").replace(/</g, "&lt;")}</textarea>
+      <div class="flex flex-wrap gap-2 items-center">
+        <button data-outlook="${l.id}" class="px-5 py-2.5 text-xs font-bold rounded-full bg-primary text-white hover:bg-primary-dark transition inline-flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">outgoing_mail</span> Open in Outlook (.eml)</button>
+        <button data-share="${l.id}" ${draft.sharedAt ? "disabled" : ""} class="px-5 py-2.5 text-xs font-bold rounded-full ${draft.sharedAt ? "bg-success-soft text-success cursor-default" : "bg-white border border-success text-success hover:bg-success hover:text-white"} transition inline-flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">${draft.sharedAt ? "check_circle" : "send"}</span> ${draft.sharedAt ? `Shared via ${draft.sharedVia === "outlook" ? "Outlook" : draft.sharedVia}` : "Mark as shared"}</button>
+        <span data-savednote="${l.id}" class="text-xs text-on-surface-variant"></span>
+      </div>
+      <p class="text-[11px] text-on-surface-variant">Edits save automatically when you open the .eml or mark it shared. The .eml opens as an unsent Outlook draft — review and hit Send there, then come back and mark it shared.</p>
+    </div>` : ""}
+  </div>`;
+}
+
+function wireLenderCards(d, lenders) {
+  const saveEdits = async (lenderId) => {
+    const s = document.querySelector(`[data-subject="${lenderId}"]`);
+    const b = document.querySelector(`[data-body="${lenderId}"]`);
+    if (!s || !b) return true; // editor not open — nothing to save
+    const r = await fetch(`/api/applications/${d.leadId}/lenders/${lenderId}/draft`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject: s.value, body: b.value }),
+    });
+    return r.ok;
+  };
+
+  document.querySelectorAll("[data-generate]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.innerHTML = `<span class="material-symbols-outlined text-[16px] animate-spin">progress_activity</span> Drafting…`;
+    try {
+      const r = await fetch(`/api/applications/${d.leadId}/lenders/${b.dataset.generate}/draft`, { method: "POST" });
+      if (!r.ok) throw new Error();
+      expandedLender = b.dataset.generate;
+      renderLendersTab(d);
+    } catch { b.disabled = false; b.textContent = "Try again"; }
+  }));
+
+  document.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => {
+    expandedLender = expandedLender === b.dataset.toggle ? null : b.dataset.toggle;
+    renderLendersTab(d);
+  }));
+
+  document.querySelectorAll("[data-outlook]").forEach((b) => b.addEventListener("click", async () => {
+    const id = b.dataset.outlook;
+    const note = document.querySelector(`[data-savednote="${id}"]`);
+    if (!(await saveEdits(id))) { if (note) note.textContent = "Couldn't save your edits — check subject/body aren't empty."; return; }
+    if (note) note.textContent = "Saved ✓ — downloading .eml…";
+    window.location.href = `/api/applications/${d.leadId}/lenders/${id}/draft.eml`;
+  }));
+
+  document.querySelectorAll("[data-share]").forEach((b) => b.addEventListener("click", async () => {
+    if (b.disabled) return;
+    const id = b.dataset.share;
+    if (!(await saveEdits(id))) return;
+    b.disabled = true; b.innerHTML = `<span class="material-symbols-outlined text-[16px] animate-spin">progress_activity</span> Recording…`;
+    await fetch(`/api/applications/${d.leadId}/lenders/${id}/share`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ via: "outlook" }),
+    });
+    renderLendersTab(d);
+  }));
+}
+
+function activityTab(d) {
+  const events = (d.timeline || []).slice().reverse();
+  if (!events.length) return `<div class="fade-in bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40 text-sm text-on-surface-variant">No activity yet.</div>`;
+  return `
+  <div class="fade-in bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40">
+    <div class="relative space-y-7 before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-surface-container">
+      ${events.map((e) => {
+        const isLenderEvent = e.event === "lender_draft_created" || e.event === "lender_email_shared";
+        const dot = e.event === "lender_email_shared" ? "bg-success" : "bg-primary";
+        return `
+      <div class="relative pl-10">
+        <div class="absolute left-0 top-0.5 w-6 h-6 bg-white border-2 border-primary-line rounded-full grid place-items-center z-10"><div class="w-2 h-2 ${dot} rounded-full"></div></div>
+        <p class="text-sm font-semibold">${prettyEvent(e.event)}${isLenderEvent && e.lender ? ` — ${e.lender}` : ""}</p>
+        ${e.label ? `<p class="text-xs ${isLenderEvent ? "text-on-surface bg-surface-container rounded-lg px-3 py-2 mt-1" : "text-on-surface-variant mt-0.5"} break-words">${e.label}</p>` : ""}
+        <time class="text-[11px] text-outline mt-0.5 block">${fmtTime(e.at)}</time>
+      </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+
+// ---------- actions ----------
+function wireActions(d) {
+  const approve = $("#approveBtn"), reject = $("#rejectBtn"), nudge = $("#nudgeBtn"), packet = $("#packetBtn");
+  if (approve) approve.addEventListener("click", () => decide(d.leadId, "approve"));
+  if (reject) reject.addEventListener("click", () => decide(d.leadId, "reject"));
+  if (nudge) nudge.addEventListener("click", async () => {
+    nudge.disabled = true; nudge.textContent = "Sending…";
+    await fetch(`/api/applications/${d.leadId}/nudge`, { method: "POST" });
+    await loadList(); selectApp(d.leadId);
+  });
+  if (packet) packet.addEventListener("click", async () => {
+    packet.disabled = true; packet.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Sending…`;
+    try {
+      const r = await (await fetch("/api/session/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: d.leadId }) })).json();
+      const m = r.mail || {};
+      $("#packetStatus").innerHTML = m.ok
+        ? `✓ Emailed ${m.count} attachment${m.count === 1 ? "" : "s"} to <b>${m.to}</b>${m.preview ? ` · <a class="text-primary underline" href="${m.preview}" target="_blank" rel="noopener">view test email</a>` : ""}`
+        : `Couldn't send — ${m.simulated ? "email isn't configured yet (set SMTP in .env)" : "try again"}.`;
+    } catch { $("#packetStatus").textContent = "Couldn't reach the server — try again."; }
+    packet.disabled = false; packet.innerHTML = `<span class="material-symbols-outlined text-[18px]">forward_to_inbox</span>Re-send email`;
+  });
+}
+
+async function decide(leadId, action) {
+  let note = "";
+  if (action === "reject") note = prompt("Reason for rejection (optional):") || "";
+  await fetch(`/api/applications/${leadId}/decision`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, note }),
+  });
+  await loadList(); selectApp(leadId);
+}
+
+async function askReupload(leadId, docId) {
+  const note = prompt("What should the applicant fix? (optional — shown to them)") || "";
+  await fetch(`/api/applications/${leadId}/documents/${docId}/request-reupload`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ note }),
+  });
+  await loadList(); selectApp(leadId);
+}
+
+// ---------- boot ----------
+window.addEventListener("popstate", () => {
+  const q = new URLSearchParams(location.search);
+  const lead = q.get("lead");
+  if (lead) selectApp(lead, q.get("tab") || "extract", true);
+  else { selected = null; activeTab = "extract"; renderList(); $("#detail").innerHTML = EMPTY_DETAIL; }
+});
+
+$("#search").addEventListener("input", renderList);
+loadList().then(() => {
+  // Deep link / refresh: restore the lead + tab from the URL.
+  const q = new URLSearchParams(location.search);
+  if (q.get("lead")) selectApp(q.get("lead"), q.get("tab") || "extract", true);
+});
+setInterval(async () => { await loadList(); }, 7000);
