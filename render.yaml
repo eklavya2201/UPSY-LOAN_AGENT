@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: upsy-loan-agent
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NOTIFY_CHANNEL
+        value: mock
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_VISION_MODEL
+        value: openai/gpt-4o-mini
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
