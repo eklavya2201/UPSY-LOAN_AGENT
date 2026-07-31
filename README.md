@@ -415,6 +415,10 @@ npm start
 - [ ] A/B `claude-opus-4-8` vs `claude-sonnet-5` vs `claude-haiku-4-5` (swap `ANTHROPIC_VISION_MODEL` between eval runs) on real + deliberately blurry cards **and** on the real ITR/Form16/payslip fixtures now in the repo root; pick by accuracy ÷ cost.
 - [ ] Re-run `npm run eval:income` a few times on `ITR-24-25.pdf` specifically once Claude is active, to confirm the ₹1.39L vs ₹13.91L non-determinism is actually gone (not just less frequent).
 
+**New track — partner-portal live assistance (exploratory, see sections above for full context):**
+- [ ] Confirm what actually happens after Avanse's "Apply Now" quick form (check the Pending tab / the test inbox for an async follow-up) — currently looks like a dead end in-browser; needed before assuming their real flow is "worse" than UPSY's.
+- [ ] Get an AgentCall API key (user signs up at `app.agentcall.dev`) and run a first live test call — applicant screenshares a partner lender's real form, agent watches via `screenshot.take` and guides via voice. Validate the concept live before deciding whether/how it becomes a real product feature.
+
 **Phase 1 — harden:**
 - [ ] **Mobile: build a phone equivalent of the document checklist sidebar** (found testing the Render deploy on a real phone, 2026-07-30) — it's `hidden lg:flex`, so it doesn't exist below desktop width at all. Holding off on a one-off patch; batching with whatever else comes back from the wider review round.
 - [ ] Extend vision reading beyond PAN/Aadhaar/income-proof/bank-statement (admit letter, marksheets — each needs its own prompt/validation), multi-page PDFs, rotated/glare scans.
