@@ -23,6 +23,7 @@ import { structureIntent, intakeConfigured } from "./intake.js";
 import { answerDocQuestion, assistConfigured } from "./assist.js";
 import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
+import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -639,6 +640,31 @@ app.post("/api/applications/:leadId/nudge", async (req, res) => {
   const a = await getApplication(req.params.leadId);
   await sendNudge(a);
   res.json({ ok: true, sentTo: a.profile?.phone || a.leadId });
+});
+
+// ---- Live-assist: an AI voice agent (Nova/UPSY, via AgentCall) joins a real
+// meeting with the applicant and helps them fill out a lender's form live.
+// See backend/liveAssistManager.js — one call at a time across the server.
+app.get("/api/applications/:leadId/live-assist", (req, res) => {
+  res.json(getLiveAssistStatus(req.params.leadId));
+});
+
+app.post("/api/applications/:leadId/live-assist", async (req, res) => {
+  try {
+    const result = await startLiveAssist(req.params.leadId, req.body?.meetUrl);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/applications/:leadId/live-assist/stop", async (req, res) => {
+  try {
+    const result = await stopLiveAssist(req.params.leadId);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // Officer manually (re)sends the completed document packet by email.

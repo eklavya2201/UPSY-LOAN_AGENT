@@ -154,6 +154,7 @@ function renderDetail(d) {
 
     ${creditMemo(d)}
     ${packetCard(d)}
+    ${liveAssistPlaceholder()}
 
     <!-- Tabs -->
     <div class="border-b border-outline-variant/60 flex gap-8 px-1">
@@ -168,6 +169,7 @@ function renderDetail(d) {
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { activeTab = b.dataset.tab; syncUrl(); renderDetail(d); }));
   renderTab(d);
   wireActions(d);
+  loadLiveAssistCard(d);
 }
 
 const fact = (k, v) => `
@@ -242,6 +244,84 @@ function packetCard(d) {
     </div>
     <button id="packetBtn" class="px-6 py-2.5 bg-primary text-white rounded-full text-sm font-semibold hover:bg-primary-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">forward_to_inbox</span>Send packet email</button>
   </section>`;
+}
+
+// ---------- live-assist (voice agent joins a real call) ----------
+function liveAssistPlaceholder() {
+  return `<div id="liveAssistCard" class="bg-white rounded-2xl p-6 card-shadow border border-outline-variant/40 text-sm text-on-surface-variant flex items-center gap-2"><span class="material-symbols-outlined animate-spin">progress_activity</span> Checking live-assist status…</div>`;
+}
+
+async function loadLiveAssistCard(d) {
+  let status;
+  try { status = await (await fetch(`/api/applications/${d.leadId}/live-assist`)).json(); }
+  catch { status = { running: false }; }
+  if (selected !== d.leadId) return; // user moved on while we fetched
+  const el = $("#liveAssistCard");
+  if (!el) return;
+  el.outerHTML = liveAssistHtml(d, status);
+  wireLiveAssist(d);
+}
+
+function liveAssistHtml(d, status) {
+  if (status.running) {
+    return `
+    <section id="liveAssistCard" class="bg-primary-soft rounded-2xl p-6 border border-primary-line flex flex-col md:flex-row justify-between items-center gap-4">
+      <div class="flex items-center gap-4">
+        <div class="w-12 h-12 rounded-2xl bg-primary grid place-items-center"><span class="material-symbols-outlined text-white text-[26px]">podcasts</span></div>
+        <div>
+          <h3 class="font-semibold">UPSY live-assist call in progress</h3>
+          <p class="text-sm text-on-surface-variant">Started ${fmtTime(status.startedAt)} · <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a></p>
+        </div>
+      </div>
+      <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>Stop call</button>
+    </section>`;
+  }
+  return `
+  <section id="liveAssistCard" class="bg-surface-high/50 rounded-2xl p-6 border border-outline-variant/40 flex flex-col md:flex-row justify-between items-center gap-4">
+    <div class="flex items-center gap-4 flex-1">
+      <div class="w-12 h-12 rounded-2xl bg-primary-soft text-primary grid place-items-center"><span class="material-symbols-outlined text-[26px]">support_agent</span></div>
+      <div class="flex-1">
+        <h3 class="font-semibold">UPSY live-assist (voice)</h3>
+        <p class="text-sm text-on-surface-variant mb-2">Paste a Google Meet link — UPSY joins the call and helps this applicant fill out a form live, grounded in their own eligibility record.</p>
+        <input id="liveAssistUrl" type="text" placeholder="https://meet.google.com/xxx-xxxx-xxx" class="w-full border border-outline-variant rounded-full px-4 py-2 text-sm" />
+      </div>
+    </div>
+    <button id="liveAssistStartBtn" class="px-6 py-2.5 bg-primary text-white rounded-full text-sm font-semibold hover:bg-primary-dark transition flex items-center gap-2 whitespace-nowrap"><span class="material-symbols-outlined text-[18px]">call</span>Start call</button>
+  </section>`;
+}
+
+function wireLiveAssist(d) {
+  const startBtn = $("#liveAssistStartBtn");
+  if (startBtn) startBtn.addEventListener("click", async () => {
+    const url = $("#liveAssistUrl")?.value?.trim();
+    if (!url) { alert("Paste a meeting link first."); return; }
+    startBtn.disabled = true; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Starting…`;
+    try {
+      const r = await (await fetch(`/api/applications/${d.leadId}/live-assist`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetUrl: url }),
+      })).json();
+      if (r.error) {
+        alert(r.error);
+        startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`;
+        return;
+      }
+      await loadLiveAssistCard(d);
+    } catch {
+      alert("Couldn't reach the server — try again.");
+      startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`;
+    }
+  });
+  const stopBtn = $("#liveAssistStopBtn");
+  if (stopBtn) stopBtn.addEventListener("click", async () => {
+    stopBtn.disabled = true; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Stopping…`;
+    try {
+      await fetch(`/api/applications/${d.leadId}/live-assist/stop`, { method: "POST" });
+      await loadLiveAssistCard(d);
+    } catch {
+      alert("Couldn't reach the server — try again.");
+      stopBtn.disabled = false; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call_end</span>Stop call`;
+    }
+  });
 }
 
 // ---------- tabs ----------

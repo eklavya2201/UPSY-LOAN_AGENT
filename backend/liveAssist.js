@@ -6,7 +6,10 @@
 // a single direct LLM call — no human-in-the-loop coding session — to hit a
 // real-time response budget instead of a multi-second-to-minute one.
 //
-// Usage: node backend/liveAssist.js <meet-url> [--name Nova] [--voice af_heart]
+// Usage: node backend/liveAssist.js <meet-url> [--name UPSY] [--voice am_adam] [--context <base64-json>]
+// --context is how backend/liveAssistManager.js grounds this in one specific
+// applicant's real UPSY data (name, course, eligibility) when started from the
+// team dashboard, instead of running with only the generic rules below.
 
 import "dotenv/config";
 import { spawn } from "child_process";
@@ -19,23 +22,25 @@ const BRIDGE_PATH = path.join(__dirname, "agentcall", "bridge.js");
 
 const OR_KEY = process.env.OPENROUTER_API_KEY;
 const OR_MODEL = process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
-const SCREENSHOT_INTERVAL_MS = 8000;
+const SCREENSHOT_INTERVAL_MS = 5000;
 const MAX_HISTORY = 8;
 
 function parseArgs(argv) {
   const meetUrl = argv[2];
-  let name = "Nova";
-  let voice = "af_heart";
+  let name = "UPSY";
+  let voice = "am_adam";
+  let context = null;
   for (let i = 3; i < argv.length; i++) {
     if (argv[i] === "--name") name = argv[++i];
     else if (argv[i] === "--voice") voice = argv[++i];
+    else if (argv[i] === "--context") context = argv[++i];
   }
-  return { meetUrl, name, voice };
+  return { meetUrl, name, voice, context };
 }
 
-const { meetUrl, name: BOT_NAME, voice: BOT_VOICE } = parseArgs(process.argv);
+const { meetUrl, name: BOT_NAME, voice: BOT_VOICE, context: CONTEXT_B64 } = parseArgs(process.argv);
 if (!meetUrl) {
-  console.error("Usage: node backend/liveAssist.js <meet-url> [--name Nova] [--voice af_heart]");
+  console.error("Usage: node backend/liveAssist.js <meet-url> [--name Nova] [--voice af_heart] [--context <base64-json>]");
   process.exit(1);
 }
 if (!OR_KEY) {
@@ -43,18 +48,50 @@ if (!OR_KEY) {
   process.exit(1);
 }
 
+// Only non-sensitive summary facts belong here — never PAN/Aadhaar/account
+// numbers, matching the same boundary as the rest of this file.
+function applicantContextBlock(b64) {
+  if (!b64) return "";
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+  } catch {
+    return "";
+  }
+  const lines = [];
+  if (c.name) lines.push(`Applicant name: ${c.name}.`);
+  if (c.course || c.institute) lines.push(`Course: ${c.course || "unspecified"}${c.institute ? " at " + c.institute : ""}.`);
+  if (c.loanType) lines.push(`Loan type requested: ${c.loanType}.`);
+  if (c.eligible != null) lines.push(`UPSY's own verdict for this applicant: ${c.eligible ? "eligible" : "needs review"}.`);
+  if (c.estimatedAmount) lines.push(`UPSY's estimated facility for this applicant: ${c.estimatedAmount}.`);
+  if (c.docsStatus) lines.push(`Documents so far: ${c.docsStatus}.`);
+  if (!lines.length) return "";
+  return `\n\nThis specific applicant's context (use it, but this is UPSY's own record — a partner lender's own form may ask for or show different things):\n${lines.map((l) => "- " + l).join("\n")}`;
+}
+const APPLICANT_CONTEXT = applicantContextBlock(CONTEXT_B64);
+
 // Same "LLM never touches KYC field contents" boundary as backend/assist.js —
 // this agent can additionally SEE the screen, so the rule has to be explicit
-// about never reading back sensitive numbers it happens to see.
-const SYSTEM_PROMPT = `You are ${BOT_NAME}, a live voice assistant helping a loan applicant fill out a partner lender's real online application form (for example Avanse) while on a call with them. You can see a recent screenshot of their shared screen and hear what they say.
+// about never reading back sensitive numbers it happens to see. Eligibility
+// facts below are copied from backend/eligibility.js so the agent's numbers
+// stay consistent with what UPSY itself would tell the same applicant.
+const SYSTEM_PROMPT = `You are ${BOT_NAME}, the loan assistant from UPSY, helping an applicant fill out a loan application (their own, or a partner lender's real online form such as Avanse) while on a live call with them. You can see a recent screenshot of their shared screen and hear what they say.
+
+UPSY's own eligibility rules — use these as the source of truth when asked about eligibility, amount, rate, or requirements. A specific lender's own form or policy may differ from UPSY's; say so if asked, rather than implying UPSY's numbers are that lender's numbers:
+- Academic score below 60 percent is generally flagged as not eligible by most lenders.
+- The co-borrower must be immediate family — father, mother, brother, sister, or spouse — with stable, verifiable income. Friends cannot co-borrow.
+- NRI co-borrower cases additionally need an NRE or NRO account, Indian collateral, and one more India-resident co-borrower.
+- Loan estimate is roughly twenty four times the co-applicant's monthly income, floored at fifty thousand rupees, capped at one crore rupees for an unsecured loan or two crore rupees for a secured loan.
+- Moratorium is course duration plus about nine months of grace before repayment starts.
+- Indicative rate: about nine and a half to eleven and a half percent for a secured loan, about ten and a half to thirteen percent for an unsecured loan.
 
 Rules:
-- Explain what a field is for and what kind of answer it wants, based on what you see on screen and general education-loan knowledge (loan amount, co-applicant, KYC documents, income proof, etc).
+- Explain what a field is for and what kind of answer it wants, based on what you see on screen.
 - NEVER read back, repeat, transcribe, or ask the applicant to confirm any PAN, Aadhaar, account number, or other sensitive ID number you see on screen, even if it is visible in the screenshot. Only describe the field's purpose. The applicant enters their own data — you only guide.
 - Never tell the applicant what to type into a KYC field; only explain what the field is asking for.
 - If you cannot tell what is currently on screen, say so honestly and ask them to describe it or give it a moment for a fresh screenshot.
 - Keep responses short: two to three sentences, conversational, no markdown, no symbols, no emojis. Spell out numbers the way you would say them aloud.
-- If you do not know something about a specific lender's process, say so plainly rather than guessing.`;
+- If asked about a specific lender's own process that you do not actually know, say so plainly rather than guessing — only state UPSY's own rules as UPSY's rules.${APPLICANT_CONTEXT}`;
 
 const child = spawn("node", [BRIDGE_PATH, meetUrl, "--name", BOT_NAME, "--voice", BOT_VOICE], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -166,7 +203,7 @@ async function respondTo(text) {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: OR_MODEL, temperature: 0.3, max_tokens: 150, messages }),
+      body: JSON.stringify({ model: OR_MODEL, temperature: 0.3, max_tokens: 200, messages }),
     });
     if (!res.ok) {
       console.error(`[liveAssist] OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
