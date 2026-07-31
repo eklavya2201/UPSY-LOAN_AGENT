@@ -50,6 +50,15 @@ Post-eligibility handoff to partner lenders, built per the WhatsApp spec (previe
 
 API: `GET /api/applications/:leadId/lenders` · `POST/PUT .../lenders/:id/draft` · `GET .../draft.eml` · `POST .../share`. Draft state persists in `applications.json` (`lenderDrafts`).
 
+## Partner-lender research: Avanse's real online flow (2026-07-30)
+
+Checked `online.avanse.com` live (one of the 6 demo lenders in `backend/lenders.js`), at the team's request, to compare their real applicant experience against UPSY's:
+
+- **Sign-in**: phone/email + OTP, no separate signup step — straight to a "My Loan Applications" dashboard (Apply Now / My Offers / All-Pending-Disbursed tabs) once logged in.
+- **"Apply Now" quick form** (tested with "Executive Education" as the loan type): Select Type, Name, Email ID, Phone Number, Loan Amount, Time of Study, Place of Study, Admission Status — a lead-intent form, roughly comparable to UPSY's `/intake` step but simpler (no institution name, no co-applicant, no secured/unsecured choice at this stage).
+- **⚠️ Dead end found**: submitting that form returned straight to "My Loan Applications" showing **"No Application Found"** — no visible continuation into a document/KYC step in-browser. Unconfirmed whether this is a UI quirk or Avanse's real flow hands off asynchronously (email/SMS follow-up, human loan-officer contact) rather than continuing live in the same session. Not chased further this session — worth a Pending-tab / inbox check next time.
+- **Comparison takeaway**: on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
+
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
 When the applicant uploads the **co-applicant income proof** (`co_income_proof`), `backend/income.js` reads the income off the document via the same Claude → OpenRouter chain:
