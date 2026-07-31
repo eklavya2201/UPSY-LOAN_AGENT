@@ -8,13 +8,15 @@
     "start": "node backend/server.js",
     "dev": "node --watch backend/server.js",
     "eval": "node backend/eval-cards.js",
-    "eval:income": "node backend/eval-income.js"
+    "eval:income": "node backend/eval-income.js",
+    "assist:call": "node backend/liveAssist.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
-    "tesseract.js": "^7.0.0"
+    "tesseract.js": "^7.0.0",
+    "ws": "^8.21.1"
   }
 }
