@@ -288,6 +288,14 @@ To go live, set: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`
 - **Exotel is currently OFF** (`NOTIFY_CHANNEL=mock` since 2026-07-27) — the sweep was making real (failing, balance-blocked) SMS/WhatsApp attempts against the live account every minute during dev. Credentials are untouched in `.env`; set `NOTIFY_CHANNEL=exotel` to re-enable at launch (after fixing the account-side blockers + raising `STALE_AFTER_MS`).
 - Notifier writes (`recordNudge`) and edits made to `applications.json` by external scripts don't mix while the server runs — the store caches the JSON in memory and writes it back whole. Stop the server before hand-editing data files.
 
+## Deployment (Render)
+
+Live test deploy, 2026-07-30: **https://upsy-loan-agent.onrender.com**
+
+- `render.yaml` (Blueprint config) defines the web service — `npm install` / `npm start`, free plan. `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, and `APP_URL` are `sync: false` (entered in the Render dashboard, never stored in the yaml). `NOTIFY_CHANNEL=mock` is baked in, matching the local "Exotel off" state.
+- **Verified live end-to-end**: `/login` → `/intake` sign-in with a demo lead works and greets correctly; `/team.html` dashboard loads and reflects live applications; no console errors on either page.
+- **⚠️ Storage is ephemeral on the free tier.** `data/applications.json` + `data/uploads/` are gitignored, local-disk-only (`backend/store.js`, `backend/files.js`). Free-tier instances spin down after 15 min idle and lose that disk on respin — any application created mid-testing won't survive a gap in usage or a redeploy. The 3 pre-seeded demo leads (`mockSource.js`) always survive, since they're code, not `data/`. Fine for single-sitting testing (decided against a paid instance + persistent Disk for now — revisit if multi-day test persistence is ever needed).
+
 ## Configuration (.env)
 
 All credentials are read from a `.env` file (loaded automatically via `dotenv`). Copy the template and fill it in:
@@ -375,6 +383,7 @@ npm start
 - [x] **Fixed: student-vs-co-applicant false-positive cross-document bug** — the existing consistency check compared two different people's documents against each other; scoped by `identityGroup()` so student docs only compare against student docs, co-applicant against co-applicant
 - [x] **EMI assistance + matched lenders relocated** to the completion screen (user-requested, 2026-07-29) — no longer shown before any document is uploaded
 - [x] **Removed unprofessional emoji from the team dashboard** (💰/📞 → plain text, user-requested)
+- [x] **Deployed to Render** (2026-07-30): `render.yaml` Blueprint, live at https://upsy-loan-agent.onrender.com, verified end-to-end (login/intake sign-in + team dashboard both working, no console errors) — see "Deployment (Render)" above for the ephemeral-storage caveat
 
 ## Next (roadmap) — in likely priority order for a new session
 
