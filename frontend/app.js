@@ -477,14 +477,18 @@ async function loadLenderCards() {
 }
 
 // Self-serve live voice help: applicant starts a call, UPSY (via AgentCall)
-// joins to help them fill out a lender's real application form.
-async function loadLiveAssistApplicant() {
+// joins to help them fill out a form. `compact` renders the shrunk-down
+// version that fits inside the narrow Ask UPSY sidebar on document pages;
+// the full version is used on the completion screen.
+async function loadLiveAssistApplicant(compact) {
   const box = document.getElementById("liveAssist");
   if (!box) return;
   let status;
   try { status = await (await fetch(`/api/applications/${LEAD.leadId}/live-assist`)).json(); } catch { status = { running: false }; }
-  box.innerHTML = status.running ? liveAssistRunningHtml(status) : liveAssistIdleHtml();
-  wireLiveAssistApplicant();
+  box.innerHTML = status.running
+    ? (compact ? liveAssistRunningCompactHtml(status) : liveAssistRunningHtml(status))
+    : (compact ? liveAssistIdleCompactHtml() : liveAssistIdleHtml());
+  wireLiveAssistApplicant(compact);
 }
 
 function liveAssistIdleHtml() {
@@ -504,7 +508,22 @@ function liveAssistRunningHtml(status) {
   <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>End call</button>`;
 }
 
-function wireLiveAssistApplicant() {
+function liveAssistIdleCompactHtml() {
+  return `
+  <div class="flex items-center gap-1.5 mb-1"><span class="material-symbols-outlined text-primary text-[16px]">podcasts</span><div class="text-xs font-bold">Talk to UPSY live</div></div>
+  <p class="text-[11px] text-on-surface-variant mb-2">Prefer voice while filling this in? Paste a Meet link and UPSY joins to help.</p>
+  <input id="liveAssistUrl" type="text" placeholder="Meet link" class="w-full border border-outline-variant rounded-lg px-2.5 py-1.5 text-xs mb-2" />
+  <button id="liveAssistStartBtn" class="w-full py-1.5 bg-primary text-white rounded-lg text-xs font-semibold hover:bg-primary-dark transition flex items-center justify-center gap-1"><span class="material-symbols-outlined text-[14px]">call</span>Start call</button>`;
+}
+
+function liveAssistRunningCompactHtml(status) {
+  return `
+  <div class="flex items-center gap-1.5 mb-1"><span class="material-symbols-outlined text-primary text-[16px]">podcasts</span><div class="text-xs font-bold">UPSY is live in your call</div></div>
+  <p class="text-[11px] text-on-surface-variant mb-2">Join <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">the meet</a> if you haven't already.</p>
+  <button id="liveAssistStopBtn" class="w-full py-1.5 bg-danger text-white rounded-lg text-xs font-semibold hover:bg-danger-dark transition flex items-center justify-center gap-1"><span class="material-symbols-outlined text-[14px]">call_end</span>End call</button>`;
+}
+
+function wireLiveAssistApplicant(compact) {
   const startBtn = document.getElementById("liveAssistStartBtn");
   if (startBtn) startBtn.addEventListener("click", async () => {
     const url = document.getElementById("liveAssistUrl")?.value?.trim();
@@ -515,7 +534,7 @@ function wireLiveAssistApplicant() {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetUrl: url }),
       })).json();
       if (r.error) { alert(r.error); startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`; return; }
-      await loadLiveAssistApplicant();
+      await loadLiveAssistApplicant(compact);
     } catch {
       alert("Couldn't reach the server — try again.");
       startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`;
@@ -526,7 +545,7 @@ function wireLiveAssistApplicant() {
     stopBtn.disabled = true; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Ending…`;
     try {
       await fetch(`/api/applications/${LEAD.leadId}/live-assist/stop`, { method: "POST" });
-      await loadLiveAssistApplicant();
+      await loadLiveAssistApplicant(compact);
     } catch {
       alert("Couldn't reach the server — try again.");
       stopBtn.disabled = false; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call_end</span>End call`;
@@ -581,6 +600,7 @@ function assistPanelHtml(doc) {
           </div>
         </div>
       </div>
+      <div id="liveAssist" class="p-4 border-b border-outline-variant/40"></div>
       <div id="assistMsgs" class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
         <div class="text-sm text-on-surface-variant bg-surface-container rounded-xl rounded-tl-sm p-3">Hi! Ask me anything about this document — why it's needed, what format works, or what to do if it isn't accepted.</div>
       </div>
@@ -704,6 +724,7 @@ function renderCurrent() {
     </main>`);
   wireUpload(doc);
   wireAssist(doc);
+  loadLiveAssistApplicant(true);
   if (isDone) showStoredPreview(doc);
 }
 
@@ -955,7 +976,7 @@ async function renderDone() {
       </div>
     </main>`);
   if (eligible) { wireEmi(); loadLenderCards(); }
-  loadLiveAssistApplicant();
+  loadLiveAssistApplicant(false);
 }
 
 window.addEventListener("popstate", route);
