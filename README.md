@@ -59,6 +59,19 @@ Checked `online.avanse.com` live (one of the 6 demo lenders in `backend/lenders.
 - **⚠️ Dead end found**: submitting that form returned straight to "My Loan Applications" showing **"No Application Found"** — no visible continuation into a document/KYC step in-browser. Unconfirmed whether this is a UI quirk or Avanse's real flow hands off asynchronously (email/SMS follow-up, human loan-officer contact) rather than continuing live in the same session. Not chased further this session — worth a Pending-tab / inbox check next time.
 - **Comparison takeaway**: on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
 
+### New idea (not yet built): out-of-app live-call assistance via AgentCall
+
+Team request over WhatsApp: mimic what **RevRag AI** (revrag.ai — "#1 In-App AI Agents Platform," embeds AI agents directly into a BFSI product to automate onboarding and re-engage drop-offs) does, but for a partner lender's product UPSY doesn't control the codebase of (e.g. Avanse) — an "out-of-app" equivalent, since we can't embed an agent inside someone else's site.
+
+**Chosen approach**: [AgentCall](https://agentcall.dev) (`pattern-ai-labs/agentcall`, MIT-licensed `join-meeting` skill) lets a coding agent join a Google Meet/Zoom/Teams call as a bot with voice + optional video/screenshare. Scenario decided with the team:
+- **Agent + applicant, live voice** — the applicant is on a call alone with the AI agent (no human loan officer needed for this path).
+- **Applicant screenshares their own screen** (showing `online.avanse.com` or another partner lender's real form) — the agent periodically calls the skill's `screenshot.take` command to see what's currently on screen, and talks the applicant through it via TTS, grounded in what it sees plus loan-domain knowledge. The agent never touches the form itself — the applicant fills it, guided by voice only, same trust boundary as every other LLM-assist feature in this repo (never auto-fills/auto-submits KYC-adjacent fields).
+- Mode: `audio` or `direct` voice-strategy — Pattern 2 ("Customer Support") from the skill's own docs is the simplest fit for this 1:1 use case.
+
+**Status**: researched and scoped, not yet tested live. `SKILL.md` reviewed in full; Python 3.13 and Node 22 both confirmed available on the dev machine (either runtime works — `bridge.py` recommended for voice-only). **Blocked on**: an AgentCall account + API key — the user needs to sign up at `app.agentcall.dev` themselves (account creation isn't something an assistant should do on someone's behalf, even with the self-registration-via-email-OTP option the skill supports) and paste the key in, the same pattern already used for `OPENROUTER_API_KEY` etc.
+
+**Open question, not yet decided**: how this becomes a real *product* feature vs. a one-off interactive demo — AgentCall's `join-meeting` skill is built for a coding agent (like Claude Code) to join a call interactively in the same session; turning it into something that joins calls autonomously/unattended for arbitrary applicants at scale is a separate, later architecture question.
+
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
 When the applicant uploads the **co-applicant income proof** (`co_income_proof`), `backend/income.js` reads the income off the document via the same Claude → OpenRouter chain:
