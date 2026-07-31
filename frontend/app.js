@@ -476,6 +476,64 @@ async function loadLenderCards() {
     </div>`;
 }
 
+// Self-serve live voice help: applicant starts a call, UPSY (via AgentCall)
+// joins to help them fill out a lender's real application form.
+async function loadLiveAssistApplicant() {
+  const box = document.getElementById("liveAssist");
+  if (!box) return;
+  let status;
+  try { status = await (await fetch(`/api/applications/${LEAD.leadId}/live-assist`)).json(); } catch { status = { running: false }; }
+  box.innerHTML = status.running ? liveAssistRunningHtml(status) : liveAssistIdleHtml();
+  wireLiveAssistApplicant();
+}
+
+function liveAssistIdleHtml() {
+  return `
+  <div class="flex items-center gap-2 mb-1"><span class="material-symbols-outlined text-primary">support_agent</span><h3 class="text-xl font-semibold">Talk to UPSY live</h3></div>
+  <p class="text-sm text-on-surface-variant mb-4">Applying with a lender's own website and want help filling it out? Start a Google Meet, paste the link below, and UPSY will join the call to guide you — just share your screen.</p>
+  <div class="flex flex-col sm:flex-row gap-3">
+    <input id="liveAssistUrl" type="text" placeholder="https://meet.google.com/xxx-xxxx-xxx" class="flex-1 border border-outline-variant rounded-full px-4 py-2.5 text-sm" />
+    <button id="liveAssistStartBtn" class="px-6 py-2.5 bg-primary text-white rounded-full text-sm font-semibold hover:bg-primary-dark transition flex items-center justify-center gap-2 whitespace-nowrap"><span class="material-symbols-outlined text-[18px]">call</span>Start call</button>
+  </div>`;
+}
+
+function liveAssistRunningHtml(status) {
+  return `
+  <div class="flex items-center gap-2 mb-1"><span class="material-symbols-outlined text-primary">podcasts</span><h3 class="text-xl font-semibold">UPSY is live in your call</h3></div>
+  <p class="text-sm text-on-surface-variant mb-4">Join <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a> if you haven't already — UPSY is waiting there.</p>
+  <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>End call</button>`;
+}
+
+function wireLiveAssistApplicant() {
+  const startBtn = document.getElementById("liveAssistStartBtn");
+  if (startBtn) startBtn.addEventListener("click", async () => {
+    const url = document.getElementById("liveAssistUrl")?.value?.trim();
+    if (!url) { alert("Paste your Google Meet link first."); return; }
+    startBtn.disabled = true; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Starting…`;
+    try {
+      const r = await (await fetch(`/api/applications/${LEAD.leadId}/live-assist`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetUrl: url }),
+      })).json();
+      if (r.error) { alert(r.error); startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`; return; }
+      await loadLiveAssistApplicant();
+    } catch {
+      alert("Couldn't reach the server — try again.");
+      startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`;
+    }
+  });
+  const stopBtn = document.getElementById("liveAssistStopBtn");
+  if (stopBtn) stopBtn.addEventListener("click", async () => {
+    stopBtn.disabled = true; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Ending…`;
+    try {
+      await fetch(`/api/applications/${LEAD.leadId}/live-assist/stop`, { method: "POST" });
+      await loadLiveAssistApplicant();
+    } catch {
+      alert("Couldn't reach the server — try again.");
+      stopBtn.disabled = false; stopBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call_end</span>End call`;
+    }
+  });
+}
+
 // Clickable document checklist — jump straight to any document.
 function checklistHtml() {
   const groups = {};
@@ -893,9 +951,11 @@ async function renderDone() {
       <div class="text-left">
         ${eligible ? emiCardHtml() : ""}
         ${eligible ? `<div id="lenderCards"></div>` : ""}
+        <div id="liveAssist" class="bg-white rounded-2xl p-6 md:p-8 border border-outline-variant/40 mb-10">${liveAssistIdleHtml()}</div>
       </div>
     </main>`);
   if (eligible) { wireEmi(); loadLenderCards(); }
+  loadLiveAssistApplicant();
 }
 
 window.addEventListener("popstate", route);
