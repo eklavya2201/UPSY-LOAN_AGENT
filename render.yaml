@@ -16,3 +16,5 @@ services:
         sync: false
       - key: APP_URL
         sync: false
+      - key: AGENTCALL_API_KEY
+        sync: false
