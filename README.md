@@ -78,6 +78,40 @@ Team request over WhatsApp: mimic what **RevRag AI** (revrag.ai — "#1 In-App A
 
 When started from any of these, `--context <base64-json>` passes that specific applicant's real name/course/eligibility/document-count into the system prompt (built in `liveAssistManager.js` from `getApplication(leadId)` — never PAN/Aadhaar/account numbers, only summary facts), so answers are grounded in that lead's actual record, not just generic rules.
 
+**The actual runtime flow** (worth reading before touching any of this — it's what the "own the stack" phase in the roadmap is measured against):
+
+```
+[Officer on team.html]  OR  [Applicant on /docs sidebar or /docs/done]
+              │  paste Meet link → Start call
+              ▼
+   POST /api/applications/:leadId/live-assist          ← ours (server.js)
+              ▼
+   liveAssistManager.startCall()                       ← ours
+     • getApplication(leadId) → name/course/eligibility/doc-count
+     • base64 it → --context ; spawn liveAssist.js ; log live_assist_started
+              ▼
+   liveAssist.js  ──spawns──►  backend/agentcall/bridge.js
+                                    │  POST api.agentcall.dev/v1/calls
+                                    │  WS   /v1/calls/:id/ws
+                                    ▼
+                    ╔═══════════════════════════════════╗
+                    ║  AGENTCALL CLOUD                  ║
+                    ║  headless Chrome joins the Meet   ║
+                    ║  as participant "UPSY"            ║
+                    ╚═══════════════════════════════════╝
+
+   ── per turn ──────────────────────────────────────────────────
+   applicant speaks
+     → THEIR browser hears it → THEIR STT              ← AgentCall
+     → user.message ──WS──► bridge ──► liveAssist.js
+     → OpenRouter (gpt-4o-mini) + latest screenshot    ← OURS  ★ the thinking
+     → tts.speak ──WS──► THEIR TTS → audio into call   ← AgentCall
+
+   every 5s, on an independent timer: screenshot → JPEG → latestScreenshot
+```
+
+Note the ★ line is the *only* part that is ours at runtime. Everything above and below it is AgentCall acting as a microphone, speaker, screen, and a pair of legs that can walk into a meeting.
+
 **Verified live, multiple times**: joins a real Meet, greets automatically, answers questions, both starts and ends cleanly from all three UI surfaces; `live_assist_started`/`live_assist_ended` land on the applicant's Activity timeline each time.
 
 **Known nuance — stop isn't provably instant.** `POST .../live-assist/stop` sends `SIGINT` to the process and returns immediately, without waiting for the child to actually exit. Inside `liveAssist.js`, the `SIGINT` handler sends a `leave` command to the bridge, then force-exits 500ms later regardless (a safety net). Net effect: the bot leaves within about half a second, but since the frontend re-checks status right after the API call returns, there's a small race where the UI could briefly flicker back to "in progress" before settling to idle. Not yet fixed — the fix would be having the stop endpoint wait for the actual `exit` event before responding.
