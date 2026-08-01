@@ -466,7 +466,7 @@ npm start
 
 ## Next (roadmap) — in likely priority order for a new session
 
-**Where things stand (2026-08-01):** the full applicant + team flow is live on Render and the AgentCall live-assist agent is confirmed working in production. Three tracks are open below — Phase 0 (reader accuracy) is still the oldest and most load-bearing, while the two newest tracks come from the team: **"UPSY AgentCall"** (own the live-call stack with Deepgram/Sarvam) and **fine-tuning the webpage** (batched UI polish). Phase 2 (compliance) remains the hard gate before any real applicant touches this.
+**Where things stand (2026-08-01):** the full applicant + team flow is live on Render and the AgentCall live-assist agent is confirmed working in production. Three tracks are open below — Phase 0 (reader accuracy) is still the oldest and most load-bearing, while the two newest come from the team: **"UPSY AgentCall"** (own the live-call stack with Deepgram/Sarvam — now broken into three sequenced steps with flow diagrams, where Step 1 is ~a day and Step 2 may remove the AgentCall dependency for most real usage without ever needing Step 3) and **fine-tuning the webpage** (batched UI polish). Phase 2 (compliance) remains the hard gate before any real applicant touches this.
 
 **Phase 0 — prove the reader (top of the list, now with two independent findings backing it):**
 - [ ] **Add `ANTHROPIC_API_KEY` to `.env`** (platform.claude.com — separate developer account from the claude.ai Pro subscription; buy ~$5 credits; **set a console spend limit first**). The whole Claude path — including PDF reading, which currently has *no* working reader — activates on restart; the startup log confirms it.
@@ -484,12 +484,55 @@ npm start
 
 Goal: stop depending on AgentCall for the live-call layer. The team already has **Deepgram** and **Sarvam** API keys (per the secrets note in Code map) plus other providers, and wants this built in-house.
 
-**Read the dependency breakdown in "Live-call assistance via AgentCall" above before scoping this.** Short version: Deepgram (STT) and Sarvam (Indian-language STT/TTS) replace the *voice commodity layer* — which AgentCall's own pricing already treats as swappable ("bring your own transcription/TTS"). They do **not** replace the part that is actually hard and actually AgentCall's product: getting a bot into a live Google Meet/Zoom/Teams call at all. Going "100% our own" means building or licensing that piece too.
+**Read "The actual runtime flow" + the dependency breakdown in "Live-call assistance via AgentCall" above before scoping this.** Short version: Deepgram (STT) and Sarvam (Indian-language STT/TTS) replace the *voice commodity layer* — which AgentCall's own pricing already treats as swappable ("bring your own transcription/TTS"). They do **not** replace the part that is actually hard and actually AgentCall's product: getting a bot into a live Google Meet/Zoom/Teams call at all. Going "100% our own" means building or licensing that piece too.
 
-Suggested order — cheapest, most-reversible first:
-- [ ] **Step 1 — swap the voice layer only** (low risk, real win, uses keys we already have): route STT through Deepgram and TTS through Sarvam instead of AgentCall's built-ins, keeping AgentCall purely as the meeting-transport pipe. Sarvam is the bigger product win regardless of the vendor question — Indian-language voice for Hindi/regional applicants is something the current English-only `af_heart`/`am_adam` TTS cannot do at all. Also cuts AgentCall's per-hour add-on cost.
-- [ ] **Step 2 — decide the transport question with real numbers**: price out replacing the meeting-join layer (headless-browser automation per platform, waiting rooms, WebRTC audio in/out, screenshare capture) vs. keeping AgentCall for it. Realistically weeks-to-months of dedicated engineering plus ongoing breakage whenever Meet/Zoom/Teams change their UI — this is infrastructure, not UPSY product differentiation, so it needs an honest build-vs-buy call, not an assumption.
-- [ ] **Step 3 — consider sidestepping meetings entirely** (may make Step 2 moot): the RevRag pattern the team originally pointed at is *in-app*, not on a call. A WebRTC voice widget embedded directly in UPSY's own pages — which we fully control — needs no meeting-platform automation at all, just Deepgram/Sarvam plus the existing browser. That covers "help the applicant inside UPSY"; joining a call on a *lender's* site is the only scenario that genuinely needs meeting transport.
+Sequenced cheapest-and-most-reversible first. **Step 1 is roughly a day's work and pays off on its own merits; Step 2 may make Step 3 unnecessary entirely — so follow this order rather than jumping to the most ambitious piece.**
+
+---
+
+**Step 1 — take back the voice layer** (AgentCall stays, but only as the pipe)
+
+```
+   ╔═ AGENTCALL CLOUD ═════════════╗
+   ║  headless Chrome in the Meet  ║   ← still theirs (transport only)
+   ╚═══════════════════════════════╝
+        │ raw PCM 16kHz              ▲ raw PCM 16kHz
+        │ audio.chunk                │ audio.inject
+        ▼                            │
+   ┌────────────────────────────────────────────────┐
+   │  liveAssist.js                                 │
+   │    → Deepgram streaming STT   (or Sarvam)      │  ← OURS
+   │    → OpenRouter LLM + screenshot               │  ← OURS
+   │    → Sarvam TTS  (Hindi / regional!)           │  ← OURS
+   └────────────────────────────────────────────────┘
+```
+
+- [ ] Patch `backend/agentcall/bridge.js` — it currently **blocks this**, because it hardcodes `transcription: true` in the `/v1/calls` params (~line 419) and never wired up raw audio, even though AgentCall's API supports it. Three edits: add `audio_streaming: true`, flip `transcription` to `false` (stop paying for STT we no longer use), and handle inbound `audio.chunk` events + an outbound `audio.inject` command.
+- [ ] Route STT through **Deepgram** (streaming) and TTS through **Sarvam**, replacing `tts.speak` with `audio.inject` of Sarvam's PCM.
+- [ ] **Why this is worth doing regardless of the vendor question:** Sarvam unlocks Hindi and regional-language voice. Today's `am_adam` is English-only, so an applicant who'd rather be guided in Hindi simply cannot be — that's a product gap, not a cost optimisation. Cutting AgentCall's per-hour STT/TTS add-ons is the secondary benefit.
+
+---
+
+**Step 2 — in-app voice widget, no meeting platform at all** (removes AgentCall for most real usage)
+
+```
+   [Applicant on UPSY's own page]
+     browser mic ──WebSocket──► UPSY server
+                                  → Deepgram STT
+                                  → OpenRouter LLM
+                                  → Sarvam TTS
+     browser speaker ◄────────────┘        AgentCall: gone entirely
+```
+
+- [ ] Build it as a widget on UPSY's own pages — no bot has to "join" anything, because we control the page. Needs only browser mic/speaker plus the Step 1 voice stack.
+- [ ] This is also closest to what **RevRag actually does** (in-app, not on a call), which is what the team pointed at in the first place. It covers the `/docs` sidebar and completion-screen use cases — i.e. most of what would actually be demoed.
+
+---
+
+**Step 3 — our own meeting bot** (only if lenders' sites genuinely require it)
+
+- [ ] Build a Playwright/Puppeteer headless Chrome that joins Meet/Zoom/Teams itself: waiting rooms, WebRTC audio out and in, screenshare capture, per-platform quirks. **This is the weeks-to-months piece**, and it breaks whenever Google/Zoom/Microsoft change their UI. It is the one thing AgentCall genuinely sells.
+- [ ] **Scope check before starting:** the only scenario that truly needs this is watching the applicant's screen on a **lender's own site** (the original Avanse use case). Everything inside UPSY is covered by Step 2. Price this honestly as infrastructure — it is not UPSY product differentiation, and "we already have Deepgram and Sarvam keys" does **not** shorten it, since those solve a different layer.
 
 **Next phase — fine-tuning the webpage (UI polish batch, agreed 2026-08-01):**
 
