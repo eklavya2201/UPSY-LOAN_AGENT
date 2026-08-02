@@ -651,7 +651,11 @@ app.get("/api/applications/:leadId/live-assist", (req, res) => {
 
 app.post("/api/applications/:leadId/live-assist", async (req, res) => {
   try {
-    const result = await startLiveAssist(req.params.leadId, req.body?.meetUrl);
+    // notifyApplicant is set by the team dashboard (officer-initiated); the
+    // applicant's own pages omit it — they already have the meeting open.
+    const result = await startLiveAssist(req.params.leadId, req.body?.meetUrl, {
+      notifyApplicant: Boolean(req.body?.notifyApplicant),
+    });
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: e.message });

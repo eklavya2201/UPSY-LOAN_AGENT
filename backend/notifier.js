@@ -42,3 +42,12 @@ export function nudgeMessage(profile, done, total) {
   return `Hi ${name}your education loan application is ${done}/${total} documents complete. ` +
     `A few more steps and you're done — reply to this message or reopen the UPSY assistant to continue.`;
 }
+
+// Craft the invite when an officer starts a live-assist call. Without this the
+// applicant has no way to know a call was started for them — the bot would sit
+// alone in the meeting and time out.
+export function liveAssistInviteMessage(profile, meetUrl) {
+  const name = profile?.name ? `${profile.name}, ` : "";
+  return `Hi ${name}UPSY can walk you through your education loan application on a quick voice call. ` +
+    `Join here: ${meetUrl}`;
+}

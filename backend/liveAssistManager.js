@@ -9,12 +9,14 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { getApplication } from "./store.js";
 import { getActiveSource } from "./leadSources/index.js";
+import { getActiveNotifier, liveAssistInviteMessage } from "./notifier.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LIVE_ASSIST_PATH = path.join(__dirname, "liveAssist.js");
 const source = getActiveSource();
+const notifier = getActiveNotifier();
 
-let active = null; // { leadId, meetUrl, startedAt, child }
+let active = null; // { leadId, meetUrl, startedAt, child, invite }
 
 function buildContext(app) {
   const p = app.profile || {};
@@ -35,12 +37,32 @@ function buildContext(app) {
 
 export function getStatus(leadId) {
   if (active && active.leadId === leadId) {
-    return { running: true, meetUrl: active.meetUrl, startedAt: active.startedAt };
+    return { running: true, meetUrl: active.meetUrl, startedAt: active.startedAt, invite: active.invite };
   }
   return { running: false };
 }
 
-export async function startCall(leadId, meetUrl) {
+// When an officer starts the call from the team dashboard, the applicant has no
+// other way to learn about it — send them the join link over the same channel
+// the reminder nudges use. Applicant-initiated calls skip this: they created
+// the meeting themselves and are already in it.
+async function inviteApplicant(leadId, profile, meetUrl) {
+  const phone = profile?.phone;
+  if (!phone) {
+    return { sent: false, reason: "No phone number on record for this applicant — send them the link yourself." };
+  }
+  const msg = liveAssistInviteMessage(profile, meetUrl);
+  try {
+    await notifier.send(phone, msg);
+    await source.pushStatus(leadId, { event: "live_assist_invite_sent", label: `Join link sent to ${phone}` });
+    return { sent: true, phone };
+  } catch (e) {
+    console.error(`[live-assist ${leadId}] invite failed:`, e.message);
+    return { sent: false, reason: `Couldn't send the join link (${e.message}) — send it yourself.` };
+  }
+}
+
+export async function startCall(leadId, meetUrl, { notifyApplicant = false } = {}) {
   if (!meetUrl || !/^https?:\/\//.test(meetUrl)) {
     throw new Error("A valid meeting URL is required.");
   }
@@ -58,7 +80,7 @@ export async function startCall(leadId, meetUrl) {
     { stdio: ["ignore", "pipe", "pipe"] }
   );
   const startedAt = new Date().toISOString();
-  active = { leadId, meetUrl, startedAt, child };
+  active = { leadId, meetUrl, startedAt, child, invite: null };
 
   child.stdout.on("data", (d) => process.stdout.write(`[live-assist ${leadId}] ${d}`));
   child.stderr.on("data", (d) => process.stderr.write(`[live-assist ${leadId}] ${d}`));
@@ -69,7 +91,13 @@ export async function startCall(leadId, meetUrl) {
   });
 
   await source.pushStatus(leadId, { event: "live_assist_started", label: `Live-assist call started: ${meetUrl}` });
-  return { started: true, startedAt };
+
+  // Never let a failed invite kill the call — the officer can always share the
+  // link by hand, and the bot is already in the meeting by this point.
+  const invite = notifyApplicant ? await inviteApplicant(leadId, app.profile, meetUrl) : null;
+  if (active && active.leadId === leadId) active.invite = invite;
+
+  return { started: true, startedAt, invite };
 }
 
 export async function stopCall(leadId) {

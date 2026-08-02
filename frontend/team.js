@@ -271,6 +271,9 @@ function liveAssistHtml(d, status) {
         <div>
           <h3 class="font-semibold">UPSY live-assist call in progress</h3>
           <p class="text-sm text-on-surface-variant">Started ${fmtTime(status.startedAt)} · <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a></p>
+          ${status.invite ? (status.invite.sent
+            ? `<p class="text-xs text-success mt-1 flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">check_circle</span>Join link sent to ${status.invite.phone}</p>`
+            : `<p class="text-xs text-amber mt-1 flex items-start gap-1"><span class="material-symbols-outlined text-[14px]">warning</span>${status.invite.reason}</p>`) : ""}
         </div>
       </div>
       <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>Stop call</button>
@@ -282,7 +285,7 @@ function liveAssistHtml(d, status) {
       <div class="w-12 h-12 rounded-2xl bg-primary-soft text-primary grid place-items-center"><span class="material-symbols-outlined text-[26px]">support_agent</span></div>
       <div class="flex-1">
         <h3 class="font-semibold">UPSY live-assist (voice)</h3>
-        <p class="text-sm text-on-surface-variant mb-2">Paste a Google Meet link — UPSY joins the call and helps this applicant fill out a form live, grounded in their own eligibility record.</p>
+        <p class="text-sm text-on-surface-variant mb-2">Paste a Google Meet link — UPSY joins the call and helps this applicant fill out a form live, grounded in their own eligibility record. The join link is texted to the applicant automatically.</p>
         <input id="liveAssistUrl" type="text" placeholder="https://meet.google.com/xxx-xxxx-xxx" class="w-full border border-outline-variant rounded-full px-4 py-2 text-sm" />
       </div>
     </div>
@@ -298,7 +301,8 @@ function wireLiveAssist(d) {
     startBtn.disabled = true; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>Starting…`;
     try {
       const r = await (await fetch(`/api/applications/${d.leadId}/live-assist`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetUrl: url }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetUrl: url, notifyApplicant: true }),
       })).json();
       if (r.error) {
         alert(r.error);
