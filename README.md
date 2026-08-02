@@ -570,6 +570,18 @@ npm start
 - [ ] **Fix the digit-accuracy risk on `Loan Amount`.** Either put Claude on the vision path (see Phase 0 — this is the dependency) or instruct the agent to reason from what the applicant *says* rather than from possibly-misread pixels. Do not ship confident zero-counting on top of a model we have already caught misreading numbers.
 - [ ] **Verify against the real form end to end.** Everything above is written from one walkthrough of the quick-apply modal. Do a full live call against `online.avanse.com` and check each of the nine failure modes actually behaves as intended — expect the "Likely" ones to need correcting.
 
+**Technical constraints found while reviewing the code for this phase** — read before tuning anything:
+
+- [ ] **Screenshots are up to 5s stale.** `SCREENSHOT_INTERVAL_MS = 5000` polls on a timer; the image attached to an answer is whatever the last tick captured, *not* a fresh grab at question time. If the applicant moves between fields while asking "what goes here?", the agent may be describing the previous field. For form-filling precision this is the single most consequential setting — consider taking a screenshot **on question arrival** and awaiting it before answering, accepting the added latency.
+- [ ] **`OPENROUTER_VISION_MODEL` is shared, so it cannot be tuned in isolation.** The same env var drives `capture.js`, `income.js`, `bankStatement.js` *and* `liveAssist.js`. Switching live-assist to a stronger vision model silently changes document reading too (and vice versa). If we want Claude reading the Avanse screen while something else reads documents, that needs a **separate env var** — don't just swap the shared one and assume it's local.
+- [ ] **`MAX_HISTORY = 8` will truncate a real form walkthrough.** Eight messages is roughly four exchanges. Guiding someone through eight-plus fields means the agent forgets what it told them at the top of the form. Raise it, or summarise instead of dropping.
+- [ ] **`temperature: 0.3` is arguably still too loose for form guidance.** Explaining what a field wants should be near-deterministic; creative variation is not a feature here.
+- [ ] **Three AgentCall events are silently ignored** in `liveAssist.js`'s handler — worth wiring before real applicants use this:
+  - `call.max_duration_warning` — fires 5 min before the base plan's **1-hour cap**. Today the call just dies at 60 minutes with no warning to anyone. AgentCall's docs describe starting a fresh overlapping call to hand over seamlessly.
+  - `call.credits_low` — fires under $1 balance. The free tier is **6 hours total (360 min), one-time, non-renewing**, and our test calls have already spent some of it. Right now the first sign we've run out will be calls silently failing to start.
+  - `tts.interrupted` — the applicant talking over the bot. Handling it would make turn-taking feel less robotic.
+- [ ] **Only one call can run server-wide** (`liveAssistManager.js` global lock, matching the plan's 1-concurrent-call limit). Fine for demos; a second officer or applicant gets a clear error rather than a silent failure, but this is a hard ceiling on any real rollout.
+
 **⏸️ ON HOLD — "UPSY AgentCall": own the live-call stack (raised 2026-07-31, paused 2026-08-02):**
 
 > **Do not start this work.** Team decision 2026-08-02: we do **not** need our own call stack right now. AgentCall stays as-is; the effort goes into making the *existing* agent more precise on the Avanse form instead (see the phase directly below this one). Everything here is kept because the analysis is still correct and this is the right plan *if* we ever revisit — but it is explicitly parked, not queued.
