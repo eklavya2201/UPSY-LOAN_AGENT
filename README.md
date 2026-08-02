@@ -553,6 +553,23 @@ npm start
 - [ ] Make the stop endpoint wait for the child process's actual `exit` event before responding, to close the small race where the UI can briefly flicker back to "in progress" after "End call."
 - [ ] Real concurrency handling beyond the current one-call-at-a-time global lock, if multiple simultaneous officer/applicant calls become a real need.
 - [ ] Walk a real partner lender's full multi-step application live (not just the Avanse quick-apply first screen) to prove the guidance holds up beyond one form field.
+
+---
+
+### ▶️ ACTIVE PRIORITY — make the live-assist agent precise on Avanse (agreed 2026-08-02, next session starts here)
+
+**The goal in one line:** an applicant on a call with UPSY, screen-sharing `online.avanse.com`, should get through that form correctly on the first try — no wrong loan amount, no name mismatch, no panic at the "No Application Found" screen.
+
+**Read first:** "Where applicants will get stuck" in the Avanse section above. That list of nine failure modes *is* the spec for this phase — each item there has a "→ *Agent:*" line describing the behaviour we want.
+
+**Why now:** the agent works, but it is generic. It knows UPSY's eligibility rules and can see the screen, yet it knows nothing about Avanse's specific fields, their quirks, or the dead-end after Submit. Precision on one real lender's form is worth more than breadth across hypothetical ones.
+
+- [ ] **Ground the prompt in Avanse's actual form.** `SYSTEM_PROMPT` in `backend/liveAssist.js` currently carries only generic loan knowledge plus UPSY's eligibility rules. Add an Avanse section built from the observed-fields table above — including which fields are required, which are ambiguous, and the explicit instruction to read dropdown options off the screenshot rather than reciting a list we don't have.
+- [ ] **Handle the submit dead-end explicitly.** Warn before Submit, and afterwards state honestly that the screen doesn't confirm success rather than reassuring falsely. This single behaviour probably saves more applications than everything else in this list.
+- [ ] **Feed the verified KYC name into the call context.** `liveAssistManager.buildContext()` already passes name/course/eligibility; add the name read off their PAN/Aadhaar (`backend/capture.js` already extracts it, `namesMatch()` already compares it) so the agent can say "type it exactly as your PAN reads." Highest-value item here — Avanse's form cannot do this, and we already have the data.
+- [ ] **Fix the digit-accuracy risk on `Loan Amount`.** Either put Claude on the vision path (see Phase 0 — this is the dependency) or instruct the agent to reason from what the applicant *says* rather than from possibly-misread pixels. Do not ship confident zero-counting on top of a model we have already caught misreading numbers.
+- [ ] **Verify against the real form end to end.** Everything above is written from one walkthrough of the quick-apply modal. Do a full live call against `online.avanse.com` and check each of the nine failure modes actually behaves as intended — expect the "Likely" ones to need correcting.
+
 **⏸️ ON HOLD — "UPSY AgentCall": own the live-call stack (raised 2026-07-31, paused 2026-08-02):**
 
 > **Do not start this work.** Team decision 2026-08-02: we do **not** need our own call stack right now. AgentCall stays as-is; the effort goes into making the *existing* agent more precise on the Avanse form instead (see the phase directly below this one). Everything here is kept because the analysis is still correct and this is the right plan *if* we ever revisit — but it is explicitly parked, not queued.
