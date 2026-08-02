@@ -92,6 +92,46 @@ Then a single **Submit** button.
 
 **Screen 4 — after Submit:** returns to the dashboard, which showed **"No Application Found"** (see the dead-end note above). No reference number, no confirmation, no visible next step.
 
+### Where applicants will get stuck — and what the agent should do
+
+This is the working list the Avanse-precision phase is built from. **Confirmed** = we saw it ourselves; **Likely** = reasoned from the form's shape, not yet observed, so treat as a hypothesis to verify rather than fact.
+
+**1. The submit dead-end — highest impact. (Confirmed)**
+Submit returns "No Application Found" with no reference number and no next step. An applicant cannot tell whether their application went through. Expect two bad outcomes: they re-submit repeatedly creating duplicates, or they assume it failed and abandon — and we lose a lead that was one click from done.
+→ *Agent:* warn **before** they press Submit that the screen may look empty afterwards, so it isn't alarming. Afterwards, **do not claim it succeeded** — we genuinely don't know. Say what's true: the form was submitted, this screen doesn't confirm it, here's the support line (1800-266-9722) or we'll follow up.
+
+**2. `Loan Amount` is a bare number — the zero-counting trap. (Confirmed)**
+No commas, no ₹ symbol, no lakh/crore selector. Indian applicants think in lakhs; the field wants rupees. "Fifteen lakh" is `1500000`, and one missing zero makes it `150000` — a tenfold error that silently becomes the wrong loan.
+→ *Agent:* have them say the amount aloud in words and count the zeros together. **Caveat that matters:** our vision model is `openai/gpt-4o-mini`, which this repo has already caught misreading digits non-deterministically (₹1,39,100 vs ₹13,91,000 on the same file — see "Income eval harness"). So the agent reading the number back off a screenshot is itself unreliable. It should reason from what the applicant *says* they want, not from pixels it may have misread — or we put Claude on this path first (Phase 0).
+
+**3. `Admission Status` is unvalidated free text. (Confirmed)**
+No dropdown, no examples, no validation — our own test typo, `ongoiing`, was accepted without complaint. Nobody knows what vocabulary Avanse's underwriting expects.
+→ *Agent:* help them state it plainly and correctly spelled ("admitted", "applied, awaiting decision"). It must **not** invent an official list of accepted values, because we don't have one.
+
+**4. `Time of Study` and `Place of Study` are ambiguous. (Confirmed)**
+`07/2026` — is that the course start, the end, or the intake? `mumbai` — city, country, or institute? Neither is labelled. For a study-abroad applicant "place of study" is a genuinely open question, and a wrong study date flows straight into the moratorium calculation.
+→ *Agent:* explain the most reasonable reading, flag the ambiguity honestly rather than asserting, and suggest the unambiguous form (e.g. course start month; city plus country).
+
+**5. `Select Type` mis-selection. (Confirmed field, options unknown)**
+We only ever saw "Executive Education" chosen; the rest of the dropdown was never opened. Choosing the wrong product type could mis-route the entire application.
+→ *Agent:* ask them to open the dropdown and read the options **off the screenshot**, then reason about which fits. Never recite a list we don't have.
+
+**6. Name mismatch against KYC — the one where UPSY has an unfair advantage. (Likely)**
+`Name` is free text. If what they type differs from their PAN/Aadhaar (initials, married name, spelling), downstream verification stalls. Avanse's form has no way to catch this at entry.
+→ *Agent:* **UPSY already knows the answer.** We extract the cardholder name off their PAN/Aadhaar (`backend/capture.js`) and already have `namesMatch()` for exactly this comparison. Feeding the verified KYC name into the call context lets the agent say "your PAN reads *Aarav Sharma* — type it exactly that way." This is real value Avanse's own form structurally cannot provide, and it is the strongest argument for this whole feature.
+
+**7. Missing co-applicant fields set the wrong expectation. (Confirmed absence)**
+The quick form asks nothing about a co-applicant, while UPSY collects co-applicant identity, income and bank data in depth. An applicant primed by UPSY may hunt for fields that aren't there and think they've done something wrong.
+→ *Agent:* reassure that this first form is only intent capture; co-applicant details come later in Avanse's process.
+
+**8. OTP on the same phone they're screen-sharing from. (Likely)**
+Sign-in is OTP to phone or email. On a mobile screen-share the OTP notification interrupts the shared screen.
+→ *Agent:* expect a gap, don't fill the silence, wait for them to come back.
+
+**9. ⚠️ Our own privacy exposure — a risk we create, not one Avanse has. (Confirmed by design)**
+The applicant screen-shares a page where they type their name, email and phone, and we screenshot it every 5 seconds and send it to OpenRouter. The system prompt forbids *reading numbers back aloud*, but that does not stop the pixels being transmitted. If they later reach a KYC upload step, ID documents would be captured the same way.
+→ *This is a Phase 2 compliance item, not a prompt tweak.* It belongs in the DPDP consent conversation, and the applicant should be told what the agent can see before the screen share starts. Flagged here so it isn't discovered late.
+
 ### Live-call assistance via AgentCall (built + tested live, 2026-07-31)
 
 Team request over WhatsApp: mimic what **RevRag AI** (revrag.ai — "#1 In-App AI Agents Platform," embeds AI agents directly into a BFSI product to automate onboarding and re-engage drop-offs) does, but for a partner lender's product UPSY doesn't control the codebase of (e.g. Avanse) — an "out-of-app" equivalent, since we can't embed an agent inside someone else's site. Uses [AgentCall](https://agentcall.dev) (`pattern-ai-labs/agentcall`, MIT-licensed `join-meeting` skill) to join a real Google Meet/Zoom/Teams call as a bot.
