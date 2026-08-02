@@ -50,14 +50,17 @@ Post-eligibility handoff to partner lenders, built per the WhatsApp spec (previe
 
 API: `GET /api/applications/:leadId/lenders` · `POST/PUT .../lenders/:id/draft` · `GET .../draft.eml` · `POST .../share`. Draft state persists in `applications.json` (`lenderDrafts`).
 
-## Partner-lender research: Avanse's real online flow (2026-07-30)
+## Avanse (`online.avanse.com`) — our partner lender's real application site
 
-Checked `online.avanse.com` live (one of the 6 demo lenders in `backend/lenders.js`), at the team's request, to compare their real applicant experience against UPSY's:
+**Why this section matters more than it first looks.** This started (2026-07-30) as competitor research. As of **2026-08-02 it is the primary target of the live-assist agent**: Avanse is one of our partner lenders, and real applicants will be sent to `online.avanse.com` to complete their actual application and verification. When they get stuck there, UPSY's voice agent is what helps them — so every quirk of this form is something the agent needs to handle. Read this section together with "Live-call assistance via AgentCall" below and the Avanse-precision phase in the roadmap.
+
+Checked `online.avanse.com` live, at the team's request:
 
 - **Sign-in**: phone/email + OTP, no separate signup step — straight to a "My Loan Applications" dashboard (Apply Now / My Offers / All-Pending-Disbursed tabs) once logged in.
 - **"Apply Now" quick form** (tested with "Executive Education" as the loan type): Select Type, Name, Email ID, Phone Number, Loan Amount, Time of Study, Place of Study, Admission Status — a lead-intent form, roughly comparable to UPSY's `/intake` step but simpler (no institution name, no co-applicant, no secured/unsecured choice at this stage).
 - **⚠️ Dead end found**: submitting that form returned straight to "My Loan Applications" showing **"No Application Found"** — no visible continuation into a document/KYC step in-browser. Unconfirmed whether this is a UI quirk or Avanse's real flow hands off asynchronously (email/SMS follow-up, human loan-officer contact) rather than continuing live in the same session. Not chased further this session — worth a Pending-tab / inbox check next time.
-- **Comparison takeaway**: on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
+- **Comparison takeaway** (from when this was competitor research): on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
+- **Reframed takeaway** (now that Avanse is a partner, not a rival): the gaps above stop being scorecard points and become **the exact places our applicants will get stuck**. Avanse's form being terse and unguided is precisely why a voice agent sitting alongside it has value — we are not competing with that form, we are the thing that gets people through it.
 
 ### Live-call assistance via AgentCall (built + tested live, 2026-07-31)
 
