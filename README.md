@@ -62,6 +62,36 @@ Checked `online.avanse.com` live, at the team's request:
 - **Comparison takeaway** (from when this was competitor research): on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
 - **Reframed takeaway** (now that Avanse is a partner, not a rival): the gaps above stop being scorecard points and become **the exact places our applicants will get stuck**. Avanse's form being terse and unguided is precisely why a voice agent sitting alongside it has value — we are not competing with that form, we are the thing that gets people through it.
 
+### Observed screens and fields (reference for grounding the agent)
+
+Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
+
+**Screen 1 — sign-in** (`online.avanse.com`)
+- Single field: `Phone Number / Email ID`, then a **Get OTP** button. Helper text: "Verification code will be sent to the above information."
+- No password. "Not yet a member? Sign Up!" links to `/signup` (signup flow itself not walked — unknown).
+- A support number is in the header: **1800-266-9722** — useful for the agent to hand off to when something is genuinely Avanse's problem, not ours.
+
+**Screen 2 — dashboard** (`/my-loans`)
+- Greeting "Hi \<name\>", then **My Loan Applications** with two buttons: **Apply Now** and **My Offers**.
+- Tabs: **All | Pending | Disbursed**. Empty state reads **"No Application Found"**.
+
+**Screen 3 — the "Apply Now" modal.** Title matches the chosen type (we saw "Executive Education"). Fields, with `*` exactly as the site marks them:
+
+| Field | Required | What we saw | Notes for the agent |
+|---|---|---|---|
+| `Select Type` | **Yes** | dropdown, "Executive Education" | **Other options unknown** — we only ever saw this one selected. Agent must read the open dropdown off the screenshot rather than recite a list it doesn't have. |
+| `Name` | **Yes** | free text | Should match the applicant's KYC documents — see the mismatch risk below. |
+| `Email Id` | **Yes** | free text | |
+| `Phone Number` | **Yes** | free text, 10 digits | |
+| `Loan Amount` | **Yes** | raw number, `500000`, no separators | No commas, no ₹ symbol, no lakh/crore toggle. See the zero-counting risk below. |
+| `Time of Study` | No | `07/2026` | Format appears MM/YYYY. **Start vs end vs intake month is not labelled** — genuinely ambiguous. |
+| `Place of Study` | No | `mumbai` | City? Country? Institute? Not labelled. |
+| `Admission Status` | No | free text, we typed `ongoiing` | **Free text with no dropdown and no examples** — and note our own test typo went through unvalidated. |
+
+Then a single **Submit** button.
+
+**Screen 4 — after Submit:** returns to the dashboard, which showed **"No Application Found"** (see the dead-end note above). No reference number, no confirmation, no visible next step.
+
 ### Live-call assistance via AgentCall (built + tested live, 2026-07-31)
 
 Team request over WhatsApp: mimic what **RevRag AI** (revrag.ai — "#1 In-App AI Agents Platform," embeds AI agents directly into a BFSI product to automate onboarding and re-engage drop-offs) does, but for a partner lender's product UPSY doesn't control the codebase of (e.g. Avanse) — an "out-of-app" equivalent, since we can't embed an agent inside someone else's site. Uses [AgentCall](https://agentcall.dev) (`pattern-ai-labs/agentcall`, MIT-licensed `join-meeting` skill) to join a real Google Meet/Zoom/Teams call as a bot.
