@@ -480,9 +480,13 @@ npm start
 - [ ] Make the stop endpoint wait for the child process's actual `exit` event before responding, to close the small race where the UI can briefly flicker back to "in progress" after "End call."
 - [ ] Real concurrency handling beyond the current one-call-at-a-time global lock, if multiple simultaneous officer/applicant calls become a real need.
 - [ ] Walk a real partner lender's full multi-step application live (not just the Avanse quick-apply first screen) to prove the guidance holds up beyond one form field.
-**Next phase — "UPSY AgentCall": own the live-call stack (team direction, 2026-07-31):**
+**⏸️ ON HOLD — "UPSY AgentCall": own the live-call stack (raised 2026-07-31, paused 2026-08-02):**
 
-Goal: stop depending on AgentCall for the live-call layer. The team already has **Deepgram** and **Sarvam** API keys (per the secrets note in Code map) plus other providers, and wants this built in-house.
+> **Do not start this work.** Team decision 2026-08-02: we do **not** need our own call stack right now. AgentCall stays as-is; the effort goes into making the *existing* agent more precise on the Avanse form instead (see the phase directly below this one). Everything here is kept because the analysis is still correct and this is the right plan *if* we ever revisit — but it is explicitly parked, not queued.
+>
+> The one item worth remembering if this thaws: **Step 1 is the only piece with standalone value** (Sarvam unlocks Hindi/regional voice, which is a product gap today regardless of the vendor question). Steps 2–3 are pure vendor-replacement and can stay frozen indefinitely.
+
+Original goal: stop depending on AgentCall for the live-call layer. The team already has **Deepgram** and **Sarvam** API keys (per the secrets note in Code map) plus other providers, and wanted this built in-house.
 
 **Read "The actual runtime flow" + the dependency breakdown in "Live-call assistance via AgentCall" above before scoping this.** Short version: Deepgram (STT) and Sarvam (Indian-language STT/TTS) replace the *voice commodity layer* — which AgentCall's own pricing already treats as swappable ("bring your own transcription/TTS"). They do **not** replace the part that is actually hard and actually AgentCall's product: getting a bot into a live Google Meet/Zoom/Teams call at all. Going "100% our own" means building or licensing that piece too.
 
