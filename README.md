@@ -2,6 +2,36 @@
 
 AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent **fetches the applicant's data from your lead source**, greets them personally, then collects only the **missing** documents **in the same order** as the real loan journey (student → co-applicant → collateral). For every document it explains **why it is required**, cross-checks the upload against the expected format, and **writes the verified status back to the lead source**.
 
+---
+
+## 🧭 Start here (orientation for a new session)
+
+**Where the project is (2026-08-02):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**, and confirmed in production.
+
+**What to work on next:** the **▶️ ACTIVE PRIORITY** block in the roadmap — *making the live-assist voice agent precise on Avanse's real application form*. Its spec is the nine-item failure-mode list in the Avanse section. The competing "build our own call stack" idea is **⏸️ ON HOLD** — do not start it.
+
+**The five things that will bite you if you don't know them:**
+
+1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
+2. **`ANTHROPIC_API_KEY` is still not set.** PDFs therefore have *no working reader at all*, and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading the same file as ₹1,39,100 and ₹13,91,000. This is Phase 0 and it blocks real precision work.
+3. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
+4. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it, and we don't yet handle the low-credit or max-duration warnings.
+5. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
+
+**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team.html`.
+
+**Where to read next, by question:**
+
+| You want to… | Go to |
+|---|---|
+| Understand the voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
+| Work on the current priority | "Avanse (`online.avanse.com`)" then the ▶️ ACTIVE PRIORITY roadmap block |
+| Find which file does what | "Code map" |
+| Avoid repeating a past mistake | "Ops & reliability notes" |
+| Know what blocks real users | "Phase 2 — compliance HARD GATE" |
+
+---
+
 ## What we built: End-to-end loan document collection
 
 **The flow (now real routed pages: `/login` → `/intake` → `/docs`):**
