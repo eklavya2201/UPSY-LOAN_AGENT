@@ -88,7 +88,7 @@ Checked `online.avanse.com` live, at the team's request:
 
 - **Sign-in**: phone/email + OTP, no separate signup step — straight to a "My Loan Applications" dashboard (Apply Now / My Offers / All-Pending-Disbursed tabs) once logged in.
 - **"Apply Now" quick form** (tested with "Executive Education" as the loan type): Select Type, Name, Email ID, Phone Number, Loan Amount, Time of Study, Place of Study, Admission Status — a lead-intent form, roughly comparable to UPSY's `/intake` step but simpler (no institution name, no co-applicant, no secured/unsecured choice at this stage).
-- **⚠️ Dead end found**: submitting that form returned straight to "My Loan Applications" showing **"No Application Found"** — no visible continuation into a document/KYC step in-browser. Unconfirmed whether this is a UI quirk or Avanse's real flow hands off asynchronously (email/SMS follow-up, human loan-officer contact) rather than continuing live in the same session. Not chased further this session — worth a Pending-tab / inbox check next time.
+- **⚠️ Dead end found (2026-08-02), partially corrected by new evidence (2026-08-03)**: submitting that form returned straight to "My Loan Applications" showing **"No Application Found"** — no visible continuation into a document/KYC step in-browser at the time. However, a real logged-in dashboard screenshot the next day showed the opposite: **two persisted, resumable applications**, each with an Application Number (e.g. `AVUPSKL020826176243`), an **"In-Progress"** status chip with a stage tag like `(Applicant Details)` or `(Course Details)`, Institute/Course/Loan Amount, and a **"Continue Application"** button. So submit does **not** always dead-end silently — it can create a real multi-stage application that persists on the dashboard. **Not yet reconciled**: whether the original "No Application Found" run was a one-off (e.g. a field left blank, a slow write-through) or a genuinely different code path — this needs a fresh, deliberate walkthrough rather than assuming either result is the universal case.
 - **Comparison takeaway** (from when this was competitor research): on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
 - **Reframed takeaway** (now that Avanse is a partner, not a rival): the gaps above stop being scorecard points and become **the exact places our applicants will get stuck**. Avanse's form being terse and unguided is precisely why a voice agent sitting alongside it has value — we are not competing with that form, we are the thing that gets people through it.
 
@@ -104,6 +104,7 @@ Everything below is what we **actually saw** on the live site. Anything not dire
 **Screen 2 — dashboard** (`/my-loans`)
 - Greeting "Hi \<name\>", then **My Loan Applications** with two buttons: **Apply Now** and **My Offers**.
 - Tabs: **All | Pending | Disbursed**. Empty state reads **"No Application Found"**.
+- **Update (2026-08-03, real logged-in screenshot)**: a non-empty dashboard shows real application cards instead — Application Number (e.g. `AVUPSKL020826176243`), status chip **"In-Progress"** with a stage tag in parentheses (`(Applicant Details)`, `(Course Details)`), Institute, Course Name, Loan Amount, and **View Details** / **Continue Application** buttons. Confirms the dashboard is where to check for a submitted application, not the post-Submit screen itself — see the corrected Screen 4 note below.
 
 **Screen 3 — the "Apply Now" modal.** Title matches the chosen type (we saw "Executive Education"). Fields, with `*` exactly as the site marks them:
 
@@ -120,15 +121,15 @@ Everything below is what we **actually saw** on the live site. Anything not dire
 
 Then a single **Submit** button.
 
-**Screen 4 — after Submit:** returns to the dashboard, which showed **"No Application Found"** (see the dead-end note above). No reference number, no confirmation, no visible next step.
+**Screen 4 — after Submit:** on 2026-07-30 this returned to the dashboard showing **"No Application Found"** (see the dead-end note above), with no reference number, no confirmation, no visible next step. **Not yet re-walked live to confirm which outcome (this, or the persisted-card behaviour seen 2026-08-03) actually follows a fresh Submit.**
 
 ### Where applicants will get stuck — and what the agent should do
 
 This is the working list the Avanse-precision phase is built from. **Confirmed** = we saw it ourselves; **Likely** = reasoned from the form's shape, not yet observed, so treat as a hypothesis to verify rather than fact.
 
-**1. The submit dead-end — highest impact. (Confirmed)**
-Submit returns "No Application Found" with no reference number and no next step. An applicant cannot tell whether their application went through. Expect two bad outcomes: they re-submit repeatedly creating duplicates, or they assume it failed and abandon — and we lose a lead that was one click from done.
-→ *Agent:* warn **before** they press Submit that the screen may look empty afterwards, so it isn't alarming. Afterwards, **do not claim it succeeded** — we genuinely don't know. Say what's true: the form was submitted, this screen doesn't confirm it, here's the support line (1800-266-9722) or we'll follow up.
+**1. The submit dead-end — highest impact. (Downgraded to Likely, 2026-08-03 — see correction below)**
+On 2026-07-30, Submit returned "No Application Found" with no reference number and no next step, in-browser. A 2026-08-03 screenshot of a real logged-in dashboard showed the opposite: submitted applications persisting as **In-Progress** cards with an Application Number and a stage tag (`(Applicant Details)`, `(Course Details)`) plus a **Continue Application** button — i.e. a real, resumable multi-stage application, not a dead end. Which behaviour is typical is now unconfirmed; both are recorded here rather than picking one.
+→ *Agent:* warn **before** Submit that the next screen may not immediately confirm success, so it isn't alarming either way. Afterwards, **check the main dashboard for a new card** (Application Number + stage) — that is the more reliable confirmation seen so far. Only fall back to "I genuinely don't know, here's the support line (1800-266-9722)" if no such card appears.
 
 **2. `Loan Amount` is a bare number — the zero-counting trap. (Confirmed)**
 No commas, no ₹ symbol, no lakh/crore selector. Indian applicants think in lakhs; the field wants rupees. "Fifteen lakh" is `1500000`, and one missing zero makes it `150000` — a tenfold error that silently becomes the wrong loan.
@@ -504,6 +505,7 @@ npm start
 - `backend/bankStatement.js` — reads the co-applicant's name, address, and registered phone off `co_bank_statement` (Claude → OpenRouter chain); phone becomes the co-applicant's contact (see "Co-applicant identity verification" above).
 - `backend/eval-income.js` — `npm run eval:income`: batch income-doc eval / model A/B harness over the project root + `data/uploads/` or given paths (now also prints extracted address).
 - `backend/leadSources/` — the pluggable lead-source layer (`mockSource.js` + `index.js` registry). **Add real platforms here.**
+- `backend/lenderForms/` — per-lender field/screen guides for the live-assist agent (`avanse.js` first, three more lenders to follow). `index.js`'s `buildLenderGuidancePrompt()` renders all registered lenders into one system-prompt block; the agent identifies which lender is on screen itself (URL/logo), so there's deliberately no code-side lender selector. **Add a new lender by creating `<name>.js` here and registering it in `index.js`.**
 - `backend/notifier.js` — picks the active reminder channel (mock console / Exotel / Twilio).
 - `backend/exotel.js` — real Exotel SMS + WhatsApp integration (primary messaging provider; see known issues above).
 - `backend/whatsapp.js` — real Twilio WhatsApp integration (alternative provider, good for sandbox testing).
@@ -568,6 +570,9 @@ npm start
 - [x] **Live-assist confirmed on the deployed Render instance** (2026-08-01): `AGENTCALL_API_KEY` wired through `render.yaml` + the Render dashboard, redeployed, user-verified working in production — no longer local-only
 - [x] **Fixed: officer-started calls now text the applicant the join link** (2026-08-02): the team-side button previously had no way to get the applicant into the meeting — the bot joined an empty call and timed out alone after ~2 min. Officer-initiated calls now send the link over the same notifier channel as the reminder nudges (`liveAssistInviteMessage()` in `notifier.js`), and the card reports whether it sent or why it couldn't; applicant-initiated calls deliberately skip it via a `notifyApplicant` flag, since they created the meeting themselves. **Caveat:** `NOTIFY_CHANNEL=mock` today, so the invite only prints to the server console until Exotel is switched on
 - [x] **Avanse documented as the live-assist target** (2026-08-02): observed screens/fields recorded plus nine applicant failure modes with intended agent behaviour — see "Avanse (`online.avanse.com`)" above; this is the spec for the current active phase
+- [x] **Live-assist repeat bug fixed** (2026-08-03): `dedupeRepeatedSentences()` in `backend/liveAssist.js` collapses consecutive duplicate sentences in a reply before `tts.speak`, so a model echo no longer gets spoken as the same line twice in a row
+- [x] **Per-lender field guide + self-detection wired into live-assist** (2026-08-03): `backend/lenderForms/` (`avanse.js` + `index.js`) grounds the agent in Avanse's actual screens/fields; the agent identifies the lender itself from the screen rather than any code-side selector, since the applicant learns the lender from an email UPSY doesn't record. Surfaced a correction to the "submit dead-end" finding — see the Avanse section above
+- [ ] **Three more lenders' field guides** — same pattern as `avanse.js`, pending screenshots/walkthroughs of each
 
 ## Next (roadmap) — in likely priority order for a new session
 
@@ -588,7 +593,7 @@ Reading the rest of this roadmap:
 - [ ] Re-run `npm run eval:income` a few times on `ITR-24-25.pdf` specifically once Claude is active, to confirm the ₹1.39L vs ₹13.91L non-determinism is actually gone (not just less frequent).
 
 **Partner-portal live assistance (see "Live-call assistance via AgentCall" above for full context — built and tested live, 2026-07-31):**
-- [ ] Confirm what actually happens after Avanse's "Apply Now" quick form (check the Pending tab / the test inbox for an async follow-up) — currently looks like a dead end in-browser; needed before assuming their real flow is "worse" than UPSY's.
+- [ ] Confirm what actually happens after Avanse's "Apply Now" quick form (check the Pending tab / the test inbox for an async follow-up) — **now genuinely unclear rather than "looks like a dead end"**: a 2026-08-03 screenshot showed submitted applications persisting as in-progress, resumable dashboard cards with an Application Number and stage tag, contradicting the earlier "No Application Found" observation. Needs a fresh, deliberate walkthrough to find out which is the normal case (and whether the two are just different points in the same flow).
 - [x] ~~Wire AgentCall onto the deployed Render instance~~ — done 2026-07-31 (`AGENTCALL_API_KEY` in `render.yaml` + dashboard, redeployed), and **confirmed working live on the deployed instance 2026-08-01**. No longer local-only.
 - [ ] Make the stop endpoint wait for the child process's actual `exit` event before responding, to close the small race where the UI can briefly flicker back to "in progress" after "End call."
 - [ ] Real concurrency handling beyond the current one-call-at-a-time global lock, if multiple simultaneous officer/applicant calls become a real need.
