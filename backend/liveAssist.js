@@ -182,6 +182,21 @@ async function handleEvent(event) {
   }
 }
 
+// The model (gpt-4o-mini) occasionally degenerates into repeating a sentence
+// back-to-back within the same reply, which bridge.js's sentence-splitter
+// then speaks as two identical lines in a row. Collapse consecutive
+// duplicate sentences before they ever reach tts.speak.
+function dedupeRepeatedSentences(text) {
+  const sentences = text.split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean);
+  const deduped = [];
+  for (const s of sentences) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && prev.toLowerCase() === s.toLowerCase()) continue;
+    deduped.push(s);
+  }
+  return deduped.join(" ");
+}
+
 async function respondTo(text) {
   if (!text || !text.trim()) return;
 
@@ -211,7 +226,7 @@ async function respondTo(text) {
       return;
     }
     const data = await res.json();
-    const reply = (data.choices?.[0]?.message?.content || "").trim();
+    const reply = dedupeRepeatedSentences((data.choices?.[0]?.message?.content || "").trim());
     if (!reply) {
       sendCommand({ command: "tts.speak", text: "Sorry, I did not catch that. Could you repeat it?" });
       return;
