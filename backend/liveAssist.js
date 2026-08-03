@@ -16,6 +16,7 @@ import { spawn } from "child_process";
 import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import path from "path";
+import { buildLenderGuidancePrompt } from "./lenderForms/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PATH = path.join(__dirname, "agentcall", "bridge.js");
@@ -91,7 +92,7 @@ Rules:
 - Never tell the applicant what to type into a KYC field; only explain what the field is asking for.
 - If you cannot tell what is currently on screen, say so honestly and ask them to describe it or give it a moment for a fresh screenshot.
 - Keep responses short: two to three sentences, conversational, no markdown, no symbols, no emojis. Spell out numbers the way you would say them aloud.
-- If asked about a specific lender's own process that you do not actually know, say so plainly rather than guessing — only state UPSY's own rules as UPSY's rules.${APPLICANT_CONTEXT}`;
+- If asked about a specific lender's own process that you do not actually know, say so plainly rather than guessing — only state UPSY's own rules as UPSY's rules.${APPLICANT_CONTEXT}${buildLenderGuidancePrompt()}`;
 
 const child = spawn("node", [BRIDGE_PATH, meetUrl, "--name", BOT_NAME, "--voice", BOT_VOICE], {
   stdio: ["pipe", "pipe", "pipe"],
