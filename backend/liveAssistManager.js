@@ -18,6 +18,28 @@ const notifier = getActiveNotifier();
 
 let active = null; // { leadId, meetUrl, startedAt, child, invite }
 
+// Same student/co-applicant split as server.js's identityGroup() — kept as a
+// local one-liner rather than an import, since that helper isn't exported.
+const isCoApplicantDoc = (docId) => docId.startsWith("co_");
+
+// The name as it actually reads on a verified ID document, which is the whole
+// point of feeding this into a call: a partner lender's form wants the name to
+// match KYC exactly, and their own site cannot tell the applicant that. Prefer
+// PAN, then Aadhaar, then any other verified document for that person.
+function verifiedNameFrom(app, wantCoApplicant) {
+  const docs = app.verifiedDocs || {};
+  const preferred = wantCoApplicant
+    ? ["co_pan", "co_aadhaar"]
+    : ["student_pan", "student_aadhaar", "pan", "aadhaar"];
+  for (const id of preferred) {
+    if (docs[id]?.nameOnDoc) return docs[id].nameOnDoc;
+  }
+  for (const [docId, rec] of Object.entries(docs)) {
+    if (isCoApplicantDoc(docId) === wantCoApplicant && rec.nameOnDoc) return rec.nameOnDoc;
+  }
+  return null;
+}
+
 function buildContext(app) {
   const p = app.profile || {};
   const e = app.eligibility || {};
@@ -31,6 +53,9 @@ function buildContext(app) {
     eligible: e.eligible ?? null,
     estimatedAmount: e.estimatedAmount ? `about ${Math.round(e.estimatedAmount / 100000)} lakh rupees` : null,
     docsStatus: total ? `${done} of ${total} documents verified so far` : null,
+    // Names only — never the ID numbers those documents also contain.
+    kycName: verifiedNameFrom(app, false),
+    coApplicantKycName: verifiedNameFrom(app, true),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
 }
