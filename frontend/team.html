@@ -36,6 +36,13 @@
   .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
   .fade-in { animation: fade .35s cubic-bezier(.16,1,.3,1); }
   @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  /* Site-wide interaction polish: every button/link gets a consistent,
+     gentle transition instead of snapping between states. */
+  button, a, input, select, textarea, .card-shadow { transition: all .18s ease; }
+  button:not(:disabled):active { transform: scale(.97); }
+  button:disabled { cursor: not-allowed; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }
 </style>
 </head>
 <body class="text-on-surface min-h-screen">
