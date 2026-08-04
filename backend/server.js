@@ -79,6 +79,15 @@ process.on("uncaughtException", (err) => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false })); // Twilio webhooks post form-encoded bodies
+
+// Clean URL for the team dashboard: /team instead of /team.html. Registered
+// before express.static so it wins over the static file of the same name —
+// old bookmarks/links to /team.html still work, just redirected once.
+app.get("/team.html", (req, res) => {
+  const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  res.redirect(301, "/team" + qs);
+});
+
 app.use(express.static(path.join(__dirname, "..", "frontend")));
 
 // Which real-world person a document's identity fields (name/DOB/address) belong
