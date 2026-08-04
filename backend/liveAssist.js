@@ -22,9 +22,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PATH = path.join(__dirname, "agentcall", "bridge.js");
 
 const OR_KEY = process.env.OPENROUTER_API_KEY;
-const OR_MODEL = process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
+// Live-assist can be pointed at a different (stronger) vision model than the
+// document readers, because OPENROUTER_VISION_MODEL is shared by capture.js,
+// income.js and bankStatement.js — swapping that one to improve form guidance
+// would silently change document reading too.
+const OR_MODEL =
+  process.env.OPENROUTER_LIVE_ASSIST_MODEL || process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
+// Background poll, so there is always *some* recent frame if a fresh grab
+// fails. The frame actually used for an answer is requested on demand — see
+// requestFreshScreenshot().
 const SCREENSHOT_INTERVAL_MS = 5000;
-const MAX_HISTORY = 8;
+// How long to wait for that on-demand frame before falling back to the polled
+// one. Long enough to beat the 5s poll, short enough not to stall the reply.
+const FRESH_SCREENSHOT_TIMEOUT_MS = 2000;
+// Guiding someone through a form means eight-plus fields across many turns; at
+// the old cap of 8 messages (~4 exchanges) the agent forgot what it had said at
+// the top of the form and repeated itself.
+const MAX_HISTORY = 24;
 
 function parseArgs(argv) {
   const meetUrl = argv[2];
@@ -66,6 +80,19 @@ function applicantContextBlock(b64) {
   if (c.eligible != null) lines.push(`UPSY's own verdict for this applicant: ${c.eligible ? "eligible" : "needs review"}.`);
   if (c.estimatedAmount) lines.push(`UPSY's estimated facility for this applicant: ${c.estimatedAmount}.`);
   if (c.docsStatus) lines.push(`Documents so far: ${c.docsStatus}.`);
+  // The single most useful thing we can tell them that the lender's own site
+  // cannot: how their name is actually spelled on the ID the lender will
+  // check it against.
+  if (c.kycName) {
+    lines.push(
+      `THEIR NAME AS IT READS ON THEIR VERIFIED ID DOCUMENT: "${c.kycName}". UPSY has already read this off their ID, so it is reliable. ` +
+        `Whenever a name field comes up, tell them to type it exactly this way — same spelling, same initials, same order. A name that differs ` +
+        `from their ID stalls verification later, and the lender's form cannot warn them about this.`
+    );
+  }
+  if (c.coApplicantKycName) {
+    lines.push(`The co-applicant's name as it reads on their verified ID document: "${c.coApplicantKycName}". Same rule applies to co-applicant name fields.`);
+  }
   if (!lines.length) return "";
   return `\n\nThis specific applicant's context (use it, but this is UPSY's own record — a partner lender's own form may ask for or show different things):\n${lines.map((l) => "- " + l).join("\n")}`;
 }
@@ -86,13 +113,30 @@ UPSY's own eligibility rules — use these as the source of truth when asked abo
 - Moratorium is course duration plus about nine months of grace before repayment starts.
 - Indicative rate: about nine and a half to eleven and a half percent for a secured loan, about ten and a half to thirteen percent for an unsecured loan.
 
-Rules:
-- Explain what a field is for and what kind of answer it wants, based on what you see on screen.
-- NEVER read back, repeat, transcribe, or ask the applicant to confirm any PAN, Aadhaar, account number, or other sensitive ID number you see on screen, even if it is visible in the screenshot. Only describe the field's purpose. The applicant enters their own data — you only guide.
-- Never tell the applicant what to type into a KYC field; only explain what the field is asking for.
-- If you cannot tell what is currently on screen, say so honestly and ask them to describe it or give it a moment for a fresh screenshot.
-- Keep responses short: two to three sentences, conversational, no markdown, no symbols, no emojis. Spell out numbers the way you would say them aloud.
-- If asked about a specific lender's own process that you do not actually know, say so plainly rather than guessing — only state UPSY's own rules as UPSY's rules.${APPLICANT_CONTEXT}${buildLenderGuidancePrompt()}`;
+How to talk:
+- Answer THE THING THEY JUST SAID. Read the last thing the applicant said and respond to that specifically, not to the general topic and not to what you were explaining before. If they interrupt you or change subject, follow them.
+- Never repeat a sentence you have already said in this call. If they did not hear you, say it a different way, shorter.
+- Keep it to two or three sentences, conversational, no markdown, no bullet points, no symbols, no emojis. Spell numbers the way you would say them aloud.
+- One step at a time. Do not read out a whole screen's worth of fields at once — help with the field they are on, then stop and let them act.
+- If you genuinely do not know something, say so. Never invent a dropdown option, an accepted value, a timeline, or a policy. Ask them to read the options on screen aloud instead.
+
+Working from the screen:
+- The screenshot is taken at the moment they speak, but it can still be slightly behind them. If what they describe does not match what you see, believe them, not the image, and ask them to confirm which field they are on.
+- If you cannot tell what is on screen, say so plainly and ask them to describe it rather than guessing.
+- Do not read numbers off the screen and present them as fact — your reading of digits is not reliable. Reason from what the applicant tells you.
+
+Handling data the lender's site fills in automatically — this matters more than anything else here:
+- Partner lenders auto-fill fields from uploaded documents, and this has been confirmed to produce WRONG values in real use, including getting the applicant's own name wrong.
+- Whenever fields populate themselves after an upload, tell the applicant to check every one of them before continuing, and to correct anything wrong. Say why: these details are stored permanently and the site has no way to catch its own mistake.
+- Treat a checkbox that was already ticked for them the same way — pre-ticked defaults get skipped past. Ask directly whether the default is actually right for them.
+
+Privacy — absolute, no exceptions:
+- NEVER read back, repeat, transcribe, or ask them to confirm a PAN number, Aadhaar number, bank account number, or date of birth, even when it is plainly visible on screen. Describe which field to check and let them compare against their own document.
+- Never tell the applicant what to type into a KYC field. Explain what the field is asking for; they enter their own data.
+
+Honesty about progress:
+- Never tell them something succeeded unless the screen clearly says so. Some screens look celebratory while the application is actually paused or waiting on someone else — read the words, not the illustration.
+- When a step depends on another person or on something happening later, say that plainly so they know the application is not finished.${APPLICANT_CONTEXT}${buildLenderGuidancePrompt()}`;
 
 const child = spawn("node", [BRIDGE_PATH, meetUrl, "--name", BOT_NAME, "--voice", BOT_VOICE], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -117,6 +161,28 @@ let history = []; // [{role, content}], capped at MAX_HISTORY
 let screenshotTimer = null;
 const humanParticipants = new Set();
 let everHadHuman = false;
+// Set when the applicant talks over the bot; consumed by the next reply.
+let lastReplyWasInterrupted = false;
+// request_id -> { resolve, timer }, for screenshots grabbed on demand rather
+// than picked up from the background poll.
+const pendingScreenshots = new Map();
+
+// Ask for a screenshot NOW and wait briefly for it. Form guidance is only as
+// good as the frame it is based on: with the 5s background poll alone, an
+// applicant who moves to the next field while asking "what goes here?" gets an
+// answer about the *previous* field. Falls back to the polled frame on timeout
+// so a slow grab degrades instead of blocking.
+function requestFreshScreenshot() {
+  return new Promise((resolve) => {
+    const id = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const timer = setTimeout(() => {
+      pendingScreenshots.delete(id);
+      resolve(null);
+    }, FRESH_SCREENSHOT_TIMEOUT_MS);
+    pendingScreenshots.set(id, { resolve, timer });
+    sendCommand({ command: "screenshot", request_id: id });
+  });
+}
 
 const rl = createInterface({ input: child.stdout });
 rl.on("line", (line) => {
@@ -152,7 +218,14 @@ async function handleEvent(event) {
     case "greeting.prompt":
       sendCommand({
         command: "tts.speak",
-        text: `Hi ${event.participant || "there"}, I am ${BOT_NAME}. I can help you fill out your loan application on the lender's website. Go ahead and share your screen whenever you are ready.`,
+        // Says out loud that we can see the shared screen. Not full DPDP
+        // consent (that's a Phase 2 item), but the applicant should not be
+        // surprised that a screenshot is being looked at.
+        text:
+          `Hi ${event.participant || "there"}, I am ${BOT_NAME} from UPSY. I can walk you through your loan application step by step, ` +
+          `from choosing your financing option to filling in the lender's forms. ` +
+          `Share your screen whenever you are ready — I will be able to see it, so I can tell you what each field is asking for. ` +
+          `Just talk to me normally as you go.`,
       });
       if (!screenshotTimer) {
         screenshotTimer = setInterval(
@@ -166,8 +239,42 @@ async function handleEvent(event) {
       await respondTo(event.text);
       break;
 
-    case "screenshot.result":
-      if (event.data) latestScreenshot = `data:image/jpeg;base64,${event.data}`;
+    case "screenshot.result": {
+      const dataUrl = event.data ? `data:image/jpeg;base64,${event.data}` : null;
+      if (dataUrl) latestScreenshot = dataUrl;
+      const pending = event.request_id && pendingScreenshots.get(event.request_id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingScreenshots.delete(event.request_id);
+        pending.resolve(dataUrl);
+      }
+      break;
+    }
+
+    // The applicant started talking over us. Record it so the next reply can
+    // acknowledge that they cut in rather than ploughing on as if the whole
+    // sentence had landed.
+    case "tts.interrupted":
+      lastReplyWasInterrupted = true;
+      console.error("[liveAssist] speech interrupted by the applicant");
+      break;
+
+    // Fires ~5 minutes before the plan's hard call limit. Left unhandled, the
+    // call simply dies mid-sentence with no explanation to the applicant.
+    case "call.max_duration_warning":
+      console.error("[liveAssist] max duration warning — call will end soon");
+      sendCommand({
+        command: "tts.speak",
+        text:
+          "Quick heads up, this call will end automatically in about five minutes because of a time limit on my end. " +
+          "If we are mid-way through something, finish the field you are on and we can start a fresh call to carry on.",
+      });
+      break;
+
+    // Server-side problem, not the applicant's. Log loudly; do not alarm them
+    // mid-call about our billing.
+    case "call.credits_low":
+      console.error("[liveAssist] ⚠️ AgentCall credits are low — live-assist calls will start failing soon");
       break;
 
     case "command.error":
@@ -204,10 +311,30 @@ async function respondTo(text) {
   history.push({ role: "user", content: text });
   if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
 
+  // Grab the screen as it is at the moment they asked, not up to five seconds
+  // ago — on a form, that gap is often a whole field.
+  const fresh = await requestFreshScreenshot();
+  const shot = fresh || latestScreenshot;
+
   const latestUserContent = [{ type: "text", text }];
-  if (latestScreenshot) {
-    latestUserContent.push({ type: "image_url", image_url: { url: latestScreenshot } });
+  if (shot) {
+    latestUserContent.push({ type: "image_url", image_url: { url: shot } });
   }
+
+  // Tell the model it was cut off, so it answers what they actually said
+  // instead of finishing its previous thought.
+  const turnNotes = [];
+  if (lastReplyWasInterrupted) {
+    turnNotes.push(
+      "(The applicant spoke over your last reply, so they may not have heard all of it. Answer what they just said. " +
+        "Do not repeat your previous answer unless they ask you to.)"
+    );
+  }
+  if (!shot) {
+    turnNotes.push("(No screenshot is available this turn — do not describe the screen; ask them what they can see.)");
+  }
+  lastReplyWasInterrupted = false;
+  if (turnNotes.length) latestUserContent.push({ type: "text", text: turnNotes.join(" ") });
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -219,7 +346,9 @@ async function respondTo(text) {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: OR_MODEL, temperature: 0.3, max_tokens: 200, messages }),
+      // Low temperature on purpose: explaining what a form field wants should
+      // be near-deterministic. Creative variation is not a feature here.
+      body: JSON.stringify({ model: OR_MODEL, temperature: 0.1, max_tokens: 220, messages }),
     });
     if (!res.ok) {
       console.error(`[liveAssist] OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
