@@ -92,6 +92,19 @@ Checked `online.avanse.com` live, at the team's request:
 - **Comparison takeaway** (from when this was competitor research): on what we could observe, UPSY's applicant flow goes further live — straight from stated intent into guided, real-time document collection with instant eligibility feedback, versus Avanse appearing to stop at lead capture. Caveat: Avanse is a real production lender with actual compliance/backend behind it; UPSY is ahead on live interaction design but still behind on production-readiness (no dashboard auth, PII logged in plaintext, DPDP consent not built — see Phase 2 below).
 - **Reframed takeaway** (now that Avanse is a partner, not a rival): the gaps above stop being scorecard points and become **the exact places our applicants will get stuck**. Avanse's form being terse and unguided is precisely why a voice agent sitting alongside it has value — we are not competing with that form, we are the thing that gets people through it.
 
+### ⚠️ Two distinct entry paths into Avanse — real applicants use the second one (found 2026-08-04)
+
+Everything in "Observed screens and fields" below Screen 4 was walked via Avanse's own **self-serve "Apply Now"** button on its dashboard — a simple lead-capture form. A live walkthrough on 2026-08-04, starting from an actual course-application invite email, surfaced a **second, separate path that is the one real applicants will actually take**:
+
+1. **Email invite** from `updates@upsy.in` ("Hello \<name\>, you have been invited by *Airtribe* to enroll in a course through Upsy, India's trusted education financing platform") — names the course and its fee (e.g. "Data Analytics Launchpad", ₹1,25,000) and links to a **"Claim this Application"** card (also shows a link-expiry date).
+2. **`upsy.in` dashboard** ("My Applications") — every application the applicant has across courses/lenders, each as a card with status (Pending / In Review / Approved / Disbursed / Rejected / Cancelled) and a contextual action button (**Apply**, or **Continue with lender** once a specific lender is attached — we saw "Avanse Financial Services Ltd" named directly on a card here).
+3. **`upsy.in` "Select Financing Option" modal** — shows tenure options (3/6/9/12 months, all labelled **"No Cost EMI"**) with monthly EMI and total payable per option, plus a **"View All Lenders"** link, before an **Apply Now** button hands off into the actual lender's site.
+4. **Lands on `online.avanse.com`** already carrying the course + amount, and proceeds through Avanse's real structured multi-step wizard — see the new screens below.
+
+**⚠️ Naming collision, read carefully:** `upsy.in` is a **real third-party platform** (Airtribe's financing partner) — it is **not us**, and the coincidence with our own product name "UPSY" is exactly that, a coincidence. Anywhere this README or the lender-guidance code says "Upsy" from here on, check context: our own product, or the external `upsy.in` marketplace.
+
+**Why this matters more than the self-serve form:** applicants referred by a course provider like Airtribe — i.e. the applicants UPSY's own live-assist agent will actually be on a call with — arrive via this invite path, not by finding Avanse's own "Apply Now" button. The 5-stage wizard and its specific fields (documented below) are what the agent needs to be precise about, more so than the older quick-form findings.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
@@ -122,6 +135,97 @@ Everything below is what we **actually saw** on the live site. Anything not dire
 Then a single **Submit** button.
 
 **Screen 4 — after Submit:** on 2026-07-30 this returned to the dashboard showing **"No Application Found"** (see the dead-end note above), with no reference number, no confirmation, no visible next step. **Not yet re-walked live to confirm which outcome (this, or the persisted-card behaviour seen 2026-08-03) actually follows a fresh Submit.**
+
+---
+
+**The screens below (5–8) are from the invite-path walkthrough (2026-08-04) — see "Two distinct entry paths" above. This is the flow real referred applicants take.**
+
+**Screen 5 — Avanse's own consent / Key Facts Statement screen.** Reached after landing from `upsy.in`, before the wizard proper. Scrollable legal text (digital-lending KFS-style disclosures: processing time up to 30 days, product tenor up to 36 months, interest rate up to 25% p.a.) followed by a checkbox — *"I agree with the above-mentioned details and provide my consent for the same"* (authorizes Avanse and third parties to pull credit bureau records, and to contact via WhatsApp/call/SMS overriding NDNC registration) — then an **Accept & Continue** button. Distinct from, and separate to, UPSY's own DPDP consent gap noted in Phase 2 below — this is *Avanse's* consent screen, not ours.
+
+**Screen 6 — 5-stage wizard overview.** A one-time explainer screen (*"Hey, it's time to walk you through the easy application process for your reference and understanding"*) names the wizard's real stages in order, confirmed directly from the site (supersedes the guessed stage names inferred earlier from dashboard tags):
+1. **Course Selection** — "Select the course of your choice to fulfill your academic aspiration."
+2. **Applicant Details** — "Tell us a little more about yourself to help us build a customized financing plan."
+3. **Income Verification** — "Upload your income documents for a quick verification."
+4. **KYC Verification** — "An easy procedure to know you better and thus, serve you better."
+5. **Additional Documents** — "Finally, upload some important documents to complete the application process."
+
+A persistent stepper at the top of every subsequent screen shows which of these 5 stages is active. Button: **"Ready to Apply? Let's Start!"**. *(Note: the dashboard card stage tag seen earlier — `(Course Details)` — likely refers to this same "Course Selection" stage under a slightly different label; not fully reconciled.)*
+
+**Screen 7 — Applicant Details, sub-screen (a): Student & PAN** (`online.avanse.com/applicant-eligibility`)
+
+| Field | Required | What we saw | Notes for the agent |
+|---|---|---|---|
+| `Student Name` | **Yes** | free text | |
+| `Student Relation` | **Yes** | dropdown, "Myself" | Who the student is relative to the person filling the form. |
+| `Loan Applicant Name` | **Yes** | free text | |
+| `Applicant is` | **Yes** | dropdown, "Non-earning" | **Live behaviour confirmed**: selecting "Non-earning" immediately shows inline text — *"Since you have selected the 'non-earning' option, you will need a co-applicant to complete the application process."* This is a real, on-screen eligibility branch, not a guess. |
+| `Upload Applicant PAN` | shown as required for Next to enable | image upload | **JPEG / JPG / PNG only — explicitly no PDF option on this field**, unlike UPSY's own document capture which reads PDFs via Claude. |
+| `PAN Number` | **Yes** | free text | Paired with the PAN image upload above. |
+
+**Screen 8 — Applicant Details, sub-screen (b): Personal details** (still under "Applicant Details" in the stepper)
+
+| Field | Required | What we saw | Notes for the agent |
+|---|---|---|---|
+| `Your Name` | **Yes** | free text | Seen filled as a full three-part name distinct from the shorter name typed on the previous sub-screen — worth having the applicant keep these consistent with each other and with their PAN. |
+| `Phone Number` | **Yes** | free text, 10 digits | |
+| `Email` | **Yes** | free text | |
+| `Father's Name` | **Yes** | free text | |
+| `Date of Birth` | **Yes** | date, e.g. `22 January 2007` | |
+| Gender | shown as a required toggle | Male / Female buttons | Binary toggle only — no other options observed. |
+| `Marital Status` | **Yes** | dropdown, "Single" | |
+
+**Screen 9 — Applicant Details, sub-screen (c): Address Detail** (`online.avanse.com/address-details/<id>`)
+
+Two tabs: **"Permanent and Current Address"** and **"Correspondence Address"**.
+- **Permanent Address Details** carries an explicit on-screen disclosure: *"Once you upload the Aadhaar softcopy, the address will be automatically captured. Please verify this information thoroughly, as these details will be stored in our records permanently."* — followed by an **Upload Aadhar** control (JPEG shown in practice).
+- Fields once populated (required, marked `*` on-screen): `Flat No./Building Name`, `Street Name`, `Landmark`, `Pincode`, `City`, `State`, `Country`.
+- A checkbox — **"My Current Address is same as Permanent Address"** — when checked, mirrors the Permanent fields into a separate **Current Address Details** block with the same field set.
+- The **Correspondence Address** tab has its own checkbox — **"My Corresspondance Address is same as Permanent Address"** (typo is on the live site, not ours) — same mirroring behaviour, same field set, ending in a **Next** button.
+
+**Screen 10 — Applicant Details, sub-screen (d): Co-applicant details.** Reached because Screen 7 earlier had `Applicant is: Non-earning`, which requires a co-applicant (see failure mode #6/#7 below — this is that requirement actually appearing). The applicant's own PAN field is shown above it already verified (green checkmark), then:
+
+| Field | Required | What we saw | Notes for the agent |
+|---|---|---|---|
+| `Co-applicant's Name` | **Yes** | free text, e.g. "VINAY KAILASHNATH PANDEY" | |
+| `Phone number` | **Yes** | free text, 10 digits | |
+| `Email` | **Yes** | free text | |
+| `Father's Name` | **Yes** | free text — the co-applicant's *own* father's name, not the primary applicant's | |
+| `Date of Birth` | **Yes** | date | |
+| Gender | required toggle | Male / Female | Same binary toggle as the primary applicant's screen. |
+| `Co-applicant's Relation` | **Yes** | dropdown, "Father" | Relation of the co-applicant to the primary applicant. |
+| `Marital status` | **Yes** | dropdown, "Married" | |
+
+A PAN upload + PAN Number pair for the co-applicant is implied by the same pattern as Screen 7 (partially visible above the fields captured here, already showing verified) — not yet confirmed field-by-field the way Screen 7 was.
+
+**Screen 11 — ⚠️ the co-applicant hand-off screen. (Confirmed, 2026-08-04 — genuinely new pause point, distinct from the earlier quick-form "missing co-applicant fields" finding #7)**
+After submitting Screen 10, the flow shows: *"The co-applicant's verification is pending. Please check your email & SMS for further instructions to complete the verification process."* with **Go Back** and **HOME** buttons. **The primary applicant's own progress stops here** — completing the rest of the wizard now depends on a *different person* (the co-applicant) independently receiving and acting on their own email/SMS, outside the call the agent is on.
+⚠️ **Visual trap worth flagging on its own**: the illustration on this screen is two people jumping with confetti — visually reads as a *success/completion* screen, not a paused/blocked one. An applicant (or an agent glancing at a screenshot without reading the text) could easily mistake this for "done," when the application is actually stalled pending someone else's action.
+
+**⚠️ Correction to the 5-stage model (Screens 12–14 below):** Screens 12, 13, and 14 all still show **"Applicant Details"** as the active stage in the top stepper, not "Income Verification" — even though Screen 12 is literally titled "Co-applicant's income details" and Screen 14 is a full bank-verification screen. So the 5 named stages from Screen 6 are **coarser than the real sub-screen sequence**: "Applicant Details" as a stepper label apparently covers primary applicant profile + address, *and* the entire co-applicant profile + address + income + bank flow. What (if anything) "Income Verification" as its own stage covers — the primary applicant's own income, since this one is `Non-earning`? something else? — is now an open question, not the assumption it looked like from Screen 6 alone.
+
+**Screen 12 — Co-applicant's income details** (still under "Applicant Details" per the stepper — see correction above)
+
+| Field | Required | What we saw | Notes for the agent |
+|---|---|---|---|
+| `Occupation Type` | **Yes** | dropdown, "Salaried" | Other options unknown. |
+| `Company Name` | **Yes** | free text, e.g. "huhtamaki" | |
+| `Designation` | **Yes** | free text, e.g. "superviser" (typed as-is, unvalidated) | Like `Admission Status` in the older quick form (failure mode #3), free text with no visible validation. |
+| `Work Experience` | **Yes** | dropdown, ">3 Years" | Other bands unknown. |
+| `Sector` | not marked required on screen | dropdown, "Private Sector" | |
+| "Is your salary credited directly to your bank account?" | shown as required | Yes / No toggle, Yes selected | |
+| "Is your work related to any of the following sectors?" | unknown | cut off before scrolling further | **Not yet observed** — likely a sensitive-sector/blocklist question (common in lending KYC), but the actual options are unknown. Do not guess a list. |
+
+**Screen 13 — Co-applicant's own Address Detail.** Same two-tab pattern as Screen 9 (Permanent and Current Address / Correspondence Address), same Aadhaar-auto-capture disclosure and same field set — but this time scoped to the **co-applicant**, confirmed by a field not present on the primary applicant's version: **`Applicant Name`** (shown pre-filled, e.g. "Vinay K Pandey") naming whose address this is. Different URL id per person (`/address-details/178015` for the primary applicant vs `/address-details/178021` for the co-applicant) confirms Avanse tracks each person's address as a fully separate record — worth the agent knowing addresses are asked twice, once per person, not shared.
+
+**Screen 14 — "Verify your Bank Account"** (heading "Bank Account Details"). Offers **three distinct verification paths**, not just a single upload:
+1. **Account Aggregator** button — bullet copy: *"Provide mobile number linked to the Bank Account"* and *"If your bank account gets verified successfully, you will not be required to provide any proof for Bank Account."* (India's RBI-backed Account Aggregator / consent-based data-sharing framework.)
+2. **or** — **Upload your Bank Statement**: *"Upload your last 6-month bank statements"* (info icon present, tooltip content not read), starting with a `Bank Name` field (**required**), file upload not yet reached in this walkthrough.
+3. **or** — a **"Net Banking"** link at the bottom, presumably a third path (bank login/net-banking-based verification) — not opened, contents unknown.
+→ *Worth flagging for later, not building now:* UPSY's own `backend/bankStatement.js` already reads the co-applicant's bank statement (name, address, phone) as part of its own document verification. If UPSY has already verified this before the applicant reaches Avanse, that's a second instance of the "we already know the answer" advantage from failure mode #6 — potentially able to tell the applicant which of these three paths will be fastest, or pre-empt a mismatch. Not scoped yet, just noted so it isn't lost.
+
+**⏸️ Walkthrough paused here (2026-08-04) — to be continued in a future session.** Everything above Screen 14 is confirmed by direct testing. Still completely unexplored: the rest of Income Verification (if it's even a separate stage — see the correction above), all of KYC Verification, and all of Additional Documents. Pick up from Screen 14 next time rather than re-walking earlier screens.
+
+**⚠️ Explicit scope decision (2026-08-04): live-assist coverage stops at Screen 14, on purpose.** The team's call is that the UPSY live-assist agent should be the one helping the applicant, in the Meet call, through everything from the `upsy.in` invite (Screen 0) all the way through co-applicant bank verification (Screen 14) — i.e. the whole "Two distinct entry paths" flow, sign-in, the 5-stage wizard, both people's Applicant Details, and bank verification. **Whatever comes after Screen 14 (KYC Verification, Additional Documents, and anything past that) is manual for now, not in scope for the agent.** This is a scope boundary for the spec, not a technical limitation — it should shape what "Ground the prompt in Avanse's actual form" (ACTIVE PRIORITY below) actually covers, and it may move once KYC Verification / Additional Documents are themselves walked and understood.
 
 ### Where applicants will get stuck — and what the agent should do
 
@@ -162,6 +266,20 @@ Sign-in is OTP to phone or email. On a mobile screen-share the OTP notification 
 **9. ⚠️ Our own privacy exposure — a risk we create, not one Avanse has. (Confirmed by design)**
 The applicant screen-shares a page where they type their name, email and phone, and we screenshot it every 5 seconds and send it to OpenRouter. The system prompt forbids *reading numbers back aloud*, but that does not stop the pixels being transmitted. If they later reach a KYC upload step, ID documents would be captured the same way.
 → *This is a Phase 2 compliance item, not a prompt tweak.* It belongs in the DPDP consent conversation, and the applicant should be told what the agent can see before the screen share starts. Flagged here so it isn't discovered late.
+
+**10. ⚠️ Aadhaar auto-extraction gets fields wrong — hit directly during live testing, not a hypothesis. (Confirmed by first-hand use, 2026-08-04)**
+Avanse's own Address Detail screen (Screen 9 above) auto-captures the permanent address from an uploaded Aadhaar softcopy, and its own on-screen text already warns applicants to verify it. During an actual walkthrough, **the auto-extraction got more than the disclosed field wrong — the applicant's own name came out wrong and had to be manually corrected**, alongside other misreads. This is the same failure class this repo has already documented for its own vision pipeline (see the Aadhaar/PAN/income digit-accuracy findings elsewhere in this README) — except here it's happening on **Avanse's** extraction, which UPSY has no ability to fix, only to catch. Unlike our own pipeline, Avanse's has **no Verhoeff-checksum-style backstop** that we know of.
+→ *Agent (not yet built — noting for the spec, not fixing now):* whenever Avanse auto-fills a field from an uploaded document (address on Screen 9, and potentially name/other fields elsewhere in the wizard), proactively tell the applicant **not to trust the auto-fill by default** — to actually read every auto-populated field aloud or carefully before moving on, the same way the agent already treats vision-model reads of its own screenshots as unreliable (see failure mode #2 above). This is a real, live-confirmed failure, not a defensive guess.
+
+**11. ⚠️ The Correspondence Address tab gets skipped past without real scrutiny. (Confirmed by first-hand use, 2026-08-04)**
+The Correspondence Address tab (Screen 9) defaults to a checked **"My Correspondance Address is same as Permanent Address"** box (note: that's the live site's own typo, not ours) that silently mirrors the Permanent Address fields. During testing, this is a spot applicants pass through without really registering — an applicant who *does* need a different correspondence address is likely to leave the default checked without noticing, or in the opposite direction, to click into the tab, get confused by the auto-filled/greyed values, and think something is broken. Several such small corrections had to be made by hand during this walkthrough (the applicant's own name being one of them, tied to finding #10 above).
+→ *Agent (not yet built — noting for the spec, not fixing now):* explicitly ask whether the applicant's correspondence address is genuinely the same as their permanent address before letting them tab past this screen, rather than assuming the pre-checked default is correct. This is exactly the kind of easy-to-miss checkbox a human loan officer would normally catch by watching over someone's shoulder — which is the whole reason a manual-assist substitute doesn't scale and the agent needs to catch it instead.
+
+**12. ⚠️ The co-applicant hand-off looks like success but is actually a stall. (Confirmed by first-hand use, 2026-08-04)**
+See Screen 11 above. Once the primary applicant submits co-applicant details, Avanse shows a celebratory-looking screen (confetti, people jumping) whose actual text says verification is *pending*, not complete — and the real next step depends on the co-applicant, a different person, independently checking their own email/SMS. Nothing in the wizard tells the primary applicant what happens if the co-applicant misses that message, delays, or doesn't recognize the email as legitimate.
+→ *Agent (not yet built — noting for the spec, not fixing now):* explicitly tell the applicant this is a pause, not completion, and that a second person now has to act — coach them on what to tell the co-applicant to expect (a message from Avanse, to check email and SMS) before ending the call, since the agent won't be there when the co-applicant actually receives it. Do not let the celebratory illustration be read as confirmation of anything, and revisit failure mode #7 above — it undersold this: the real gap isn't "the form doesn't ask about a co-applicant," it's "the form asks, then blocks on a handoff to someone who isn't on this call."
+
+**Why this list matters right now:** every one of these is something a human loan officer would normally catch by manually watching the applicant fill the form — which is exactly what doesn't scale, and exactly why the live-assist agent exists. Findings #10–#12 above were hit directly during a real walkthrough, not reasoned out in advance — more of this kind are expected as further screens (Income Verification, KYC Verification, Additional Documents) get walked and documented the same way.
 
 ### Live-call assistance via AgentCall (built + tested live, 2026-07-31)
 
@@ -603,9 +721,9 @@ Reading the rest of this roadmap:
 
 ### ▶️ ACTIVE PRIORITY — make the live-assist agent precise on Avanse (agreed 2026-08-02, next session starts here)
 
-**The goal in one line:** an applicant on a call with UPSY, screen-sharing `online.avanse.com`, should get through that form correctly on the first try — no wrong loan amount, no name mismatch, no panic at the "No Application Found" screen.
+**The goal in one line:** an applicant on a call with UPSY, screen-sharing the flow from a `upsy.in` course invite through `online.avanse.com`, should get through it correctly on the first try — no wrong loan amount, no name mismatch, no panic at an unclear confirmation screen, no missed co-applicant hand-off. **Scope boundary (2026-08-04): the agent covers this all the way through co-applicant bank verification (Screen 14 in "Observed screens and fields") — KYC Verification and Additional Documents, past that point, are explicitly manual for now, not agent scope.** See "Explicit scope decision" in the Avanse section above.
 
-**Read first:** "Where applicants will get stuck" in the Avanse section above. That list of nine failure modes *is* the spec for this phase — each item there has a "→ *Agent:*" line describing the behaviour we want.
+**Read first:** "Where applicants will get stuck" in the Avanse section above. That list of failure modes (now 12, not just the original nine) *is* the spec for this phase — each item there has a "→ *Agent:*" line describing the behaviour we want.
 
 **Why now:** the agent works, but it is generic. It knows UPSY's eligibility rules and can see the screen, yet it knows nothing about Avanse's specific fields, their quirks, or the dead-end after Submit. Precision on one real lender's form is worth more than breadth across hypothetical ones.
 
