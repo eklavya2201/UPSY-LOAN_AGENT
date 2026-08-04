@@ -875,6 +875,13 @@ app.get(["/login", "/intake", "/docs", "/docs/*"], (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "frontend", "index.html"));
 });
 
+// Team dashboard's clean URL. team.js reads/writes ?lead=&tab= via
+// history.pushState against location.pathname, so this works unchanged for
+// deep links like /team?lead=LD-1001&tab=lenders.
+app.get("/team", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "frontend", "team.html"));
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`UPSY loan agent running on http://localhost:${PORT} (lead source: ${source.name})`);
