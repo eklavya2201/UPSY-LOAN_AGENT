@@ -49,6 +49,10 @@ export const crossCuttingRules = [
   "When a co-applicant IS involved, this flow asks for TWO people's information — whoever is the loan applicant, and their co-applicant. Name, " +
     "address, PAN and personal details are each asked twice, once per person, and Avanse stores them as separate records. If the applicant says " +
     "'I already filled this in', check whose details the current screen is asking for before agreeing with them.",
+  "IF AVANSE ASKS THE PRIMARY APPLICANT FOR THEIR OWN CO-APPLICANT — a co-applicant's co-applicant — stop and hand off. This is a known " +
+    "drop-off point that UPSY has not worked out a path through yet, and most applications end here. Do not improvise a fix, do not talk them " +
+    "into finding a third person, and do not imply it is routine. Say honestly that this one needs the UPSY team to look at their specific case " +
+    "and that someone will follow up, then help them with anything else they need on the call.",
   "Never read out, repeat, or confirm a PAN number, Aadhaar number, bank account number, or date of birth you can see on screen — not even to " +
     "check it. Describe which field to look at and let the applicant read their own document.",
 ];
