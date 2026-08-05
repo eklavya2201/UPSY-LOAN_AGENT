@@ -119,6 +119,10 @@ This is the single most important framing in this section, because it **repriori
 
 So "make the co-applicant the primary applicant" is not a filing technicality. It is the mechanism that produces the clean single-person application.
 
+**Related fact from the same conversation:** UPSY **does not share the student's and the co-applicant's details with Avanse together**. Avanse receives *one person's* application, not a student-plus-co-applicant package — which is consistent with the mechanism above.
+
+**⚠️ Unresolved tension, do not let the agent assert either version:** the 2026-08-04 walkthrough *did* observe Avanse asking for full co-applicant details inside a single application (Screens 10, 12, 13 below), which appears to conflict with "we don't hand both over together." The likely reconciliation is that these describe different moments — what UPSY *pre-fills at hand-off* versus what Avanse *asks for once the applicant is inside its own wizard* — but that has not been confirmed.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
