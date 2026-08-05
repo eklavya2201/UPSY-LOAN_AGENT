@@ -17,6 +17,7 @@ import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import path from "path";
 import { buildLenderGuidancePrompt } from "./lenderForms/index.js";
+import { takeCompleteSentences } from "./sentences.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PATH = path.join(__dirname, "agentcall", "bridge.js");
@@ -315,17 +316,9 @@ async function handleEvent(event) {
 // The model (gpt-4o-mini) occasionally degenerates into repeating a sentence
 // back-to-back within the same reply, which bridge.js's sentence-splitter
 // then speaks as two identical lines in a row. Collapse consecutive
-// duplicate sentences before they ever reach tts.speak.
-function dedupeRepeatedSentences(text) {
-  const sentences = text.split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean);
-  const deduped = [];
-  for (const s of sentences) {
-    const prev = deduped[deduped.length - 1];
-    if (prev && prev.toLowerCase() === s.toLowerCase()) continue;
-    deduped.push(s);
-  }
-  return deduped.join(" ");
-}
+// duplicate sentences before they ever reach tts.speak. Both helpers live in
+// backend/sentences.js so they can be unit-tested — this file spawns the
+// AgentCall bridge on import and cannot be loaded from a test.
 
 async function respondTo(text) {
   if (!text || !text.trim()) return;
@@ -380,7 +373,10 @@ async function respondTo(text) {
       headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
       // Low temperature on purpose: explaining what a form field wants should
       // be near-deterministic. Creative variation is not a feature here.
-      body: JSON.stringify({ model: OR_MODEL, temperature: 0.1, max_tokens: 220, messages }),
+      // Streamed so the first sentence can be spoken while the rest is still
+      // being written. Waiting for the whole reply meant several seconds of
+      // silence on every turn, which reads as the bot having not heard them.
+      body: JSON.stringify({ model: OR_MODEL, temperature: 0.1, max_tokens: 220, messages, stream: true }),
       signal: controller.signal,
     });
     if (myTurn !== currentTurn) return;
@@ -389,19 +385,60 @@ async function respondTo(text) {
       sendCommand({ command: "tts.speak", text: "Sorry, I had trouble just now. Could you say that again?" });
       return;
     }
-    const data = await res.json();
-    // Last check before speaking: if they got another sentence in while the
-    // model was writing, this answer is about the wrong question. Drop it —
-    // saying it would talk over what they actually just asked.
+
+    let buffer = ""; // not-yet-complete sentence
+    let sseTail = ""; // partial SSE line across chunks
+    let spokenSoFar = []; // sentences already sent to TTS, in order
+    let lastSpoken = "";
+
+    // Speak one sentence, unless it repeats the previous one. The whole-reply
+    // dedupe cannot run here because sentences leave one at a time, so the
+    // same "don't say it twice" rule is applied incrementally instead.
+    const speak = (sentence) => {
+      if (!sentence || sentence.toLowerCase() === lastSpoken.toLowerCase()) return;
+      lastSpoken = sentence;
+      spokenSoFar.push(sentence);
+      sendCommand({ command: "tts.speak", text: sentence });
+    };
+
+    for await (const chunk of res.body) {
+      // Stop mid-stream the moment this turn is superseded, so a stale answer
+      // is never half-spoken over the applicant's new question.
+      if (myTurn !== currentTurn) return;
+      sseTail += Buffer.from(chunk).toString("utf8");
+      const lines = sseTail.split("\n");
+      sseTail = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let delta;
+        try {
+          delta = JSON.parse(payload).choices?.[0]?.delta?.content;
+        } catch {
+          continue; // keep-alive or a fragment we cannot use yet
+        }
+        if (!delta) continue;
+        buffer += delta;
+        const { sentences, rest } = takeCompleteSentences(buffer);
+        buffer = rest;
+        for (const s of sentences) speak(s);
+      }
+    }
+
     if (myTurn !== currentTurn) return;
-    const reply = dedupeRepeatedSentences((data.choices?.[0]?.message?.content || "").trim());
+    // Stream is done, so anything still buffered is the final sentence — this
+    // is the only point at which end-of-buffer may be treated as a full stop.
+    for (const s of takeCompleteSentences(buffer, { flush: true }).sentences) speak(s);
+
+    const reply = spokenSoFar.join(" ").trim();
     if (!reply) {
       sendCommand({ command: "tts.speak", text: "Sorry, I did not catch that. Could you repeat it?" });
       return;
     }
     history.push({ role: "assistant", content: reply });
     if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
-    sendCommand({ command: "tts.speak", text: reply });
   } catch (e) {
     // An abort is us superseding ourselves, not a failure — stay quiet.
     if (e.name === "AbortError" || myTurn !== currentTurn) return;
