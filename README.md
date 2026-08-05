@@ -123,6 +123,10 @@ So "make the co-applicant the primary applicant" is not a filing technicality. I
 
 **⚠️ Unresolved tension, do not let the agent assert either version:** the 2026-08-04 walkthrough *did* observe Avanse asking for full co-applicant details inside a single application (Screens 10, 12, 13 below), which appears to conflict with "we don't hand both over together." The likely reconciliation is that these describe different moments — what UPSY *pre-fills at hand-off* versus what Avanse *asks for once the applicant is inside its own wizard* — but that has not been confirmed.
 
+**The "ineligible path", explicitly deprioritised:** if Avanse looks at that primary applicant and decides *they* also need a co-applicant, you are now being asked for a co-applicant's co-applicant. The team's observation is that **in most such cases the student simply drops off** — they do not go and find a third person, and the loan does not happen. Team call, verbatim in spirit: *"I don't think we need to refine yet for this path."*
+
+→ **Do not build agent handling for the second-co-applicant case.** It is a known drop-off, deliberately out of scope until the happy path is solid. The agent should recognise it and hand off to a human rather than improvise.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
