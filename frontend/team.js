@@ -298,6 +298,7 @@ function liveAssistHtml(d, status) {
       <div class="w-12 h-12 rounded-2xl bg-primary-soft text-primary grid place-items-center"><span class="material-symbols-outlined text-[26px]">support_agent</span></div>
       <div class="flex-1">
         <h3 class="font-semibold">UPSY live-assist (voice)</h3>
+        ${UpsyPhases.failureHtml(status && status.failure)}
         <p class="text-sm text-on-surface-variant mb-2">Paste a Google Meet link — UPSY joins the call and helps this applicant fill out a form live, grounded in their own eligibility record. The join link is texted to the applicant automatically.</p>
         <input id="liveAssistUrl" type="text" placeholder="https://meet.google.com/xxx-xxxx-xxx" class="w-full border border-outline-variant rounded-full px-4 py-2 text-sm" />
       </div>

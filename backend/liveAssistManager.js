@@ -16,7 +16,14 @@ const LIVE_ASSIST_PATH = path.join(__dirname, "liveAssist.js");
 const source = getActiveSource();
 const notifier = getActiveNotifier();
 
-let active = null; // { leadId, meetUrl, startedAt, child, invite }
+let active = null; // { leadId, meetUrl, startedAt, child, invite, phase }
+
+// Why the last call died, kept AFTER the process is gone. Without this a
+// failed start just cleared `active` and the UI fell back to "not running",
+// which is indistinguishable from never having pressed the button — the exact
+// confusion an out-of-credits failure caused.
+let lastFailure = null; // { leadId, reason, at }
+const FAILURE_TTL_MS = 5 * 60 * 1000;
 
 // Same student/co-applicant split as server.js's identityGroup() — kept as a
 // local one-liner rather than an import, since that helper isn't exported.
@@ -72,6 +79,11 @@ export function getStatus(leadId) {
       phaseAt: active.phaseAt,
     };
   }
+  // Not running — but if the last attempt failed recently, say why rather than
+  // pretending the button was never pressed.
+  if (lastFailure && lastFailure.leadId === leadId && Date.now() - new Date(lastFailure.at).getTime() < FAILURE_TTL_MS) {
+    return { running: false, failure: { reason: lastFailure.reason, at: lastFailure.at } };
+  }
   return { running: false };
 }
 
@@ -104,6 +116,9 @@ export async function startCall(leadId, meetUrl, { notifyApplicant = false } = {
     throw new Error("Another live-assist call is already in progress (only one at a time on the current plan).");
   }
 
+  // A new attempt supersedes whatever went wrong last time.
+  if (lastFailure && lastFailure.leadId === leadId) lastFailure = null;
+
   const app = await getApplication(leadId);
   const contextB64 = buildContext(app);
 
@@ -135,6 +150,12 @@ export async function startCall(leadId, meetUrl, { notifyApplicant = false } = {
         // not a phase line — it is ordinary output, pass it through
       }
       if (msg && msg.type === "phase") {
+        if (msg.phase === "failed") {
+          // Recorded separately so it outlives the process and can still be
+          // shown once the child has exited.
+          lastFailure = { leadId, reason: msg.detail || "The call could not be started.", at: new Date().toISOString() };
+          console.error(`[live-assist ${leadId}] start failed: ${lastFailure.reason}`);
+        }
         if (active && active.leadId === leadId) {
           active.phase = msg.phase;
           active.phaseDetail = msg.detail || null;

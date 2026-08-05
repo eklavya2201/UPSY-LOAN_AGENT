@@ -121,6 +121,9 @@ UPSY's own eligibility rules — use these as the source of truth when asked abo
 - Indicative rate: about nine and a half to eleven and a half percent for a secured loan, about ten and a half to thirteen percent for an unsecured loan.
 
 How to talk:
+- SAY LESS THAN YOU WANT TO. You are on a live call and every sentence is time the applicant cannot speak. Two or three sentences, then stop.
+- Do not open the call with an explanation of the process, a checklist, or device, camera, microphone or audio checks. Do not describe what you are about to do. Greet them, then wait for them to talk.
+- Only raise a problem that is actually happening. Warnings about mistakes, defaults or things that commonly go wrong belong at the moment the applicant reaches that screen — never in advance, never bundled together. If nothing is wrong, say nothing about it.
 - Answer THE THING THEY JUST SAID. Read the last thing the applicant said and respond to that specifically, not to the general topic and not to what you were explaining before. If they interrupt you or change subject, follow them.
 - Never repeat a sentence you have already said in this call. If they did not hear you, say it a different way, shorter.
 - Keep it to two or three sentences, conversational, no markdown, no bullet points, no symbols, no emojis. Spell numbers the way you would say them aloud.
@@ -156,7 +159,11 @@ child.on("error", (e) => {
 child.on("exit", (code) => {
   console.error(`[liveAssist] bridge process exited with code ${code}`);
   if (screenshotTimer) clearInterval(screenshotTimer);
-  process.exit(code || 0);
+  // process.stdout is a PIPE here, and writes to a pipe are asynchronous —
+  // process.exit() throws away anything still queued. The failure phase is
+  // written microseconds before this fires, so exiting immediately silently
+  // discarded the very reason the call failed. Let the queue drain first.
+  flushThenExit(code || 0);
 });
 
 function sendCommand(cmd) {
@@ -170,6 +177,38 @@ function sendCommand(cmd) {
 // Logs stay on stderr; stdout carries only these machine-readable lines.
 function emitPhase(phase, detail) {
   process.stdout.write(JSON.stringify({ type: "phase", phase, detail: detail || null }) + "\n");
+}
+
+// Exit only once queued stdout has actually reached the parent. write()'s
+// callback fires on flush; the timer is a backstop so a stuck pipe can never
+// keep this process alive.
+function flushThenExit(code) {
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true;
+    process.exit(code);
+  };
+  setTimeout(go, 300).unref?.();
+  process.stdout.write("", go);
+}
+
+// Turn the bridge's raw API error into something the person staring at the
+// screen can act on. The credits case is the one that actually bites: the
+// free tier is a one-time pool, so it runs out mid-project and every call
+// then fails instantly for a reason no one can guess from the UI.
+function friendlyStartError(message) {
+  const m = String(message || "");
+  if (/insufficient credits|402/i.test(m)) {
+    return "AgentCall is out of credits, so the bot cannot join any meeting. Top up at app.agentcall.dev/add-credits.";
+  }
+  if (/401|403|unauthor|invalid.*key/i.test(m)) {
+    return "AgentCall rejected the API key. Check AGENTCALL_API_KEY or ~/.agentcall/config.json.";
+  }
+  if (/concurren|already.*active|limit/i.test(m)) {
+    return "AgentCall refused a second simultaneous call — the plan allows only one at a time.";
+  }
+  return m.slice(0, 200) || "The call could not be started.";
 }
 
 let latestScreenshot = null; // data URL, refreshed on a timer
@@ -257,11 +296,13 @@ async function handleEvent(event) {
         // Says out loud that we can see the shared screen. Not full DPDP
         // consent (that's a Phase 2 item), but the applicant should not be
         // surprised that a screenshot is being looked at.
+        // Deliberately two short sentences. A longer opening meant the
+        // applicant sat through a speech before they could say what they
+        // needed, and TTS plays each sentence separately so length is felt.
+        // Screen visibility is still disclosed — that part is not optional.
         text:
-          `Hi ${event.participant || "there"}, I am ${BOT_NAME} from UPSY. I can walk you through your loan application step by step, ` +
-          `from choosing your financing option to filling in the lender's forms. ` +
-          `Share your screen whenever you are ready — I will be able to see it, so I can tell you what each field is asking for. ` +
-          `Just talk to me normally as you go.`,
+          `Hi ${event.participant || "there"}, I am ${BOT_NAME}. ` +
+          `Share your screen when you are ready — I can see it — and tell me what you are stuck on.`,
       });
       if (!screenshotTimer) {
         screenshotTimer = setInterval(
@@ -319,6 +360,15 @@ async function handleEvent(event) {
     // mid-call about our billing.
     case "call.credits_low":
       console.error("[liveAssist] ⚠️ AgentCall credits are low — live-assist calls will start failing soon");
+      break;
+
+    // The bridge reports a failed call creation here and then exits. Without
+    // this case the event fell through to default and was swallowed, so an
+    // out-of-credits or bad-key failure looked identical to "nothing
+    // happened" — the UI just snapped back to idle with no reason given.
+    case "error":
+      console.error("[liveAssist] bridge error:", event.message);
+      emitPhase("failed", friendlyStartError(event.message));
       break;
 
     case "command.error":

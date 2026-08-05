@@ -42,7 +42,13 @@ function renderPortal(portal) {
   }
   parts.push(...portal.screens.map(renderScreen));
   if (portal.proactiveGuidance?.length) {
-    parts.push("  Say these without being asked, at the right moment:");
+    // Worded as strictly conditional. An earlier phrasing ("say these without
+    // being asked") was read as "say these now", so the bot opened calls by
+    // reciting the whole list before the applicant could get a word in.
+    parts.push(
+      "  Warnings to raise ONLY when the applicant actually reaches that screen or hits that situation. Never say these up front, never as a " +
+        "list, and never more than one at a time — each is a single remark at the moment it becomes relevant:"
+    );
     parts.push(...portal.proactiveGuidance.map((g) => `    - ${g}`));
   }
   if (portal.openQuestions?.length) {

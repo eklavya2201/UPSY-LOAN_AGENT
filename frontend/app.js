@@ -496,15 +496,16 @@ async function loadLiveAssistApplicant(compact) {
   try { status = await (await fetch(`/api/applications/${LEAD.leadId}/live-assist`)).json(); } catch { status = { running: false }; }
   box.innerHTML = status.running
     ? (compact ? liveAssistRunningCompactHtml(status) : liveAssistRunningHtml(status))
-    : (compact ? liveAssistIdleCompactHtml() : liveAssistIdleHtml());
+    : (compact ? liveAssistIdleCompactHtml(status.failure) : liveAssistIdleHtml(status.failure));
   wireLiveAssistApplicant(compact);
   if (status.running && document.getElementById("liveAssist")) {
     liveAssistPoll = setTimeout(() => loadLiveAssistApplicant(compact), 2000);
   }
 }
 
-function liveAssistIdleHtml() {
+function liveAssistIdleHtml(failure) {
   return `
+  ${UpsyPhases.failureHtml(failure)}
   <div class="flex items-center gap-2 mb-1"><span class="material-symbols-outlined text-primary">support_agent</span><h3 class="text-xl font-semibold">Talk to UPSY live</h3></div>
   <p class="text-sm text-on-surface-variant mb-4">Applying with a lender's own website and want help filling it out? Start a Google Meet, paste the link below, and UPSY will join the call to guide you — just share your screen.</p>
   <div class="flex flex-col sm:flex-row gap-3">
@@ -522,8 +523,9 @@ function liveAssistRunningHtml(status) {
   <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>End call</button>`;
 }
 
-function liveAssistIdleCompactHtml() {
+function liveAssistIdleCompactHtml(failure) {
   return `
+  ${UpsyPhases.failureHtml(failure)}
   <div class="flex items-center gap-1.5 mb-1"><span class="material-symbols-outlined text-primary text-[16px]">podcasts</span><div class="text-xs font-bold">Talk to UPSY live</div></div>
   <p class="text-[11px] text-on-surface-variant mb-2">Prefer voice while filling this in? Paste a Meet link and UPSY joins to help.</p>
   <input id="liveAssistUrl" type="text" placeholder="Meet link" class="w-full border border-outline-variant rounded-lg px-2.5 py-1.5 text-xs mb-2" />

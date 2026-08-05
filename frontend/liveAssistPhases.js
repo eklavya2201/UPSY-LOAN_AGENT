@@ -162,5 +162,17 @@
     setTimeout(() => el.remove(), 300);
   }
 
-  global.UpsyPhases = { phaseInfo, phasePillHtml, phaseStepsHtml, showToast, hideToast };
+  // Banner for a call that failed to start. Shown on the idle card, because
+  // by then the process is already gone and the card has reverted — without
+  // this the failure is invisible.
+  function failureHtml(failure) {
+    if (!failure || !failure.reason) return "";
+    return `
+      <div class="ua-phase flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-soft text-danger px-3 py-2.5 mb-3 text-xs" role="alert">
+        <span class="material-symbols-outlined text-[16px] flex-none">error</span>
+        <span><strong class="font-semibold">UPSY couldn't join.</strong> ${failure.reason}</span>
+      </div>`;
+  }
+
+  global.UpsyPhases = { phaseInfo, phasePillHtml, phaseStepsHtml, showToast, hideToast, failureHtml };
 })(window);
