@@ -125,8 +125,38 @@ export async function startCall(leadId, meetUrl, { notifyApplicant = false } = {
   return { started: true, startedAt, invite };
 }
 
+// How long to wait for the child to actually exit after SIGINT before forcing
+// it. liveAssist.js's own handler sends `leave` then force-exits after 500ms,
+// so this only bites if the process is genuinely wedged.
+const STOP_TIMEOUT_MS = 3000;
+
 export async function stopCall(leadId) {
   if (!active || active.leadId !== leadId) throw new Error("No live-assist call is running for this applicant.");
-  active.child.kill("SIGINT");
-  return { stopping: true };
+  const { child } = active;
+
+  // Wait for the process to really be gone before answering. Returning as soon
+  // as the signal was *sent* meant the frontend re-checked status while the
+  // child was still alive, saw the call still active, and flickered back to
+  // "in progress" before settling on idle.
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve("already-exited");
+    let timer = null;
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve("exited");
+    };
+    child.once("exit", onExit);
+    // Never leave a wedged child holding the single global call slot — this
+    // repo has been bitten by orphaned processes before (see the ops notes).
+    timer = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      child.kill("SIGKILL");
+      console.error(`[live-assist ${leadId}] did not exit within ${STOP_TIMEOUT_MS}ms — sent SIGKILL`);
+      resolve("killed");
+    }, STOP_TIMEOUT_MS);
+  });
+
+  child.kill("SIGINT");
+  const outcome = await exited;
+  return { stopped: true, outcome };
 }
