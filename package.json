@@ -4,6 +4,9 @@
   "description": "AI education-loan agent prototype modeled on the Kuhoo journey: requests documents in order, explains why each is required, and cross-checks uploads against the expected format.",
   "type": "module",
   "main": "backend/server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node backend/server.js",
     "dev": "node --watch backend/server.js",
