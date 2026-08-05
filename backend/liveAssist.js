@@ -163,6 +163,14 @@ const humanParticipants = new Set();
 let everHadHuman = false;
 // Set when the applicant talks over the bot; consumed by the next reply.
 let lastReplyWasInterrupted = false;
+// Monotonic turn counter. Generating a reply takes seconds (a fresh screenshot
+// grab, then the model call), and nothing stops the applicant speaking again
+// inside that window — so two replies could be in flight at once, both get
+// spoken, and the stale one lands first. Each turn records its number; a reply
+// is only spoken if its turn is still the newest. `inFlight` lets a new turn
+// abort the superseded request instead of paying for a reply nobody will hear.
+let currentTurn = 0;
+let inFlight = null; // AbortController for the reply currently being generated
 // request_id -> { resolve, timer }, for screenshots grabbed on demand rather
 // than picked up from the background poll.
 const pendingScreenshots = new Map();
@@ -308,12 +316,22 @@ function dedupeRepeatedSentences(text) {
 async function respondTo(text) {
   if (!text || !text.trim()) return;
 
+  // Claim this turn and cancel whatever was still being generated for the
+  // previous one — the applicant has moved on, so that answer is now stale.
+  const myTurn = ++currentTurn;
+  if (inFlight) inFlight.abort();
+  const controller = new AbortController();
+  inFlight = controller;
+
+  // Push the user's words even if this turn gets superseded: the next turn's
+  // context should still show everything they said, in the order they said it.
   history.push({ role: "user", content: text });
   if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
 
   // Grab the screen as it is at the moment they asked, not up to five seconds
   // ago — on a form, that gap is often a whole field.
   const fresh = await requestFreshScreenshot();
+  if (myTurn !== currentTurn) return; // they spoke again while we waited
   const shot = fresh || latestScreenshot;
 
   const latestUserContent = [{ type: "text", text }];
@@ -349,13 +367,19 @@ async function respondTo(text) {
       // Low temperature on purpose: explaining what a form field wants should
       // be near-deterministic. Creative variation is not a feature here.
       body: JSON.stringify({ model: OR_MODEL, temperature: 0.1, max_tokens: 220, messages }),
+      signal: controller.signal,
     });
+    if (myTurn !== currentTurn) return;
     if (!res.ok) {
       console.error(`[liveAssist] OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       sendCommand({ command: "tts.speak", text: "Sorry, I had trouble just now. Could you say that again?" });
       return;
     }
     const data = await res.json();
+    // Last check before speaking: if they got another sentence in while the
+    // model was writing, this answer is about the wrong question. Drop it —
+    // saying it would talk over what they actually just asked.
+    if (myTurn !== currentTurn) return;
     const reply = dedupeRepeatedSentences((data.choices?.[0]?.message?.content || "").trim());
     if (!reply) {
       sendCommand({ command: "tts.speak", text: "Sorry, I did not catch that. Could you repeat it?" });
@@ -365,8 +389,12 @@ async function respondTo(text) {
     if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
     sendCommand({ command: "tts.speak", text: reply });
   } catch (e) {
+    // An abort is us superseding ourselves, not a failure — stay quiet.
+    if (e.name === "AbortError" || myTurn !== currentTurn) return;
     console.error("[liveAssist] request failed:", e.message);
     sendCommand({ command: "tts.speak", text: "Sorry, something went wrong on my end. Could you say that again?" });
+  } finally {
+    if (inFlight === controller) inFlight = null;
   }
 }
 
