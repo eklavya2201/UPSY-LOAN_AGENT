@@ -127,6 +127,12 @@ So "make the co-applicant the primary applicant" is not a filing technicality. I
 
 → **Do not build agent handling for the second-co-applicant case.** It is a known drop-off, deliberately out of scope until the happy path is solid. The agent should recognise it and hand off to a human rather than improvise.
 
+**⚠️ Read this before trusting the screen-by-screen findings below: our walkthrough took the NON-happy path.** The 2026-08-04 session signed in as the *student*, selected `Applicant is: Non-earning`, and that choice fired the co-applicant branch — which is precisely Screens 10–13 (co-applicant details → verification pending → co-applicant income → co-applicant address). Everything recorded there is real and accurate, but it documents **the fallback case, not the case we were told to solve first**.
+
+What that does and doesn't invalidate:
+- **Still fully valid on both paths:** the cross-cutting failures — Aadhaar auto-fill getting the applicant's own name wrong (#10), the pre-ticked correspondence-address checkbox (#11), the confetti screen that is actually a pause (#12), the stepper label being coarser than the real screen. These are properties of Avanse's UI, not of which branch you're on.
+- **Deprioritised, not deleted:** the co-applicant-specific screens. Keep them documented — the fallback case does still occur — but they should not drive the agent's tuning.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
