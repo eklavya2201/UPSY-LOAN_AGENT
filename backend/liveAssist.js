@@ -31,10 +31,16 @@ const OR_MODEL =
 // Background poll, so there is always *some* recent frame if a fresh grab
 // fails. The frame actually used for an answer is requested on demand — see
 // requestFreshScreenshot().
-const SCREENSHOT_INTERVAL_MS = 5000;
-// How long to wait for that on-demand frame before falling back to the polled
-// one. Long enough to beat the 5s poll, short enough not to stall the reply.
-const FRESH_SCREENSHOT_TIMEOUT_MS = 2000;
+const SCREENSHOT_INTERVAL_MS = 3000;
+// How long to wait for an on-demand frame before falling back to the polled
+// one. Kept short: this sits directly in front of every reply, so it is spent
+// on latency the applicant feels while waiting for the bot to answer.
+const FRESH_SCREENSHOT_TIMEOUT_MS = 800;
+// If the background poll already captured a frame this recently, use it as-is
+// and skip the on-demand grab entirely. The screen rarely changes between the
+// applicant asking and us answering, so paying a round-trip to re-capture a
+// near-identical frame is latency for nothing.
+const SCREENSHOT_FRESH_ENOUGH_MS = 1500;
 // Guiding someone through a form means eight-plus fields across many turns; at
 // the old cap of 8 messages (~4 exchanges) the agent forgot what it had said at
 // the top of the form and repeated itself.
@@ -157,6 +163,7 @@ function sendCommand(cmd) {
 }
 
 let latestScreenshot = null; // data URL, refreshed on a timer
+let latestScreenshotAt = 0; // ms epoch of that frame, so we can judge staleness
 let history = []; // [{role, content}], capped at MAX_HISTORY
 let screenshotTimer = null;
 const humanParticipants = new Set();
@@ -181,6 +188,10 @@ const pendingScreenshots = new Map();
 // answer about the *previous* field. Falls back to the polled frame on timeout
 // so a slow grab degrades instead of blocking.
 function requestFreshScreenshot() {
+  // Cheap path first: the poll may have just captured this exact screen.
+  if (latestScreenshot && Date.now() - latestScreenshotAt < SCREENSHOT_FRESH_ENOUGH_MS) {
+    return Promise.resolve(latestScreenshot);
+  }
   return new Promise((resolve) => {
     const id = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const timer = setTimeout(() => {
@@ -249,7 +260,10 @@ async function handleEvent(event) {
 
     case "screenshot.result": {
       const dataUrl = event.data ? `data:image/jpeg;base64,${event.data}` : null;
-      if (dataUrl) latestScreenshot = dataUrl;
+      if (dataUrl) {
+        latestScreenshot = dataUrl;
+        latestScreenshotAt = Date.now();
+      }
       const pending = event.request_id && pendingScreenshots.get(event.request_id);
       if (pending) {
         clearTimeout(pending.timer);
