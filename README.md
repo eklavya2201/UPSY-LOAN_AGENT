@@ -133,6 +133,15 @@ What that does and doesn't invalidate:
 - **Still fully valid on both paths:** the cross-cutting failures — Aadhaar auto-fill getting the applicant's own name wrong (#10), the pre-ticked correspondence-address checkbox (#11), the confetti screen that is actually a pause (#12), the stepper label being coarser than the real screen. These are properties of Avanse's UI, not of which branch you're on.
 - **Deprioritised, not deleted:** the co-applicant-specific screens. Keep them documented — the fallback case does still occur — but they should not drive the agent's tuning.
 
+**🕳️ The honest gap: the happy path has never been walked.** Every screenshot we hold is from the co-applicant branch. Nobody has yet gone through Avanse as a single **earning** applicant, so the following are genuinely unknown and must not be guessed at:
+- What Applicant Details asks for when `Applicant is` is set to an **earning** option — the option's exact label is itself unconfirmed, since only "Non-earning" was ever selected.
+- Whether Income Verification and bank verification look different with no co-applicant attached.
+- Whether the 5-stage stepper behaves differently, or skips stages, on a single-person application.
+
+The expected happy-path sequence — **sign-in → consent → course selection → Applicant Details (earning) → personal details → address → income → bank verification, with no co-applicant screens at all** — is a reasonable inference from what we saw, *not* an observation. Walking it is the highest-value next research step, and it is what should ground the agent's tuning.
+
+**One more thing the agent must not assume:** on the happy path the person on the call is most likely **a parent acting as the primary applicant, not the student**. Guidance phrased as "you, the student…" would be wrong in the common case.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
