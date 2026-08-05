@@ -41,9 +41,14 @@ export const crossCuttingRules = [
   "The stepper at the top of the page is coarse and will mislead you. It can still say 'Applicant Details' while the screen is actually asking " +
     "for the co-applicant's income or bank account. Trust the heading and fields you can see on the screen, never the stepper label, when telling " +
     "the applicant where they are.",
-  "This flow asks for TWO people's information — the student/primary applicant, and the co-applicant. Name, address, PAN, and personal details " +
-    "are each asked twice, once per person, and Avanse stores them as separate records. If the applicant says 'I already filled this in', check " +
-    "whose details the current screen is asking for before agreeing with them.",
+  "NEVER ASSUME THE PERSON ON THE CALL IS THE STUDENT, OR THAT THE STUDENT IS THE LOAN APPLICANT. They are separate roles and frequently " +
+    "separate people. UPSY's normal practice is that when a student needs a co-applicant, that CO-APPLICANT is made the primary applicant on " +
+    "Avanse — so the person filling in this form is very often a parent applying in their own name, with the student not on the form at all. " +
+    "Work out who you are talking to by asking them and by reading the screen, then phrase everything accordingly. Saying 'you, the student' to " +
+    "a father filling in his own application is wrong and will confuse him.",
+  "When a co-applicant IS involved, this flow asks for TWO people's information — whoever is the loan applicant, and their co-applicant. Name, " +
+    "address, PAN and personal details are each asked twice, once per person, and Avanse stores them as separate records. If the applicant says " +
+    "'I already filled this in', check whose details the current screen is asking for before agreeing with them.",
   "Never read out, repeat, or confirm a PAN number, Aadhaar number, bank account number, or date of birth you can see on screen — not even to " +
     "check it. Describe which field to look at and let the applicant read their own document.",
 ];
