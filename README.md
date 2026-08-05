@@ -111,6 +111,14 @@ Everything in "Observed screens and fields" below Screen 4 was walked via Avanse
 
 This is the single most important framing in this section, because it **reprioritises everything documented below**. The screens that involve a co-applicant are not the main case to solve — they are the fallback case, and the team has explicitly said to solve the happy path first.
 
+**How UPSY deliberately produces that happy path** (this is a designed outcome, not luck):
+
+1. A student is typically **non-earning**. If the student applies to Avanse in their own name, Avanse sees `Applicant is: Non-earning`, immediately demands a co-applicant, and the whole multi-person branch opens up.
+2. So UPSY **does not send the student to Avanse as the applicant**. When UPSY's own checks determine the student needs a co-applicant (say, their father), UPSY makes **that co-applicant the primary applicant on the Avanse side**.
+3. That person *is* earning, so Avanse sees an ordinary single earning applicant and **never asks for a co-applicant** — which is exactly the happy path.
+
+So "make the co-applicant the primary applicant" is not a filing technicality. It is the mechanism that produces the clean single-person application.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
