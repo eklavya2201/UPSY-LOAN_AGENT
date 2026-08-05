@@ -251,7 +251,17 @@ function liveAssistPlaceholder() {
   return `<div id="liveAssistCard" class="bg-white rounded-2xl p-6 card-shadow border border-outline-variant/40 text-sm text-on-surface-variant flex items-center gap-2"><span class="material-symbols-outlined animate-spin">progress_activity</span> Checking live-assist status…</div>`;
 }
 
+// While a call is live the phase changes on its own (joining → connected →
+// speaking → listening), so the card re-checks instead of waiting for the user
+// to click something. Cleared as soon as the call is over or the officer
+// switches lead, so only one poll is ever in flight.
+let liveAssistPoll = null;
+function stopLiveAssistPoll() {
+  if (liveAssistPoll) { clearTimeout(liveAssistPoll); liveAssistPoll = null; }
+}
+
 async function loadLiveAssistCard(d) {
+  stopLiveAssistPoll();
   let status;
   try { status = await (await fetch(`/api/applications/${d.leadId}/live-assist`)).json(); }
   catch { status = { running: false }; }
@@ -260,6 +270,7 @@ async function loadLiveAssistCard(d) {
   if (!el) return;
   el.outerHTML = liveAssistHtml(d, status);
   wireLiveAssist(d);
+  if (status.running) liveAssistPoll = setTimeout(() => loadLiveAssistCard(d), 2000);
 }
 
 function liveAssistHtml(d, status) {
@@ -267,10 +278,12 @@ function liveAssistHtml(d, status) {
     return `
     <section id="liveAssistCard" class="bg-primary-soft rounded-2xl p-6 border border-primary-line flex flex-col md:flex-row justify-between items-center gap-4">
       <div class="flex items-center gap-4">
-        <div class="w-12 h-12 rounded-2xl bg-primary grid place-items-center"><span class="material-symbols-outlined text-white text-[26px]">podcasts</span></div>
+        <div class="w-12 h-12 rounded-2xl bg-primary text-primary grid place-items-center ${status.phase === "connected" || status.phase === "listening" || status.phase === "speaking" ? "" : "ua-ripple"}"><span class="material-symbols-outlined text-white text-[26px]">podcasts</span></div>
         <div>
           <h3 class="font-semibold">UPSY live-assist call in progress</h3>
-          <p class="text-sm text-on-surface-variant">Started ${fmtTime(status.startedAt)} · <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a></p>
+          <div class="mt-1.5">${UpsyPhases.phasePillHtml(status.phase, status.phaseDetail)}</div>
+          ${UpsyPhases.phaseStepsHtml(status.phase)}
+          <p class="text-sm text-on-surface-variant mt-2">Started ${fmtTime(status.startedAt)} · <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a></p>
           ${status.invite ? (status.invite.sent
             ? `<p class="text-xs text-success mt-1 flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">check_circle</span>Join link sent to ${status.invite.phone}</p>`
             : `<p class="text-xs text-amber mt-1 flex items-start gap-1"><span class="material-symbols-outlined text-[14px]">warning</span>${status.invite.reason}</p>`) : ""}
@@ -309,6 +322,12 @@ function wireLiveAssist(d) {
         startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`;
         return;
       }
+      // The bot takes a few seconds to appear in the meeting; say so straight
+      // away rather than leaving the officer watching an empty call.
+      UpsyPhases.showToast({
+        title: "UPSY is joining the call",
+        body: "Give it a few seconds to appear. If your meeting has a waiting room, admit UPSY when it knocks.",
+      });
       await loadLiveAssistCard(d);
     } catch {
       alert("Couldn't reach the server — try again.");

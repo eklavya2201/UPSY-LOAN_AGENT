@@ -163,6 +163,15 @@ function sendCommand(cmd) {
   child.stdin.write(JSON.stringify(cmd) + "\n");
 }
 
+// Report what the bot is doing to whoever launched us (liveAssistManager),
+// which surfaces it in the UI. Without this the dashboard could only say
+// "in progress" from the moment the process spawned, so an applicant watching
+// an empty meeting had no way to tell joining-in-progress from nothing-working.
+// Logs stay on stderr; stdout carries only these machine-readable lines.
+function emitPhase(phase, detail) {
+  process.stdout.write(JSON.stringify({ type: "phase", phase, detail: detail || null }) + "\n");
+}
+
 let latestScreenshot = null; // data URL, refreshed on a timer
 let latestScreenshotAt = 0; // ms epoch of that frame, so we can judge staleness
 let history = []; // [{role, content}], capped at MAX_HISTORY
@@ -217,20 +226,27 @@ rl.on("line", (line) => {
 
 async function handleEvent(event) {
   switch (event.event) {
+    case "call.bot_waiting_room":
+      emitPhase("waiting_room");
+      break;
+
     case "call.bot_ready":
       console.error("[liveAssist] bot ready, waiting for a participant");
+      emitPhase(humanParticipants.size ? "connected" : "in_meeting");
       break;
 
     case "participant.joined":
       if (event.name && event.name.toLowerCase() !== BOT_NAME.toLowerCase()) {
         humanParticipants.add(event.name);
         everHadHuman = true;
+        emitPhase("connected", event.name);
       }
       break;
 
     case "participant.left":
       if (event.name) humanParticipants.delete(event.name);
       if (everHadHuman && humanParticipants.size === 0) {
+        emitPhase("ending");
         sendCommand({ command: "leave" });
       }
       break;
@@ -255,7 +271,12 @@ async function handleEvent(event) {
       }
       break;
 
+    case "tts.done":
+      emitPhase("listening");
+      break;
+
     case "user.message":
+      emitPhase("thinking");
       await respondTo(event.text);
       break;
 
@@ -396,6 +417,7 @@ async function respondTo(text) {
     // same "don't say it twice" rule is applied incrementally instead.
     const speak = (sentence) => {
       if (!sentence || sentence.toLowerCase() === lastSpoken.toLowerCase()) return;
+      if (!spokenSoFar.length) emitPhase("speaking");
       lastSpoken = sentence;
       spokenSoFar.push(sentence);
       sendCommand({ command: "tts.speak", text: sentence });

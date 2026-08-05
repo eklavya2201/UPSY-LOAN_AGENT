@@ -480,7 +480,16 @@ async function loadLenderCards() {
 // joins to help them fill out a form. `compact` renders the shrunk-down
 // version that fits inside the narrow Ask UPSY sidebar on document pages;
 // the full version is used on the completion screen.
+// While a call is live the phase moves on its own (joining → connected →
+// speaking → listening), so the panel re-checks rather than waiting for a
+// click. One poll at a time, cleared as soon as the call ends.
+let liveAssistPoll = null;
+function stopLiveAssistPoll() {
+  if (liveAssistPoll) { clearTimeout(liveAssistPoll); liveAssistPoll = null; }
+}
+
 async function loadLiveAssistApplicant(compact) {
+  stopLiveAssistPoll();
   const box = document.getElementById("liveAssist");
   if (!box) return;
   let status;
@@ -489,6 +498,9 @@ async function loadLiveAssistApplicant(compact) {
     ? (compact ? liveAssistRunningCompactHtml(status) : liveAssistRunningHtml(status))
     : (compact ? liveAssistIdleCompactHtml() : liveAssistIdleHtml());
   wireLiveAssistApplicant(compact);
+  if (status.running && document.getElementById("liveAssist")) {
+    liveAssistPoll = setTimeout(() => loadLiveAssistApplicant(compact), 2000);
+  }
 }
 
 function liveAssistIdleHtml() {
@@ -504,7 +516,9 @@ function liveAssistIdleHtml() {
 function liveAssistRunningHtml(status) {
   return `
   <div class="flex items-center gap-2 mb-1"><span class="material-symbols-outlined text-primary">podcasts</span><h3 class="text-xl font-semibold">UPSY is live in your call</h3></div>
-  <p class="text-sm text-on-surface-variant mb-4">Join <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a> if you haven't already — UPSY is waiting there.</p>
+  <div class="mb-2">${UpsyPhases.phasePillHtml(status.phase, status.phaseDetail)}</div>
+  ${UpsyPhases.phaseStepsHtml(status.phase)}
+  <p class="text-sm text-on-surface-variant my-4">Join <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">${status.meetUrl}</a> if you haven't already — UPSY is waiting there.</p>
   <button id="liveAssistStopBtn" class="px-6 py-2.5 bg-danger text-white rounded-full text-sm font-semibold hover:bg-danger-dark transition flex items-center gap-2"><span class="material-symbols-outlined text-[18px]">call_end</span>End call</button>`;
 }
 
@@ -519,6 +533,7 @@ function liveAssistIdleCompactHtml() {
 function liveAssistRunningCompactHtml(status) {
   return `
   <div class="flex items-center gap-1.5 mb-1"><span class="material-symbols-outlined text-primary text-[16px]">podcasts</span><div class="text-xs font-bold">UPSY is live in your call</div></div>
+  <div class="mb-2">${UpsyPhases.phasePillHtml(status.phase, status.phaseDetail)}</div>
   <p class="text-[11px] text-on-surface-variant mb-2">Join <a class="text-primary underline" href="${status.meetUrl}" target="_blank" rel="noopener">the meet</a> if you haven't already.</p>
   <button id="liveAssistStopBtn" class="w-full py-1.5 bg-danger text-white rounded-lg text-xs font-semibold hover:bg-danger-dark transition flex items-center justify-center gap-1"><span class="material-symbols-outlined text-[14px]">call_end</span>End call</button>`;
 }
@@ -534,6 +549,12 @@ function wireLiveAssistApplicant(compact) {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetUrl: url }),
       })).json();
       if (r.error) { alert(r.error); startBtn.disabled = false; startBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">call</span>Start call`; return; }
+      // A bot takes a few seconds to walk into the meeting. Say so, so the
+      // wait does not look like nothing happened.
+      UpsyPhases.showToast({
+        title: "UPSY is joining your call",
+        body: "Give it a few seconds to appear. If your meeting has a waiting room, let UPSY in when it knocks.",
+      });
       await loadLiveAssistApplicant(compact);
     } catch {
       alert("Couldn't reach the server — try again.");

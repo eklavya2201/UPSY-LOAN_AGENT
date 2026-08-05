@@ -62,7 +62,15 @@ function buildContext(app) {
 
 export function getStatus(leadId) {
   if (active && active.leadId === leadId) {
-    return { running: true, meetUrl: active.meetUrl, startedAt: active.startedAt, invite: active.invite };
+    return {
+      running: true,
+      meetUrl: active.meetUrl,
+      startedAt: active.startedAt,
+      invite: active.invite,
+      phase: active.phase,
+      phaseDetail: active.phaseDetail,
+      phaseAt: active.phaseAt,
+    };
   }
   return { running: false };
 }
@@ -105,9 +113,38 @@ export async function startCall(leadId, meetUrl, { notifyApplicant = false } = {
     { stdio: ["ignore", "pipe", "pipe"] }
   );
   const startedAt = new Date().toISOString();
-  active = { leadId, meetUrl, startedAt, child, invite: null };
+  // "starting" until the bot reports otherwise — the process exists but has
+  // not reached the meeting yet, and saying so is the whole point.
+  active = { leadId, meetUrl, startedAt, child, invite: null, phase: "starting", phaseDetail: null, phaseAt: startedAt };
 
-  child.stdout.on("data", (d) => process.stdout.write(`[live-assist ${leadId}] ${d}`));
+  // liveAssist.js writes machine-readable phase lines on stdout (logs go to
+  // stderr), so the dashboard can show what the bot is actually doing instead
+  // of a bare "in progress" from the moment the process spawned.
+  let stdoutTail = "";
+  child.stdout.on("data", (d) => {
+    stdoutTail += d.toString();
+    const lines = stdoutTail.split("\n");
+    stdoutTail = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let msg = null;
+      try {
+        msg = JSON.parse(trimmed);
+      } catch {
+        // not a phase line — it is ordinary output, pass it through
+      }
+      if (msg && msg.type === "phase") {
+        if (active && active.leadId === leadId) {
+          active.phase = msg.phase;
+          active.phaseDetail = msg.detail || null;
+          active.phaseAt = new Date().toISOString();
+        }
+        continue;
+      }
+      process.stdout.write(`[live-assist ${leadId}] ${line}\n`);
+    }
+  });
   child.stderr.on("data", (d) => process.stderr.write(`[live-assist ${leadId}] ${d}`));
   child.on("exit", (code) => {
     console.error(`[live-assist ${leadId}] process exited with code ${code}`);
