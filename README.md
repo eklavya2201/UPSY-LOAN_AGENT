@@ -105,6 +105,12 @@ Everything in "Observed screens and fields" below Screen 4 was walked via Avanse
 
 **Why this matters more than the self-serve form:** applicants referred by a course provider like Airtribe — i.e. the applicants UPSY's own live-assist agent will actually be on a call with — arrive via this invite path, not by finding Avanse's own "Apply Now" button. The 5-stage wizard and its specific fields (documented below) are what the agent needs to be precise about, more so than the older quick-form findings.
 
+### 🎯 The "happy path" — what the agent should be good at first (team decision, 2026-08-04)
+
+**Definition, straight from the team (Akhil):** the happy path is *"the case when Avanse doesn't ask for a co-applicant."* One person applies on Avanse, alone, and the entire co-applicant branch never appears.
+
+This is the single most important framing in this section, because it **reprioritises everything documented below**. The screens that involve a co-applicant are not the main case to solve — they are the fallback case, and the team has explicitly said to solve the happy path first.
+
 ### Observed screens and fields (reference for grounding the agent)
 
 Everything below is what we **actually saw** on the live site. Anything not directly observed is marked as unknown rather than guessed — do not let the agent assert the unknowns as fact.
