@@ -47,12 +47,17 @@ function verifiedNameFrom(app, wantCoApplicant) {
   return null;
 }
 
-function buildContext(app) {
+// The summary facts an agent may know about an applicant. Exported as a plain
+// object because backend/voiceCall.js needs the same facts for the browser
+// voice call, and the kycName selection above is subtle enough that two copies
+// would drift. Only this file base64s it — that encoding exists solely because
+// liveAssist.js receives it as a command-line argument.
+export function buildContextPayload(app) {
   const p = app.profile || {};
   const e = app.eligibility || {};
   const total = app.total ?? Object.keys(app.verifiedDocs || {}).length;
   const done = Object.keys(app.verifiedDocs || {}).length;
-  const payload = {
+  return {
     name: p.name || null,
     course: p.course || null,
     institute: p.institute || null,
@@ -64,7 +69,10 @@ function buildContext(app) {
     kycName: verifiedNameFrom(app, false),
     coApplicantKycName: verifiedNameFrom(app, true),
   };
-  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+}
+
+function buildContext(app) {
+  return Buffer.from(JSON.stringify(buildContextPayload(app)), "utf8").toString("base64");
 }
 
 export function getStatus(leadId) {
