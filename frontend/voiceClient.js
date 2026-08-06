@@ -182,8 +182,14 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
       if (event.code === 1008 || /unauth|forbidden|token|expired|invalid/i.test(reason)) {
         return "The voice service rejected our credentials. The access token may have expired — try the call again.";
       }
+      // 1011 is the provider's catch-all, and it is what an *undeployed* agent
+      // returns — confirmed 2026-08-07, after this exact close code sent a
+      // debugging session through the whole audio path before anyone looked at
+      // the account. The server now preflights for that case (see
+      // checkAgentReady in backend/voiceCall.js), so by the time a caller gets
+      // here it is genuinely the provider having a bad moment.
       if (event.code === 1011 || /internal|server error/i.test(reason)) {
-        return `The voice service hit an error on its side (${raw}). Try again in a moment.`;
+        return `The voice service hit an error on its side (${raw}). Try again in a moment — if it keeps happening, run npm run voice:check.`;
       }
       if (/credit|quota|billing|limit/i.test(reason)) {
         return "The voice account is out of credit, so calls cannot connect right now.";
