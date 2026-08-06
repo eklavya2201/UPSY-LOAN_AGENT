@@ -24,7 +24,7 @@ import { answerDocQuestion, assistConfigured } from "./assist.js";
 import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
-import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine } from "./voiceCall.js";
+import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady } from "./voiceCall.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -911,6 +911,13 @@ app.post("/api/voice/session", async (req, res) => {
     res.json(session);
   } catch (e) {
     if (e.code === "NOT_CONFIGURED") return res.status(503).json({ error: e.message });
+    // The agent exists but was never deployed. Worth its own branch: without
+    // this the caller only ever sees an opaque 1011 close after the socket
+    // opens, and the real cause never reaches anyone who could act on it.
+    if (e.code === "AGENT_NOT_READY") {
+      console.error(`[voice] ${e.message}`);
+      return res.status(503).json({ error: "UPSY's voice line isn't switched on yet. Please try the chat, or check back shortly.", detail: e.message });
+    }
     console.error("[voice] session failed:", e.message);
     res.status(502).json({ error: "Couldn't start the call right now. Please try again in a moment." });
   }
@@ -945,6 +952,18 @@ app.listen(PORT, () => {
   if (process.env.OPENROUTER_API_KEY) readers.push(`OpenRouter (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   readers.push("OCR (fallback)");
   console.log(`Document reader priority: ${readers.join(" → ")}`);
+  // The agent can be configured (keys present) and still refuse every call
+  // because it was never deployed. Say so at boot rather than letting a caller
+  // find out — this is exactly the failure that looked like our bug on 2026-08-06.
+  if (voiceConfigured()) {
+    checkAgentReady({ force: true })
+      .then((r) => {
+        if (!r.ok) console.warn(`⚠️  Voice calls will fail: ${r.reason}`);
+        else if (r.unverified) console.warn(`⚠️  Voice agent readiness unverified: ${r.reason}`);
+        else console.log("Voice agent is deployed and accepting calls.");
+      })
+      .catch((e) => console.warn(`⚠️  Could not check the voice agent: ${e.message}`));
+  }
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
   console.log(voiceStatusLine());
