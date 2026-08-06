@@ -6,25 +6,37 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 ## 🧭 Start here (orientation for a new session)
 
-**Where the project is (2026-08-02):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**, and confirmed in production.
+**Where the project is (2026-08-06):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**, and confirmed in production. **New on 2026-08-06:** a second, completely separate voice agent — a **mobile page at `/m` where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved. A real Cartesia key is now wired in; the server-side session mint is confirmed live (token minted, correct endpoint, prompt attached). **The browser→voice round trip itself is still being debugged** — the call sheet was closing itself about a second after connecting, with no reason shown. Root-caused to two things in `voiceClient.js` (a socket-close handler that never reported *why* it closed, and a later failure path that didn't release the mic) — both fixed; a live phone test to confirm is the next step. See "Browser voice calls (`/m`)" below for the current detail.
 
-**What to work on next:** the **▶️ ACTIVE PRIORITY** block in the roadmap — *making the live-assist voice agent precise on Avanse's real application form*. Its spec is the nine-item failure-mode list in the Avanse section. The competing "build our own call stack" idea is **⏸️ ON HOLD** — do not start it.
+**⚠️ There are now TWO voice agents and confusing them will waste your session:**
 
-**The five things that will bite you if you don't know them:**
+| | `liveAssist.js` (AgentCall) | `voiceCall.js` (browser) |
+|---|---|---|
+| Where | Joins a **Google Meet** as a bot | The caller's **own phone browser** on `/m` |
+| Sees | A screen share of a lender's form | Nothing — voice only |
+| For | Guiding someone through Avanse | Answering loan questions on the spot |
+| Thinking | Ours (OpenRouter, per turn) | The provider's hosted agent, on **our** prompt |
+| Concurrency | **1 call server-wide** | Whatever the provider allows |
+
+**What to work on next:** the **▶️ ACTIVE PRIORITY** block in the roadmap — *making the live-assist voice agent precise on Avanse's real application form*. Its spec is the failure-mode list in the Avanse section. The competing "build our own call stack" idea is **⏸️ ON HOLD** — do not start it. Note that `/m` is **Step 2 of that on-hold plan built early**, deliberately: it was cheap once we knew how, and it removes AgentCall from the in-app use case entirely.
+
+**The six things that will bite you if you don't know them:**
 
 1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
 2. **`ANTHROPIC_API_KEY` is still not set.** PDFs therefore have *no working reader at all*, and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading the same file as ₹1,39,100 and ₹13,91,000. This is Phase 0 and it blocks real precision work.
-3. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
-4. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it, and we don't yet handle the low-credit or max-duration warnings.
-5. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
+3. **`CARTESIA_API_KEY` / `CARTESIA_AGENT_ID` are now set locally** (2026-08-06) — the key came from the team pasted directly into chat, so **treat it as compromised and rotate it at `play.cartesia.ai`** once `/m` testing is done, same pattern as every other secret in point 6. Session minting is confirmed working against the real account; the call itself is still being debugged (see "Browser voice calls" below).
+4. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
+5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/m` — different vendor, different path.)
+6. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
 
-**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team.html`.
+**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team`. The mobile surface is at **`/m`** (open it in a phone-sized viewport).
 
 **Where to read next, by question:**
 
 | You want to… | Go to |
 |---|---|
-| Understand the voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
+| Understand the Meet voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
+| Understand the phone-browser voice agent | "Browser voice calls (`/m`)" |
 | Work on the current priority | "Avanse (`online.avanse.com`)" then the ▶️ ACTIVE PRIORITY roadmap block |
 | Find which file does what | "Code map" |
 | Avoid repeating a past mistake | "Ops & reliability notes" |
@@ -387,6 +399,78 @@ Note the ★ line is the *only* part that is ours at runtime. Everything above a
 - **One call at a time, globally.** `liveAssistManager.js` enforces a single active session across the whole server (matches the free plan's concurrency limit) — a second officer or applicant trying to start a call while one is active gets a clear error, not a silent failure, but this will need real concurrency handling before multiple simultaneous calls are a real requirement.
 - **No fixture-tested against a real partner lender's full form yet** — verified with fake/test Meet URLs and the Avanse quick-apply form's first screen only (see "Partner-lender research" above); a full walkthrough of a real multi-step lender application hasn't been done live.
 
+## Browser voice calls (`/m`) — tap a button on your phone and talk to UPSY (built 2026-08-06)
+
+**The ask:** the team used [`profound.me`](https://profound.me)'s onboarding on a phone, had a ten-minute voice conversation with it, and wanted that — *"the response was insane, it was taking input like a live customer care is on the other end"* — as UPSY's mobile experience, with a call button at the top of the page.
+
+### What Profound actually does (researched from their shipped bundles, 2026-08-06)
+
+Their onboarding is behind a phone-OTP gate we did not sign up for, but the whole app ships as public JavaScript. Read from `profound.me`'s own bundles:
+
+- **Stack**: TanStack Start (React 19 + Vite SSR), TanStack Router + Query, shadcn/ui + Base UI + Floating UI, lucide icons, **Tailwind v4**, GSAP + SplitText, Motion, Lenis smooth scroll, Embla. Sentry + PostHog (proxied first-party through `/conduit/*` to survive ad blockers). Separate API at `api.profound.me`.
+- **The call is not a meeting.** No LiveKit, no Vapi, no Daily, no Twilio, no WebRTC peer connection. It is a **raw WebSocket carrying base64 PCM**, and the client (`assets/cartesia-demo-*.js`, ~11KB) is nothing but an audio pump:
+  `POST /api/…/start` → server returns `{signed_url, metadata}` → `new WebSocket(signed_url)` → mic via `AudioWorklet` (2048-sample frames, Float32→Int16→base64) → `{event:"media_input"}` up, `{event:"media_output"}` down → decode → `AudioBuffer` scheduled on a running `playbackQueueTime` cursor.
+- **The client does no thinking at all.** STT, the LLM, TTS, turn-taking and barge-in are all **server-side inside Cartesia**. Their own UI text says the system prompt lives on the Cartesia dashboard and only `{{name}}` / `{{linkedin_data}}` are passed as `call_request.metadata`. The "live customer care" feel is a hosted voice agent, not something they engineered.
+
+**The design lesson, separately:** their landing page is a pinned scrollytelling piece where nothing actually scrolls — copy blocks are `position:fixed` and swapped on a GSAP timeline over a WebGL canvas. Techniques worth stealing, and now used on `/m`: a **dark halo** (`radial-gradient(closest-side, …)` on a `::before`) behind every heading so text stays readable over a live background; a **second blurred text pass** via `content: attr(data-text)` purely to bloom; display type at **weight 400 serif** (bold reads cheap); `clamp(…, min(6vw, 8vh), …)` so type scales off the *smaller* viewport dimension; and on mobile specifically — **half the particle count**, DPR capped at 2, and a full static fallback for `prefers-reduced-motion`.
+
+### What we built
+
+`/m` is a **new page, not a route of the applicant SPA** — a different design (near-black, voice-first, phone-first) that shares nothing with `index.html` but the API. `/login → /intake → /docs` is untouched.
+
+```
+[Applicant on their phone at /m]  ── taps "Call UPSY" (top right, always visible)
+        │
+        ▼
+   POST /api/voice/session                        ← ours (server.js)
+     • rate-limited 5 per 10 min per IP (public endpoint, billable per hit)
+     • leadId from sessionStorage, if they signed in this tab
+        ▼
+   voiceCall.js                                   ← ours
+     • POST api.cartesia.ai/access-token → short-lived, agent-scoped token
+       (the sk_car_… account key NEVER reaches the browser)
+     • builds the system prompt from voicePrompt.js + that lead's real facts
+        ▼
+   browser opens  wss://api.cartesia.ai/agents/stream/<id>?access_token=…
+     • start event carries OUR system_prompt + introduction  ★
+     • mic → AudioWorklet → PCM → media_input
+     • media_output → PCM → AudioBuffer queue → speaker
+        ▼
+                    ╔═══════════════════════════════════╗
+                    ║  CARTESIA                         ║
+                    ║  STT + LLM + TTS + turn-taking    ║
+                    ╚═══════════════════════════════════╝
+```
+
+**★ is where we deliberately diverge from Profound.** Cartesia's `start` event accepts `agent.system_prompt` inline, so the entire agent definition lives in `backend/voicePrompt.js` and is reviewed in git — rather than on a vendor dashboard where it is invisible to code review and drifts silently from `eligibility.js`.
+
+**Two callers, one button:**
+- **Anonymous** (no login) — the common case. The prompt says outright that it does not know who this is, must not guess a name or amount, and should point them at "Check my eligibility" when they are ready to apply.
+- **Signed in** — `frontend/app.js` now writes `upsy_lead` to `sessionStorage`, so a call from the same tab is grounded in that applicant's real record: name, course, eligibility verdict, indicative amount, document progress, **the next document they still owe**, and the **name as it reads on their verified ID**. Same facts `liveAssistManager.buildContext()` feeds the Meet agent — names only, never ID numbers. `buildContextPayload()` is now exported from `liveAssistManager.js` so both agents share one definition of those facts instead of drifting.
+
+**Voice-specific safety rules** (in `voicePrompt.js`, and genuinely different from the screen-share agent's): never ask the caller to say a PAN / Aadhaar / account number / OTP **out loud**, interrupt them if they start reading one, say it is an AI the moment it is asked, never promise an approval or a rate, and never claim to have done something it cannot do (it cannot see documents, upload anything, or check live status).
+
+**What's verified and what isn't (updated 2026-08-06, against a real Cartesia account):**
+- ✅ Server boots and prints `Voice calls: cartesia (agent agent_…, pcm_44100)`.
+- ✅ Rate limiter unit-tested (blocks the 6th hit, per-key isolated, window expires, stale keys swept).
+- ✅ Audio codec exercised directly via `UpsyVoice._codec`: sine round-trip accurate to ~1.8 LSB, clipping saturates without sign wraparound, 200k-sample frames survive `btoa`, 48k→44.1k resamples exactly.
+- ✅ Page renders, fonts load, no horizontal overflow, call sheet centred.
+- ✅ **`POST /api/voice/session` confirmed live against the real account**: HTTP 200, a real 263-char short-lived token minted at `api.cartesia.ai/agents/stream/<agent-id>`, our full system prompt attached, the account key never appears in the response. The whole server-side chain — rate limit → token mint → prompt build → per-lead grounding — works.
+- 🔧 **Found live, fixed, not yet re-verified on a real phone:** the call sheet was silently closing about a second after "Connecting…", with no error shown — looked like our bug from the outside. Two real bugs in `frontend/voiceClient.js`:
+  1. The WebSocket `close` handler never surfaced the close code/reason, so any early close looked identical to a normal hang-up and the sheet just vanished.
+  2. `fail()` only set UI status — if a failure happened *after* the mic was already open, nothing actually stopped the stream, leaving the mic live with no way out short of reloading.
+  Both fixed: close events now map to an actual message (agent not published, bad/expired token, provider-side error, out of credit), a close with no audio ever received is now treated as a failure rather than a clean end, and every failure path now calls `stop()` so the mic always releases. **Not yet confirmed against a real call** — the fixes are code-reviewed and syntax-checked, not phone-tested.
+- ❌ The exact barge-in event name is still unconfirmed — `voiceClient.js` matches it defensively (`/interrupt|clear|barge|cancel|flush/`) and logs unrecognised events, so a real call will tell us the truth.
+- ❌ Not tested on a real phone yet. iOS Safari is the risk: the code resumes both `AudioContext`s inside the tap and resamples if the browser refuses 44.1kHz, but that is reasoning, not observation.
+
+**Two dashboard gotchas found setting this up, worth knowing before creating an agent:**
+- **A newly created Cartesia agent sits in "Building…" until you press Publish.** Easy to miss, and the symptom if you don't (a call that connects then immediately closes) looks exactly like a bug on our side.
+- **The dashboard's own default system prompt includes a `web_search` tool and a "playful, matches your energy" persona** — both wrong for a loan agent (web search means the agent can state a lender's rate from whatever page it finds, not from `eligibility.js`). Our per-call `agent.system_prompt` override should replace it at runtime, but that override had never been tested against a real account until today, so pasting the anonymous-caller prompt (`buildVoiceSystemPrompt(null)`, regenerable any time — see `backend/voicePrompt.js`) into the dashboard too is the safe backstop in case the override silently doesn't apply.
+
+**To turn it on:** create an agent at `play.cartesia.ai`, publish it, then put `CARTESIA_API_KEY` and `CARTESIA_AGENT_ID` in `.env` (both are `sync: false` in `render.yaml` for the deploy). Do not paste them into chat — if a key ever ends up in a chat session, treat it as compromised and rotate it.
+
+**Why Cartesia first, and what comes after:** it is what Profound uses, so it is the shortest path to the feel the team asked for. But it is English-first, and a large share of UPSY's callers would rather be guided in Hindi. `voiceCall.js` is written as an adapter (`VOICE_PROVIDER`) and `voiceClient.js` is provider-agnostic by construction — it only knows "PCM over a WebSocket" — so the **Sarvam (TTS/STT) + Deepgram (STT)** path, using keys the team already has, slots in behind the same interface without touching the browser code. That is the next step, and it is the one that closes a real product gap rather than a cost one.
+
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
 When the applicant uploads the **co-applicant income proof** (`co_income_proof`), `backend/income.js` reads the income off the document via the same Claude → OpenRouter chain:
@@ -663,6 +747,11 @@ npm start
 - `backend/eval-income.js` — `npm run eval:income`: batch income-doc eval / model A/B harness over the project root + `data/uploads/` or given paths (now also prints extracted address).
 - `backend/leadSources/` — the pluggable lead-source layer (`mockSource.js` + `index.js` registry). **Add real platforms here.**
 - `backend/lenderForms/` — per-site screen/field guides for the live-assist agent. `upsyIn.js` (the course-invite entry path — **a real third-party platform, not this product, despite the name**) and `avanse.js` (the lender's own 14-screen journey, plus cross-cutting rules like "verify every auto-filled field"). `index.js`'s `buildLenderGuidancePrompt()` renders all registered portals into one system-prompt block in journey order; the agent works out which site is on screen itself (URL/logo), so there's deliberately no code-side selector. **Add a portal by creating `<name>.js` here and registering it in `index.js`.**
+- `backend/voiceCall.js` — **browser voice calls** (`/m`): mints Cartesia's short-lived agent token and assembles the session the caller's phone opens directly. Written as a provider adapter (`VOICE_PROVIDER`) so Sarvam/Deepgram can replace Cartesia without touching the client. **Not the same thing as `liveAssist.js`** — see the comparison table in "Start here".
+- `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, and a document checklist generated from `documents.js` so it cannot drift.
+- `backend/rateLimit.js` — tiny in-memory per-key limiter. Exists because `POST /api/voice/session` is public and every hit mints a billable credential.
+- `frontend/m.html` / `frontend/m.js` — the mobile surface: starfield canvas, scroll reveals, and the in-call sheet (orb, waveform, timer, mute, hang up). Self-contained CSS, no Tailwind CDN. **Its own page, not a route of the applicant SPA.**
+- `frontend/voiceClient.js` — the audio pump: mic → `AudioWorklet` → PCM → WebSocket → `AudioBuffer` playback queue. Provider-agnostic; knows nothing about loans. Exposes `UpsyVoice._codec` for testing the conversion math.
 - `backend/notifier.js` — picks the active reminder channel (mock console / Exotel / Twilio).
 - `backend/exotel.js` — real Exotel SMS + WhatsApp integration (primary messaging provider; see known issues above).
 - `backend/whatsapp.js` — real Twilio WhatsApp integration (alternative provider, good for sandbox testing).
@@ -734,6 +823,7 @@ npm start
 - [x] **Verified KYC name fed into the call** (2026-08-04): `liveAssistManager.buildContext()` now passes the name as it reads on the applicant's (and co-applicant's) verified ID document, so the agent can say "type it exactly this way" — the thing a lender's own form structurally cannot do (failure mode #6). Names only; never the ID numbers on those documents
 - [x] **Live-assist turn-taking race fixed** (2026-08-05): generating a reply takes seconds (fresh screenshot grab, then the model call) and `respondTo()` was not serialized, so an applicant who spoke again inside that window triggered two concurrent replies — **both** spoken, the stale one first, with `history` written out of order so the following turn saw garbled context. Each turn now claims a number and aborts the previous in-flight request; a reply is only spoken if its turn is still the newest, while the applicant's words are recorded either way so the surviving turn still sees everything they said. This is the other half of the "it answers the wrong thing" complaint that `dedupeRepeatedSentences()` only partly addressed
 - [x] **Stop endpoint now waits for real process exit** (2026-08-05) — closes the UI flicker race; see "Live-call assistance via AgentCall" above, including the Windows-only `SIGINT` caveat it surfaced
+- [x] **Browser voice calls + the `/m` mobile surface** (2026-08-06): `backend/voiceCall.js` + `voicePrompt.js` + `frontend/m.html`/`m.js`/`voiceClient.js` — the applicant taps a button on their phone and talks to UPSY with no meeting platform involved, anonymously or grounded in their own record. Cartesia-backed, prompt kept in git, rate-limited, codec unit-tested. **Unproven against a real account — no Cartesia key exists yet.** See "Browser voice calls (`/m`)" for what was verified and what wasn't, including the Profound teardown it was modelled on
 - [ ] **Three more lenders' field guides** — same pattern as `avanse.js`, pending screenshots/walkthroughs of each
 
 ## Next (roadmap) — in likely priority order for a new session
@@ -857,6 +947,16 @@ Now that the flow works end-to-end and is live on Render, the next round is UI/U
 - [ ] Responsive pass over the rest of the applicant flow at real phone widths — the whole UI was built "Kita-style desktop, not a mobile chat widget," and has only ever been eyeballed on desktop plus one real-phone spot check.
 - [ ] Bundle Tailwind CDN + Google Fonts locally — currently CDN-loaded, which also means the deployed page prints a "cdn.tailwindcss.com should not be used in production" console warning on every load.
 - [ ] Housekeeping: decide whether to remove the standalone `intake.html` demo now that `/intake` is a real step in the flow.
+
+**Browser voice calls (`/m`) — finish what was started 2026-08-06:**
+- [ ] **Confirm the just-fixed close/error handling on a real call.** A key now exists and session minting is verified live, but the call itself was found closing silently a second after connecting (mic/socket bugs — see "Browser voice calls" above), fixed but not yet re-tested against a real Cartesia call. Do this before anything else in this list.
+- [ ] **Hear it actually talk and confirm the barge-in event name.** Still unconfirmed — `voiceClient.js` matches it defensively (`/interrupt|clear|barge|cancel|flush/`) and logs unrecognised events, so a real call will tell us the truth. Expect to tune the prompt after hearing it.
+- [ ] **Test on a real phone**, iOS Safari first. The `AudioContext` resume-inside-the-tap and the 48kHz resample fallback are reasoned, not observed.
+- [ ] Rotate the Cartesia API key once testing is done — it was pasted into a chat session during setup.
+- [ ] **Sarvam + Deepgram behind the same adapter** — this is the one that closes a product gap rather than a cost one: today a caller who would rather speak Hindi simply cannot. `voiceClient.js` needs no changes.
+- [ ] Decide whether the anonymous caller should be able to leave a number, so a real front-of-funnel lead comes out of a good call instead of evaporating.
+- [ ] Put the same call button on `/docs` and the team dashboard, if `/m` lands well — deliberately not done yet, to keep the working flow untouched.
+- [ ] **Phase 2 applies here too, and slightly widens it**: voice is personal data going to a third-party processor. `/m` discloses it in the call sheet, which is not the same as DPDP consent.
 
 **Phase 1 — harden:**
 - [ ] Extend vision reading beyond PAN/Aadhaar/income-proof/bank-statement (admit letter, marksheets — each needs its own prompt/validation), multi-page PDFs, rotated/glare scans.
