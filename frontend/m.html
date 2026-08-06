@@ -2,472 +2,697 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<!-- viewport-fit=cover + the safe-area insets below are what keep the fixed
-     header and the call bar clear of a phone's notch and home indicator. -->
+<!-- viewport-fit=cover + the safe-area insets below are what keep the header
+     and the call controls clear of a phone's notch and home indicator. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <meta name="color-scheme" content="dark"/>
-<meta name="theme-color" content="#05070a"/>
+<meta name="theme-color" content="#070e15"/>
 <title>UPSY — talk to us about your education loan</title>
-<meta name="description" content="Tap to call UPSY and get an instant answer on your education loan — eligibility, documents and EMI, explained by voice."/>
+<meta name="description" content="Talk to UPSY about your education loan — what you can borrow, what documents you need, and what the EMI looks like. Answered by voice, in the same minute."/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <!-- Crimson Pro at 400 for display (weight matters: bold reads cheap here),
      Hind for UI text — it was drawn for Devanagari alongside Latin, which
      suits an Indian product. -->
-<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400&family=Hind:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;500&family=Hind:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
+  /* ── Tokens ───────────────────────────────────────────────────────────────
+     A deep blue-black, in the same family as UPSY's product blue but darker and
+     desaturated — /m is a voice surface held to your ear, not a form, so it
+     wants to be calm rather than bright. The blue flow at /login → /docs is
+     untouched; this shares its hue, not its stylesheet.
+
+     Every colour on this page comes from here or is a tint of it. If you change
+     the hue, change it here and in the canvas colours in m.js — those are the
+     only ones that live outside this block. */
   :root {
-    --ground: #05070a;
-    --space: #080d14;
-    --starlight: #eef3f7;
-    --dim: #93a6b4;
-    --glow: #63d8ff;          /* UPSY blue, pushed toward cyan so it blooms */
-    --brand: #1d5fd8;
-    --ember: #f0a35c;         /* the one warm accent — CTA only */
-    --line: #63d8ff2e;
-    --display: clamp(2.3rem, min(6.2vw, 8vh), 4rem);
+    --ink: #070e15;            /* the true background, behind everything */
+    --deep: #0d2333;           /* the blue the gradient rises to */
+    --surface: #123145;        /* cards */
+    --surface-2: #173d5000;    /* card gradient tail */
+    --line: #2f6f8f40;
+    --line-bright: #2f6f8f73;
+    --accent: #2f6f8f;         /* filled buttons, node glow */
+    --accent-lift: #5aa9cd;    /* hover/active on the accent */
+    --text: #e8f2f8;
+    --muted: #93b0c2;
+    --faint: #6b8698;
+    --danger: #e8918a;         /* the End button — warm against all this blue */
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
   }
 
   * { box-sizing: border-box; }
-
-  html { -webkit-text-size-adjust: 100%; }
+  html { -webkit-text-size-adjust: 100%; height: 100%; }
 
   body {
     margin: 0;
-    background: var(--ground);
-    color: var(--starlight);
+    min-height: 100%;
+    background: #eef1f5;   /* only ever seen on desktop, around the frame */
+    color: var(--text);
     font-family: Hind, system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
-    /* Stops the whole page bouncing under the fixed call bar on iOS. */
     overscroll-behavior-y: none;
   }
 
-  /* The starfield. Fades in only once it has drawn a frame, so a slow phone
-     shows deliberate black rather than a half-painted canvas. */
-  #sky {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
+  /* ── The frame ────────────────────────────────────────────────────────────
+     Full-bleed on a phone, which is the only place this really matters. On a
+     desktop it becomes a phone-shaped panel centred on a light page, so the
+     layout is never stretched to a width it was not designed for. */
+  .frame {
+    position: relative;
     width: 100%;
-    height: 100%;
-    display: block;
-    opacity: 0;
-    transition: opacity .8s ease;
-    pointer-events: none;
-  }
-  #sky.is-ready { opacity: 1; }
-
-  /* Keeps the starfield from competing with text at the top and bottom. */
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 1;
-    pointer-events: none;
+    /* A fixed height, not a minimum: the brief scrolls *inside* the frame so
+       the action buttons stay pinned to the bottom of the screen. With only a
+       min-height the frame grows to fit its content and the whole page scrolls
+       instead, pushing the call button off-screen on a short phone.
+       svh (not vh) so a mobile address bar appearing cannot crop it. */
+    height: 100vh;
+    height: 100svh;
+    overflow: hidden;
     background:
-      radial-gradient(120% 80% at 50% 0%, #05070a00, #05070ab8 70%),
-      linear-gradient(#05070acc, #05070a26 30%, #05070a99);
+      radial-gradient(120% 70% at 50% 0%, #153545 0%, #0b1a24 45%, var(--ink) 100%);
+    display: flex;
+    flex-direction: column;
   }
 
-  /* ── Header: logo left, call button right, pinned ─────────────────────── */
-  header {
-    position: fixed;
-    top: 0; left: 0; right: 0;
-    z-index: 20;
+  @media (min-width: 640px) {
+    body { display: grid; place-items: center; padding: 1.5rem 0; }
+    .frame {
+      width: 400px;
+      height: min(860px, calc(100svh - 3rem));
+      border-radius: 30px;
+      box-shadow: 0 30px 90px #0b1a2433, 0 2px 8px #0b1a2420;
+    }
+  }
+
+  /* ── Header ───────────────────────────────────────────────────────────────
+     Back chevron left, wordmark pill centred — the pill is what makes it read
+     as a product surface rather than a web page. */
+  .bar {
+    position: relative;
+    z-index: 30;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: .75rem;
-    padding: calc(var(--safe-top) + .7rem) 1rem .7rem;
-    background: linear-gradient(#05070af2, #05070ad9 60%, #05070a00);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    gap: .5rem;
+    padding: calc(var(--safe-top) + 1rem) 1.1rem .6rem;
+    flex: none;
   }
 
-  .wordmark {
-    font-family: "Crimson Pro", Georgia, serif;
-    font-size: 1.45rem;
-    letter-spacing: .16em;
-    font-weight: 400;
-    color: var(--starlight);
-    text-decoration: none;
-    text-shadow: 0 0 18px #63d8ff33;
-    /* Padding rather than a bigger font: the glyphs are 26px tall, which is
-       under a comfortable thumb target on a phone. */
-    display: inline-flex;
-    align-items: center;
-    min-height: 40px;
-    padding-right: .5rem;
-    -webkit-tap-highlight-color: transparent;
-  }
-  .wordmark span { color: var(--glow); }
-
-  /* The call button. Warm against an entirely cool page so it is the only
-     thing on screen asking to be tapped. */
-  .call-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: .45rem;
-    border: 1px solid #f0a35c66;
-    background: linear-gradient(#f0a35c26, #f0a35c14);
-    color: #ffd9b0;
-    font: 600 .9rem/1 Hind, sans-serif;
-    padding: .62rem .95rem;
-    border-radius: 999px;
+  .chev {
+    width: 42px; height: 42px;
+    flex: none;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    border: 0;
+    background: #ffffff12;
+    color: var(--text);
     cursor: pointer;
+    text-decoration: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 0 0 0 #f0a35c59;
-    animation: pulse 3.4s ease-out infinite;
-    transition: transform .12s ease;
+    transition: background .2s ease, transform .12s ease;
   }
-  .call-btn:active { transform: scale(.96); }
-  .call-btn svg { width: 16px; height: 16px; fill: currentColor; }
-  .call-btn[disabled] { opacity: .55; animation: none; }
+  .chev:active { transform: scale(.93); }
+  .chev svg { width: 19px; height: 19px; fill: currentColor; }
 
-  @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 #f0a35c4d; }
-    70%  { box-shadow: 0 0 0 14px #f0a35c00; }
-    100% { box-shadow: 0 0 0 0 #f0a35c00; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: .42rem;
+    padding: .42rem .85rem;
+    border-radius: 999px;
+    background: #ffffff12;
+    font: 500 .84rem/1 Hind, sans-serif;
+    letter-spacing: .01em;
+    color: var(--text);
+    text-decoration: none;
   }
+  .pill .mark { width: 15px; height: 15px; flex: none; }
+  /* Balances the chevron so the pill sits optically centred. */
+  .bar-spacer { width: 42px; flex: none; }
 
-  /* ── Content ──────────────────────────────────────────────────────────── */
-  main { position: relative; z-index: 5; }
+  /* ── Views ────────────────────────────────────────────────────────────────
+     Three states in one page — brief, connecting, call — swapped rather than
+     routed, because Back should hang up rather than navigate mid-sentence. */
+  .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .view.on { display: flex; }
 
-  section {
-    min-height: 100svh;
+  /* ── Brief ────────────────────────────────────────────────────────────── */
+  .brief {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: .6rem 1.35rem 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    padding: 6.5rem 1.4rem 4rem;
-    position: relative;
   }
 
-  h1, h2 {
+  h1 {
     font-family: "Crimson Pro", Georgia, serif;
     font-weight: 400;
-    font-size: var(--display);
-    line-height: 1.08;
-    letter-spacing: .005em;
+    /* clamp off the *smaller* viewport dimension, so a short landscape phone
+       does not get display type taller than its own screen. */
+    font-size: clamp(1.9rem, min(8.5vw, 5.2vh), 2.5rem);
+    line-height: 1.14;
+    letter-spacing: .004em;
+    text-align: center;
     text-wrap: balance;
-    margin: 0 0 1rem;
-    position: relative;
+    margin: .6rem 0 .7rem;
   }
 
-  /* The halo. An invisible dark radial behind every heading so type stays
-     readable wherever the starfield happens to be bright — the single most
-     useful trick on a page with a live background. */
-  h1::before, h2::before, .halo::before {
-    content: "";
-    position: absolute;
-    inset: -2.5em -3em;
-    z-index: -1;
-    background: radial-gradient(closest-side, #05070ad9, #05070a00);
-    border-radius: 50%;
-    pointer-events: none;
+  .sub {
+    text-align: center;
+    color: var(--muted);
+    font-size: .98rem;
+    line-height: 1.55;
+    margin: 0 auto 1.5rem;
+    max-width: 30ch;
+    text-wrap: balance;
   }
 
-  /* Second pass of the same glyphs, blurred and tinted, purely to bloom. */
-  .lit { position: relative; display: inline-block; }
-  .lit::before {
-    content: attr(data-text);
-    position: absolute;
-    inset: 0;
-    color: transparent;
-    text-shadow: 0 0 18px #63d8ff8c, 0 0 60px #63d8ff4d;
-    pointer-events: none;
-    z-index: -1;
+  .agenda {
+    background: linear-gradient(#173d50, #123145 60%, #112b3d);
+    border: 1px solid #ffffff0f;
+    border-radius: 20px;
+    padding: 1.15rem 1.15rem .5rem;
+    margin-bottom: 1.2rem;
   }
-
-  p.lede {
-    font-size: 1.06rem;
-    line-height: 1.65;
-    color: var(--dim);
-    max-width: 34ch;
-    margin: 0 0 1.6rem;
-  }
-
-  .eyebrow {
-    font-size: .74rem;
-    letter-spacing: .22em;
+  .agenda h2 {
+    font: 600 .72rem/1 Hind, sans-serif;
+    letter-spacing: .16em;
     text-transform: uppercase;
-    color: var(--glow);
-    margin: 0 0 1.1rem;
-    opacity: .85;
+    color: #9dc0d4;
+    margin: 0 0 .95rem;
+  }
+  .agenda ol { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .agenda li {
+    display: grid;
+    grid-template-columns: 1.6rem 1fr;
+    gap: .1rem .7rem;
+    padding: .1rem 0 .85rem;
+    border-bottom: 1px solid #ffffff0d;
+    margin-bottom: .85rem;
+  }
+  .agenda li:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: .55rem; }
+  .agenda .n {
+    grid-row: span 2;
+    font-family: "Crimson Pro", Georgia, serif;
+    font-size: 1.5rem;
+    line-height: 1.1;
+    color: var(--text);
+    opacity: .92;
+  }
+  .agenda .t { font: 600 .95rem/1.35 Hind, sans-serif; color: var(--text); }
+  .agenda .d { font-size: .87rem; line-height: 1.45; color: var(--muted); }
+
+  .fine {
+    font-size: .76rem;
+    line-height: 1.55;
+    color: var(--faint);
+    text-align: center;
+    margin: 0 auto 1rem;
+    max-width: 34ch;
+  }
+  .fine a { color: #9dc0d4; }
+
+  /* ── Actions ──────────────────────────────────────────────────────────── */
+  .actions {
+    flex: none;
+    display: grid;
+    gap: .6rem;
+    padding: .4rem 1.35rem calc(var(--safe-bottom) + 1.1rem);
+    background: linear-gradient(#0b1a2400, #0b1a24cc 38%, #0b1a24);
   }
 
-  /* Reveal on scroll. Transform + opacity only, so it stays on the compositor.
-     The hidden state is scoped to .reveal-ready, which m.js only sets once it
-     has actually armed the observer — content must never be made invisible by
-     an effect that might not run. Without this, a browser that never delivers
-     IntersectionObserver callbacks (offscreen rendering, some in-app webviews,
-     prerender) shows a permanently blank page. */
-  .reveal-ready .reveal {
-    opacity: 0;
-    transform: translateY(18px);
-    transition: opacity .85s cubic-bezier(.2,.7,.3,1), transform .85s cubic-bezier(.2,.7,.3,1);
-  }
-  .reveal-ready .reveal.in { opacity: 1; transform: none; }
-  .reveal-ready .reveal.d1 { transition-delay: .1s; }
-  .reveal-ready .reveal.d2 { transition-delay: .2s; }
-  .reveal-ready .reveal.d3 { transition-delay: .3s; }
-
-  .cta {
-    display: inline-flex;
+  .btn {
+    display: flex;
     align-items: center;
     justify-content: center;
     gap: .5rem;
-    align-self: flex-start;
-    padding: .95rem 1.5rem;
-    border-radius: 999px;
+    width: 100%;
+    min-height: 54px;
+    padding: .9rem 1.2rem;
+    border-radius: 15px;
+    border: 0;
     font: 600 1rem/1 Hind, sans-serif;
+    cursor: pointer;
     text-decoration: none;
-    border: 1px solid var(--line);
-    background: linear-gradient(#63d8ff1f, #63d8ff0a);
-    color: var(--starlight);
     -webkit-tap-highlight-color: transparent;
+    transition: transform .12s ease, background .2s ease, opacity .2s ease;
   }
-  .cta.ghost { background: none; color: var(--dim); }
+  .btn:active { transform: scale(.985); }
+  .btn[disabled] { opacity: .5; pointer-events: none; }
+  .btn svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
 
-  /* Card list — the "what you'll need" block. */
-  .cards { display: grid; gap: .7rem; margin: 0; padding: 0; list-style: none; }
-  .card {
-    border: 1px solid #63d8ff1f;
-    background: linear-gradient(#0b131caa, #070c12cc);
-    border-radius: 14px;
-    padding: .95rem 1.05rem;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-  }
-  .card h3 {
-    margin: 0 0 .2rem;
-    font: 600 .97rem/1.3 Hind, sans-serif;
-    color: var(--starlight);
-  }
-  .card p { margin: 0; font-size: .87rem; line-height: 1.5; color: var(--dim); }
-
-  .quiet {
-    font-size: .8rem;
-    line-height: 1.6;
-    color: #6c7d8b;
-    max-width: 38ch;
+  .btn.primary { background: #ffffff; color: #0d2333; }
+  .btn.secondary { background: var(--accent); color: #eaf8ff; }
+  .btn.quiet {
+    background: transparent;
+    color: var(--muted);
+    min-height: 42px;
+    font-weight: 500;
+    font-size: .9rem;
   }
 
-  /* ── In-call sheet ────────────────────────────────────────────────────── */
-  .sheet {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
+  /* ── Device pickers ───────────────────────────────────────────────────────
+     Only rendered once permission is granted — before that the browser hands
+     back unlabelled devices, so a picker would show "Microphone 1, Microphone 2"
+     and be worse than nothing. */
+  .devices { display: flex; gap: .5rem; }
+  .select-wrap {
+    position: relative;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    padding: calc(var(--safe-top) + 2.5rem) 1.4rem calc(var(--safe-bottom) + 2.2rem);
-    background:
-      radial-gradient(90% 60% at 50% 28%, #0d2231f2, #05070afa 70%),
-      #05070a;
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(14px);
-    transition: opacity .3s ease, transform .3s ease, visibility .3s;
+    gap: .45rem;
+    background: #ffffff12;
+    border-radius: 999px;
+    padding: 0 .85rem;
+    min-height: 46px;
+    min-width: 0;
+    color: var(--text);
   }
-  .sheet.open { opacity: 1; visibility: visible; transform: none; }
-
-  .sheet-top { text-align: center; }
-  .sheet-title {
-    font-family: "Crimson Pro", Georgia, serif;
-    font-size: 2rem;
-    font-weight: 400;
-    margin: 0 0 .35rem;
+  .select-wrap.grow { flex: 1; min-width: 0; }
+  .select-wrap svg { width: 17px; height: 17px; fill: currentColor; flex: none; opacity: .9; }
+  .select-wrap select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: 500 .86rem/1 Hind, sans-serif;
+    padding: .5rem 1.1rem .5rem 0;
+    min-width: 0;
+    width: 100%;
+    text-overflow: ellipsis;
+    cursor: pointer;
   }
-  .sheet-status {
-    font-size: .88rem;
-    color: var(--dim);
-    margin: 0;
-    min-height: 1.4em;
-  }
-  .timer {
-    font-family: "Crimson Pro", Georgia, serif;
-    font-variant-numeric: tabular-nums;
-    font-size: 1.05rem;
-    color: var(--glow);
-    margin-top: .5rem;
-    opacity: .8;
-  }
-
-  /* The orb: a breathing sphere whose scale tracks the live audio level, so
-     the caller can see they are being heard. */
-  .orb-wrap { position: relative; display: grid; place-items: center; }
-  .orb {
-    width: min(58vw, 230px);
-    aspect-ratio: 1;
-    border-radius: 50%;
-    background: radial-gradient(circle at 50% 45%,
-      #eafcffee, #9ae8ffb3 12%, #63d8ff59 30%, #63d8ff21 52%, #63d8ff00 72%);
-    will-change: transform;
-    transition: transform .09s linear;
-  }
-  .orb-ring {
+  .select-wrap select:focus-visible { outline: 2px solid var(--accent-lift); outline-offset: 3px; border-radius: 6px; }
+  .select-wrap select option { background: #123145; color: var(--text); }
+  .select-wrap .caret {
     position: absolute;
-    width: min(72vw, 290px);
-    aspect-ratio: 1;
-    border-radius: 50%;
-    border: 1px solid #63d8ff2b;
-    will-change: transform, opacity;
+    right: .7rem;
+    width: 13px; height: 13px;
+    pointer-events: none;
+    opacity: .75;
   }
-  #wave { width: min(78vw, 320px); height: 46px; display: block; margin-top: 1.2rem; }
 
-  /* justify-content matters here: this row's wrapper is sized by the wider
-     disclosure text below it, so without it the Mute/End pair sits left of
-     centre rather than under the orb. */
-  .keys { display: flex; align-items: center; justify-content: center; gap: 1.4rem; }
-  .key {
-    width: 60px; height: 60px;
-    border-radius: 50%;
+  .msg {
+    font-size: .84rem;
+    line-height: 1.5;
+    text-align: center;
+    margin: 0;
+    color: var(--danger);
+  }
+  .msg:empty { display: none; }
+
+  /* ── Connecting ───────────────────────────────────────────────────────── */
+  .connecting {
+    flex: 1;
     display: grid;
     place-items: center;
-    border: 1px solid #63d8ff2e;
-    background: #0d151ecc;
-    color: var(--starlight);
+    position: relative;
+  }
+  .ghost-mark {
+    position: absolute;
+    top: 16%;
+    width: min(62%, 260px);
+    opacity: .05;
+    pointer-events: none;
+  }
+  .connect-inner { display: grid; justify-items: center; gap: 1rem; z-index: 1; }
+  .tile {
+    width: 74px; height: 74px;
+    border-radius: 20px;
+    background: #163444;
+    display: grid; place-items: center;
+    box-shadow: 0 10px 34px #00000040;
+  }
+  .tile svg { width: 36px; height: 36px; }
+  .connect-label { color: var(--muted); font-size: .93rem; letter-spacing: .01em; }
+  .dots::after {
+    content: "";
+    animation: dots 1.4s steps(4, end) infinite;
+  }
+  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+  /* ── In call ──────────────────────────────────────────────────────────── */
+  .call { position: relative; }
+
+  .call-head {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    z-index: 12;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: calc(var(--safe-top) + 1rem) 1.2rem 0;
+    pointer-events: none;
+  }
+  .call-who { line-height: 1.25; }
+  .call-who strong { display: block; font: 600 .96rem/1.3 Hind, sans-serif; }
+  .call-who span { display: block; font-size: .78rem; color: var(--muted); }
+  .call-timer {
+    font-family: "Crimson Pro", Georgia, serif;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.55rem;
+    letter-spacing: .02em;
+    opacity: .92;
+  }
+
+  /* The constellation fills the whole call view; the controls float over it. */
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* The focused topic, as DOM rather than canvas text — real font rendering
+     and real text wrapping matter more here than staying in one layer. */
+  .focus {
+    position: absolute;
+    inset: auto 1.6rem 34%;
+    z-index: 10;
+    text-align: center;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity .55s ease, transform .55s ease;
+    pointer-events: none;
+  }
+  .focus.on { opacity: 1; transform: none; }
+  .focus h3 {
+    font: 600 1.32rem/1.3 Hind, sans-serif;
+    margin: 0 0 .5rem;
+    text-wrap: balance;
+    text-shadow: 0 2px 20px #070e15b3;
+  }
+  .focus p {
+    margin: 0 auto;
+    max-width: 26ch;
+    font-size: .93rem;
+    line-height: 1.5;
+    color: #c3d9e6;
+    text-wrap: balance;
+    text-shadow: 0 2px 18px #070e15b3;
+  }
+
+  .call-foot {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    z-index: 14;
+    padding: 1.2rem 1.2rem calc(var(--safe-bottom) + 1.2rem);
+    display: grid;
+    gap: .7rem;
+    justify-items: center;
+    background: linear-gradient(#070e1500, #070e1599 45%, #070e15e6);
+  }
+  .call-status {
+    font-size: .84rem;
+    color: var(--muted);
+    text-align: center;
+    min-height: 1.3em;
+    margin: 0;
+  }
+  .call-error {
+    color: var(--danger);
+    font-size: .86rem;
+    line-height: 1.5;
+    text-align: center;
+    max-width: 30ch;
+    margin: 0 auto;
+  }
+  .keys { display: flex; align-items: center; gap: .6rem; }
+  .key {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    border: 0;
+    display: grid; place-items: center;
+    background: #ffffff14;
+    color: var(--text);
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: transform .12s ease, background .2s ease;
   }
-  .key:active { transform: scale(.93); }
-  .key svg { width: 22px; height: 22px; fill: currentColor; }
-  .key.on { background: #63d8ff26; border-color: #63d8ff73; color: #bfefff; }
-  .key.hangup {
-    width: 72px; height: 72px;
-    background: linear-gradient(#e0413f, #b52220);
-    border-color: #ff756e59;
-    box-shadow: 0 10px 34px #e0413f4d;
+  .key:active { transform: scale(.92); }
+  .key svg { width: 21px; height: 21px; fill: currentColor; }
+  .key.on { background: #ffffff2e; }
+  .key.end {
+    width: auto;
+    min-width: 130px;
+    height: 52px;
+    border-radius: 999px;
+    background: linear-gradient(#f0a49c, #e0857c);
+    color: #43120e;
+    font: 600 1rem/1 Hind, sans-serif;
+    padding: 0 1.6rem;
   }
-  .key.hangup svg { width: 27px; height: 27px; }
-  .key-label {
-    display: block;
-    text-align: center;
-    font-size: .7rem;
-    color: var(--dim);
-    margin-top: .45rem;
-    letter-spacing: .04em;
-  }
-  .keyset { display: flex; flex-direction: column; align-items: center; }
-
-  .sheet-error {
-    color: #ffb4ac;
-    font-size: .88rem;
-    line-height: 1.5;
-    text-align: center;
-    max-width: 30ch;
-    margin: .8rem auto 0;
-  }
-
   .disclosure {
-    font-size: .74rem;
-    color: #63788a;
+    font-size: .72rem;
+    color: var(--faint);
     text-align: center;
     max-width: 32ch;
-    line-height: 1.55;
+    line-height: 1.5;
     margin: 0 auto;
   }
 
-  /* Anything purely decorative stops moving; the page stays fully usable. */
-  @media (prefers-reduced-motion: reduce) {
-    .reveal { opacity: 1; transform: none; transition: none; }
-    .call-btn { animation: none; }
-    .orb, .orb-ring { transition: none; }
-    #sky { display: none; }
+  /* ── Schedule sheet ───────────────────────────────────────────────────── */
+  .sheet {
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    background: #070e15a6;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .28s ease, visibility .28s;
   }
+  .sheet.open { opacity: 1; visibility: visible; }
+  .sheet-card {
+    background: linear-gradient(#173d50, #102632);
+    border-radius: 22px 22px 0 0;
+    padding: 1.3rem 1.35rem calc(var(--safe-bottom) + 1.3rem);
+    transform: translateY(14px);
+    transition: transform .28s cubic-bezier(.2,.8,.3,1);
+    max-height: 100%;
+    overflow-y: auto;
+  }
+  .sheet.open .sheet-card { transform: none; }
+  @media (min-width: 640px) { .sheet-card { border-radius: 22px 22px 30px 30px; } }
 
-  /* Above phone width this is still readable rather than stretched — it is a
-     phone-first page, not a phone-only one. */
-  @media (min-width: 640px) {
-    section { padding-inline: max(1.4rem, calc(50vw - 19rem)); }
+  .sheet-card h3 {
+    font-family: "Crimson Pro", Georgia, serif;
+    font-weight: 400;
+    font-size: 1.6rem;
+    margin: 0 0 .3rem;
+  }
+  .sheet-card > p { margin: 0 0 1.1rem; color: var(--muted); font-size: .9rem; line-height: 1.5; }
+
+  .field { margin-bottom: .75rem; }
+  .field label {
+    display: block;
+    font: 500 .78rem/1 Hind, sans-serif;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #9dc0d4;
+    margin-bottom: .4rem;
+  }
+  .field input {
+    width: 100%;
+    min-height: 50px;
+    border-radius: 13px;
+    border: 1px solid #ffffff1f;
+    background: #0c1e2b;
+    color: var(--text);
+    font: 400 1rem/1 Hind, sans-serif;
+    padding: .8rem .95rem;
+  }
+  .field input::placeholder { color: #62808f; }
+  .field input:focus { outline: 0; border-color: var(--accent-lift); }
+  .field .hint { font-size: .76rem; color: var(--faint); margin: .35rem 0 0; }
+
+  .ok-note { text-align: center; padding: .5rem 0 .3rem; }
+  .ok-note .tick {
+    width: 52px; height: 52px;
+    margin: 0 auto .8rem;
+    border-radius: 50%;
+    background: var(--accent);
+    display: grid; place-items: center;
+  }
+  .ok-note .tick svg { width: 26px; height: 26px; fill: #eaf8ff; }
+
+  /* Everything decorative stops; the page stays fully usable. */
+  @media (prefers-reduced-motion: reduce) {
+    .sheet, .sheet-card, .focus, .btn, .key { transition: none; }
+    .dots::after { animation: none; content: "…"; }
   }
 </style>
 </head>
 <body>
 
-<canvas id="sky" aria-hidden="true"></canvas>
-<div class="scrim" aria-hidden="true"></div>
+<div class="frame" id="frame">
 
-<header>
-  <a class="wordmark" href="/m">UPS<span>Y</span></a>
-  <button class="call-btn" id="callBtn" type="button">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1l-2.3 2.2z"/></svg>
-    Call UPSY
-  </button>
-</header>
-
-<main>
-  <section>
-    <p class="eyebrow reveal">Education loans, spoken plainly</p>
-    <h1 class="reveal d1"><span class="lit" data-text="Talk to us.">Talk to us.</span><br/>No forms first.</h1>
-    <p class="lede reveal d2">Tap call and ask anything — how much you could get, what documents you need, what the EMI actually looks like. You will get an answer in the same minute.</p>
-    <a class="cta reveal d3" href="#how">How it works</a>
-  </section>
-
-  <section id="how">
-    <h2 class="reveal">It answers like a person, because it listens like one.</h2>
-    <p class="lede reveal d1">No menus, no "press one for eligibility". Interrupt it, change your mind, ask the same thing a different way. It follows.</p>
-    <ul class="cards">
-      <li class="card reveal d1">
-        <h3>Ask what you actually want to know</h3>
-        <p>"My father earns ninety five thousand a month — how much can I get for an MBA abroad?" That is a complete question here.</p>
-      </li>
-      <li class="card reveal d2">
-        <h3>It knows UPSY's real rules</h3>
-        <p>The same underwriting the rest of UPSY runs on: sixty percent academic minimum, family-only co-borrowers, roughly twenty four times monthly income, moratorium through your course plus nine months.</p>
-      </li>
-      <li class="card reveal d3">
-        <h3>It will not guess</h3>
-        <p>If it does not know a lender's policy, it says so instead of inventing one. And it will never ask you to read out a PAN, Aadhaar or account number.</p>
-      </li>
-    </ul>
-  </section>
-
-  <section>
-    <h2 class="reveal">Then, when you are ready, the paperwork.</h2>
-    <p class="lede reveal d1">Documents in the order a lender actually wants them, each one explained, checked the moment you upload it. You can stop talking and start uploading whenever you like.</p>
-    <a class="cta reveal d2" href="/login">Check my eligibility</a>
-    <p class="quiet reveal d3" style="margin-top:1.6rem">UPSY gives indicative figures. Every loan is finally decided by the lender, on their own checks.</p>
-  </section>
-</main>
-
-<!-- In-call. A sheet rather than a route: hitting Back should hang up, not
-     navigate away mid-sentence. -->
-<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Call with UPSY">
-  <div class="sheet-top">
-    <p class="sheet-title">UPSY</p>
-    <p class="sheet-status" id="sheetStatus">Connecting…</p>
-    <p class="timer" id="timer" hidden>0:00</p>
-    <p class="sheet-error" id="sheetError" hidden></p>
+  <div class="bar">
+    <a class="chev" href="/" aria-label="Back to UPSY">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 4.6 8 12l7.4 7.4 1.4-1.4L10.8 12l6-6z"/></svg>
+    </a>
+    <span class="pill">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" fill="#e8f2f8"/>
+        <g stroke="#e8f2f8" stroke-width="1.4" stroke-linecap="round">
+          <path d="M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3.5 3.5M15.5 15.5 19 19M19 5l-3.5 3.5M8.5 15.5 5 19"/>
+        </g>
+      </svg>
+      UPSY
+    </span>
+    <span class="bar-spacer" aria-hidden="true"></span>
   </div>
 
-  <div class="orb-wrap">
-    <div class="orb-ring" id="orbRing"></div>
-    <div class="orb" id="orb"></div>
-    <canvas id="wave" aria-hidden="true"></canvas>
-  </div>
+  <!-- ── 1. Brief ───────────────────────────────────────────────────────── -->
+  <section class="view on" id="viewBrief" aria-label="Before your call">
+    <div class="brief">
+      <h1>Eligibility, documents,<br/>and what it costs</h1>
+      <p class="sub" id="briefSub">I'll help you work out what you can borrow and what you'll need to get there.</p>
 
-  <div>
-    <div class="keys">
-      <div class="keyset">
+      <div class="agenda">
+        <h2>What we'll cover next</h2>
+        <ol>
+          <li>
+            <span class="n">1</span>
+            <span class="t">What you can borrow</span>
+            <span class="d">Your course, your co-applicant's income, and a realistic number</span>
+          </li>
+          <li>
+            <span class="n">2</span>
+            <span class="t">What you'll need</span>
+            <span class="d">The documents a lender actually asks for, in the order they ask</span>
+          </li>
+          <li>
+            <span class="n">3</span>
+            <span class="t">What it will cost</span>
+            <span class="d">Indicative EMI, and the moratorium while you're still studying</span>
+          </li>
+        </ol>
+      </div>
+
+      <p class="fine">UPSY is an AI assistant and gives indicative figures — every loan is finally decided by the lender. It will never ask you to read out a PAN, Aadhaar or account number.</p>
+    </div>
+
+    <div class="actions">
+      <p class="msg" id="briefMsg" role="status"></p>
+
+      <!-- Shown only after permission is granted: before that the browser
+           reports devices with no labels. -->
+      <div class="devices" id="devices" hidden>
+        <span class="select-wrap grow">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2z"/></svg>
+          <select id="micSelect" aria-label="Microphone"></select>
+          <svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>
+        </span>
+        <span class="select-wrap" id="spkWrap" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 5V4L9 9H5zm11.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+          <select id="spkSelect" aria-label="Speaker"></select>
+          <svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>
+        </span>
+      </div>
+
+      <button class="btn secondary" id="scheduleBtn" type="button">Schedule call</button>
+      <button class="btn primary" id="permBtn" type="button">Allow Mic Permissions</button>
+      <button class="btn primary" id="joinBtn" type="button" hidden>Join call</button>
+      <a class="btn quiet" href="/login">Or skip ahead and check my eligibility</a>
+    </div>
+  </section>
+
+  <!-- ── 2. Connecting ──────────────────────────────────────────────────── -->
+  <section class="view" id="viewConnecting" aria-label="Connecting">
+    <div class="connecting">
+      <svg class="ghost-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" fill="#e8f2f8"/>
+        <g stroke="#e8f2f8" stroke-width="1" stroke-linecap="round">
+          <path d="M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3.5 3.5M15.5 15.5 19 19M19 5l-3.5 3.5M8.5 15.5 5 19"/>
+        </g>
+      </svg>
+      <div class="connect-inner">
+        <span class="tile">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" fill="#e8f2f8"/>
+            <g stroke="#e8f2f8" stroke-width="1.3" stroke-linecap="round">
+              <path d="M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3.5 3.5M15.5 15.5 19 19M19 5l-3.5 3.5M8.5 15.5 5 19"/>
+            </g>
+          </svg>
+        </span>
+        <span class="connect-label">Connecting<span class="dots"></span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 3. In call ─────────────────────────────────────────────────────── -->
+  <section class="view call" id="viewCall" aria-label="Call with UPSY">
+    <canvas id="map" aria-hidden="true"></canvas>
+
+    <div class="call-head">
+      <span class="call-who">
+        <strong>UPSY</strong>
+        <span>Education loan assistant</span>
+      </span>
+      <span class="call-timer" id="timer">00:00</span>
+    </div>
+
+    <div class="focus" id="focus">
+      <h3 id="focusTitle"></h3>
+      <p id="focusDesc"></p>
+    </div>
+
+    <div class="call-foot">
+      <p class="call-error" id="callError" hidden></p>
+      <p class="call-status" id="callStatus"></p>
+      <div class="keys">
         <button class="key" id="muteBtn" type="button" aria-pressed="false" aria-label="Mute microphone">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2z"/></svg>
         </button>
-        <span class="key-label" id="muteLabel">Mute</span>
+        <button class="key end" id="hangupBtn" type="button">End</button>
       </div>
-      <div class="keyset">
-        <button class="key hangup" id="hangupBtn" type="button" aria-label="End call">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9c-1.6 0-3.1.2-4.5.7v3c0 .4-.2.7-.5.9-.9.5-1.7 1-2.4 1.7-.2.2-.4.3-.7.3s-.5-.1-.7-.3l-2-2a1 1 0 0 1 0-1.4C4 9.9 7.8 8.5 12 8.5s8 1.4 10.8 3.4a1 1 0 0 1 0 1.4l-2 2c-.2.2-.4.3-.7.3s-.5-.1-.7-.3c-.7-.7-1.5-1.2-2.4-1.7a1 1 0 0 1-.5-.9v-3C15.1 9.2 13.6 9 12 9z"/></svg>
-        </button>
-        <span class="key-label">End</span>
+      <p class="disclosure">Your voice goes to our speech provider so it can answer you. Nothing is recorded here.</p>
+    </div>
+  </section>
+
+  <!-- ── Schedule sheet ─────────────────────────────────────────────────── -->
+  <div class="sheet" id="scheduleSheet" role="dialog" aria-modal="true" aria-labelledby="scheduleTitle" hidden>
+    <div class="sheet-card">
+      <div id="scheduleForm">
+        <h3 id="scheduleTitle">Have us call you</h3>
+        <p>Tell us where to reach you and roughly when. A person from UPSY will call — not the AI.</p>
+
+        <div class="field">
+          <label for="cbName">Your name</label>
+          <input id="cbName" type="text" autocomplete="name" placeholder="Aarav Sharma" maxlength="80"/>
+        </div>
+        <div class="field">
+          <label for="cbPhone">Mobile number</label>
+          <input id="cbPhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="98765 43210" maxlength="18"/>
+        </div>
+        <div class="field">
+          <label for="cbWhen">Good time to call</label>
+          <input id="cbWhen" type="text" placeholder="Tomorrow evening, after 6" maxlength="120"/>
+          <p class="hint">Anything you like — we read this, it isn't a calendar slot.</p>
+        </div>
+
+        <p class="msg" id="cbMsg" role="status"></p>
+        <button class="btn secondary" id="cbSubmit" type="button" style="margin-top:.5rem">Request a callback</button>
+        <button class="btn quiet" id="cbCancel" type="button">Not now</button>
+      </div>
+
+      <div class="ok-note" id="scheduleDone" hidden>
+        <span class="tick">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+        </span>
+        <h3>We'll call you</h3>
+        <p style="color:var(--muted);font-size:.9rem;line-height:1.5;margin:0 0 1.1rem" id="scheduleDoneLine"></p>
+        <button class="btn primary" id="cbClose" type="button">Done</button>
       </div>
     </div>
-    <p class="disclosure" style="margin-top:1.4rem">UPSY is an AI assistant. Your voice goes to our speech provider to answer you; nothing is recorded here.</p>
   </div>
+
 </div>
 
 <script src="/voiceClient.js"></script>

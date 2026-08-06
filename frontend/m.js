@@ -1,160 +1,370 @@
-// The mobile surface at /m: starfield, scroll reveals, and the in-call sheet.
-// Voice transport lives in frontend/voiceClient.js — this file is presentation
-// and call lifecycle only.
+// The mobile surface at /m — three states in one page: the pre-call brief, a
+// connecting screen, and the call itself over a constellation of the things
+// UPSY can actually talk about.
+//
+// Voice transport lives in frontend/voiceClient.js; this file is presentation
+// and call lifecycle only. Deliberately plain script, no build step, matching
+// the rest of frontend/.
 
 (function () {
   "use strict";
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  // Escape hatch for debugging the page without any animation running.
+  // Escape hatch for looking at the layout with nothing moving.
   const forceStatic = new URLSearchParams(location.search).has("static");
   const animate = !reduceMotion && !forceStatic;
 
-  // ── Starfield ─────────────────────────────────────────────────────────────
-  // Deliberately cheap: a phone rendering this behind a scrolling page has a
-  // battery and a thermal budget. Capping DPR at 2 and halving the star count
-  // on small screens are the two settings that actually decide whether this
-  // stays at 60fps on a mid-range Android.
-  function startSky() {
-    const canvas = document.getElementById("sky");
-    if (!canvas || !animate) return;
+  const $ = (id) => document.getElementById(id);
 
+  const el = {
+    views: { brief: $("viewBrief"), connecting: $("viewConnecting"), call: $("viewCall") },
+    briefSub: $("briefSub"),
+    briefMsg: $("briefMsg"),
+    devices: $("devices"),
+    micSelect: $("micSelect"),
+    spkWrap: $("spkWrap"),
+    spkSelect: $("spkSelect"),
+    permBtn: $("permBtn"),
+    joinBtn: $("joinBtn"),
+    scheduleBtn: $("scheduleBtn"),
+    map: $("map"),
+    focus: $("focus"),
+    focusTitle: $("focusTitle"),
+    focusDesc: $("focusDesc"),
+    timer: $("timer"),
+    callStatus: $("callStatus"),
+    callError: $("callError"),
+    muteBtn: $("muteBtn"),
+    hangupBtn: $("hangupBtn"),
+    sheet: $("scheduleSheet"),
+    scheduleForm: $("scheduleForm"),
+    scheduleDone: $("scheduleDone"),
+    scheduleDoneLine: $("scheduleDoneLine"),
+    cbName: $("cbName"),
+    cbPhone: $("cbPhone"),
+    cbWhen: $("cbWhen"),
+    cbMsg: $("cbMsg"),
+    cbSubmit: $("cbSubmit"),
+    cbCancel: $("cbCancel"),
+    cbClose: $("cbClose"),
+  };
+
+  // Only present if this browser signed in through /login in this tab — written
+  // by frontend/app.js. Absent means an anonymous caller, which the backend
+  // prompt handles as its own case rather than as an error.
+  const leadId = sessionStorage.getItem("upsy_lead");
+
+  function showView(name) {
+    Object.keys(el.views).forEach((k) => el.views[k].classList.toggle("on", k === name));
+  }
+
+  // ── The constellation ─────────────────────────────────────────────────────
+  // A map of what UPSY can talk about, not a transcript. That distinction is
+  // deliberate and load-bearing: we get audio frames from the provider, not a
+  // running transcript, so the page cannot honestly claim to know which topic
+  // is being discussed right now. The nodes are therefore phrased as things you
+  // can ask about, and the spotlight moves on its own as an invitation.
+  //
+  // If a real transcript event ever shows up (see onEvent below), matchTopic()
+  // upgrades this from an invitation to an actual reflection of the call — the
+  // first live call will tell us whether that event exists.
+  const TOPICS = [
+    { key: "amount", label: "How much you can borrow", desc: "Your course, your co-applicant's income, and a realistic number", match: /borrow|amount|lakh|crore|how much|eligib|income|salary/i },
+    { key: "docs", label: "What you'll need", desc: "The documents a lender actually asks for, in the order they ask", match: /document|paper|pan|aadhaar|marksheet|admit|statement|upload/i },
+    { key: "cost", label: "What it will cost", desc: "Indicative EMI, the interest rate, and the moratorium while you study", match: /emi|cost|interest|rate|repay|month|tenure/i },
+    { key: "coapp", label: "Your co-applicant", desc: "Who can co-sign, and whose income actually counts", match: /co.?applicant|co.?borrow|father|mother|parent|spouse|guarantor/i },
+    { key: "secured", label: "Secured or unsecured", desc: "Whether putting up collateral changes what you're offered", match: /secur|collateral|property|fd|deposit/i },
+    { key: "next", label: "What happens next", desc: "How this call turns into a real application", match: /next|apply|start|process|after|lender|bank/i },
+  ];
+
+  const map = {
+    nodes: [],
+    cam: { x: 0, y: 0, scale: 1 },
+    target: { x: 0, y: 0, scale: 1 },
+    focusIdx: -1,
+    stars: [],
+    raf: null,
+    t: 0,
+  };
+
+  function buildMap() {
+    // Hand-placed rather than an even ring: a perfect circle reads as a chart,
+    // an irregular scatter reads as a constellation.
+    const seats = [
+      [0.02, -0.86], [0.82, -0.42], [0.88, 0.34],
+      [0.06, 0.84], [-0.85, 0.44], [-0.82, -0.38],
+    ];
+    map.nodes = [{ key: "you", label: "You", desc: "", x: 0, y: 0, hub: true }].concat(
+      TOPICS.map((t, i) => ({
+        ...t,
+        x: seats[i % seats.length][0],
+        y: seats[i % seats.length][1],
+        // Per-node phase so they twinkle out of step with each other.
+        phase: Math.random() * Math.PI * 2,
+      }))
+    );
+
+    const n = window.matchMedia("(max-width: 767px)").matches ? 70 : 130;
+    map.stars = new Array(n);
+    for (let i = 0; i < n; i++) {
+      map.stars[i] = {
+        x: (Math.random() - 0.5) * 3.4,
+        y: (Math.random() - 0.5) * 3.4,
+        r: 0.3 + Math.random() * 1.1,
+        a: 0.1 + Math.random() * 0.45,
+        phase: Math.random() * Math.PI * 2,
+      };
+    }
+  }
+
+  function focusTopic(idx) {
+    map.focusIdx = idx;
+    if (idx < 0) {
+      map.target = { x: 0, y: 0, scale: 1 };
+      el.focus.classList.remove("on");
+      return;
+    }
+    const node = map.nodes[idx];
+    // Pull the focused node up and left of centre so the big DOM caption below
+    // it has room — the caption is what the caller actually reads.
+    map.target = { x: node.x + 0.16, y: node.y + 0.42, scale: 2.15 };
+    el.focusTitle.textContent = node.label;
+    el.focusDesc.textContent = node.desc;
+    el.focus.classList.add("on");
+  }
+
+  // Set up once; startMap()/stopMap() only control the loop. Doing the setup
+  // per start would stack a resize listener and a second rAF loop every time
+  // the tab came back to the foreground.
+  function drawMap() {
+    const canvas = el.map;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const isSmall = window.matchMedia("(max-width: 767px)").matches;
-    let width = 0;
-    let height = 0;
-    let stars = [];
+    let w = 0;
+    let h = 0;
 
-    function build() {
-      width = window.innerWidth;
-      height = window.innerHeight;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = width + "px";
-      canvas.style.height = height + "px";
+    function size() {
+      // The call view is display:none until the call connects, so at load this
+      // element measures 0×0. A ResizeObserver is what catches the moment it
+      // gains a real size — without it the backing store keeps the fallback
+      // dimensions and the whole map renders stretched.
+      w = canvas.clientWidth || 380;
+      h = canvas.clientHeight || 700;
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      const base = Math.round((width * height) / 5200);
-      const count = isSmall ? Math.floor(base / 2) : base;
-      stars = new Array(Math.max(40, Math.min(count, 220)));
-      for (let i = 0; i < stars.length; i++) {
-        // depth drives size, brightness AND drift speed together, which is what
-        // reads as parallax without a second layer.
-        const depth = Math.random();
-        stars[i] = {
-          x: Math.random() * width,
-          y: Math.random() * height,
-          r: 0.4 + depth * 1.5,
-          a: 0.12 + depth * 0.55,
-          vy: 0.02 + depth * 0.12,
-          tw: Math.random() * Math.PI * 2,
-          tws: 0.008 + Math.random() * 0.02,
-        };
-      }
     }
+    size();
+    window.addEventListener("resize", size);
+    if (window.ResizeObserver) new ResizeObserver(size).observe(canvas);
 
-    let ready = false;
-    let rafId = null;
+    function project(x, y) {
+      // One unit ≈ 38% of the smaller screen dimension, so the map keeps its
+      // shape on a tall phone and a short landscape one alike.
+      const unit = Math.min(w, h) * 0.38;
+      return [
+        w / 2 + (x - map.cam.x) * unit * map.cam.scale,
+        h / 2 + (y - map.cam.y) * unit * map.cam.scale,
+      ];
+    }
 
     function frame() {
-      ctx.clearRect(0, 0, width, height);
-      for (let i = 0; i < stars.length; i++) {
-        const s = stars[i];
-        s.y += s.vy;
-        if (s.y > height + 2) { s.y = -2; s.x = Math.random() * width; }
-        s.tw += s.tws;
-        const alpha = s.a * (0.65 + 0.35 * Math.sin(s.tw));
+      map.t += 0.016;
+
+      // Ease the camera rather than jumping. 0.045 is slow enough to read as a
+      // drift toward the topic rather than a cut.
+      const k = animate ? 0.045 : 1;
+      map.cam.x += (map.target.x - map.cam.x) * k;
+      map.cam.y += (map.target.y - map.cam.y) * k;
+      map.cam.scale += (map.target.scale - map.cam.scale) * k;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Stars, parallaxed at half the camera's rate so they sit "behind".
+      for (let i = 0; i < map.stars.length; i++) {
+        const s = map.stars[i];
+        const unit = Math.min(w, h) * 0.38;
+        const px = w / 2 + (s.x - map.cam.x * 0.5) * unit * (1 + (map.cam.scale - 1) * 0.35);
+        const py = h / 2 + (s.y - map.cam.y * 0.5) * unit * (1 + (map.cam.scale - 1) * 0.35);
+        if (px < -20 || px > w + 20 || py < -20 || py > h + 20) continue;
+        const tw = animate ? 0.7 + 0.3 * Math.sin(map.t * 1.4 + s.phase) : 1;
         ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(190, 230, 255," + alpha.toFixed(3) + ")";
+        ctx.arc(px, py, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(198, 226, 246," + (s.a * tw).toFixed(3) + ")";
         ctx.fill();
       }
-      if (!ready) { ready = true; canvas.classList.add("is-ready"); }
-      rafId = requestAnimationFrame(frame);
+
+      const hub = project(map.nodes[0].x, map.nodes[0].y);
+
+      // Links from the hub outward.
+      for (let i = 1; i < map.nodes.length; i++) {
+        const p = project(map.nodes[i].x, map.nodes[i].y);
+        const focused = map.focusIdx === i;
+        ctx.beginPath();
+        ctx.moveTo(hub[0], hub[1]);
+        ctx.lineTo(p[0], p[1]);
+        ctx.strokeStyle = focused ? "rgba(134, 196, 232, 0.5)" : "rgba(114, 170, 208, 0.16)";
+        ctx.lineWidth = focused ? 1.3 : 0.8;
+        ctx.stroke();
+      }
+
+      // Nodes.
+      for (let i = 0; i < map.nodes.length; i++) {
+        const node = map.nodes[i];
+        const p = project(node.x, node.y);
+        const focused = map.focusIdx === i;
+        const dim = map.focusIdx >= 0 && !focused && !node.hub;
+
+        const pulse = animate && !node.hub ? 0.85 + 0.15 * Math.sin(map.t * 1.1 + (node.phase || 0)) : 1;
+        const r = (node.hub ? 4.5 : 3.4) * (focused ? 1.9 : 1) * pulse;
+
+        // Glow first, dot on top — a flat dot reads as a bullet point, the
+        // glow is what makes it a star.
+        const glow = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], r * 6);
+        const strength = focused ? 0.55 : dim ? 0.08 : 0.25;
+        glow.addColorStop(0, "rgba(150, 208, 246," + strength + ")");
+        glow.addColorStop(1, "rgba(150, 208, 246, 0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], r * 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+        ctx.fillStyle = focused
+          ? "rgba(244, 251, 255, 0.98)"
+          : dim ? "rgba(226, 240, 250, 0.32)" : "rgba(232, 242, 250, 0.85)";
+        ctx.fill();
+
+        // The focused node's caption is DOM (see .focus), so skip it here and
+        // never draw the same words twice.
+        if (focused) continue;
+
+        const alpha = dim ? 0.28 : node.hub ? 0.9 : 0.66;
+        ctx.font = (node.hub ? "600 13px " : "500 12px ") + "Hind, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = "rgba(226, 240, 250," + alpha + ")";
+        ctx.fillText(node.label, p[0], p[1] + r + 9);
+      }
+
+      map.raf = requestAnimationFrame(frame);
     }
 
-    build();
-    frame();
-
-    let resizeTimer = null;
-    window.addEventListener("resize", function () {
-      // Mobile browsers fire resize on every address-bar collapse; rebuilding
-      // the whole field each time would stutter the scroll.
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(build, 200);
-    });
-
-    // Stop burning frames while the page is backgrounded or a call is open.
-    document.addEventListener("visibilitychange", function () {
-      if (document.hidden) {
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      } else if (!rafId) {
-        frame();
-      }
-    });
-  }
-
-  // ── Scroll reveals ────────────────────────────────────────────────────────
-  function startReveals() {
-    const items = document.querySelectorAll(".reveal");
-    const revealAll = function () {
-      document.documentElement.classList.remove("reveal-ready");
-      items.forEach(function (node) { node.classList.add("in"); });
+    // Set up, but do not start: the map is only on screen during a call, and a
+    // canvas loop running behind the brief screen is battery spent on nothing.
+    // start() re-measures first — the ResizeObserver above is a convenience for
+    // orientation changes, not something correctness may depend on, since its
+    // callbacks are tied to the rendering steps and a browser that is not
+    // compositing (backgrounded tab, hidden pane) never delivers them.
+    map.start = function () {
+      size();
+      if (!map.raf) frame();
     };
-
-    // No animation wanted, or no observer to drive it: leave the copy exactly
-    // as the HTML delivered it, fully visible.
-    if (!animate || !("IntersectionObserver" in window)) return;
-
-    // Arming the effect is what hides the copy — never the stylesheet alone.
-    document.documentElement.classList.add("reveal-ready");
-
-    let delivered = false;
-    const io = new IntersectionObserver(function (entries) {
-      delivered = true;
-      entries.forEach(function (entry) {
-        if (!entry.isIntersecting) return;
-        entry.target.classList.add("in");
-        io.unobserve(entry.target); // reveal once, never re-hide on scroll back
-      });
-    }, { rootMargin: "0px 0px -12% 0px", threshold: 0.15 });
-    items.forEach(function (node) { io.observe(node); });
-
-    // Last resort. Some environments create the observer happily and then
-    // never call back — an invisible page is a far worse outcome than an
-    // un-animated one, so give up on the effect rather than on the content.
-    setTimeout(function () {
-      if (!delivered) {
-        io.disconnect();
-        revealAll();
-      }
-    }, 1500);
   }
 
-  // ── Call ──────────────────────────────────────────────────────────────────
-  const el = {
-    callBtn: document.getElementById("callBtn"),
-    sheet: document.getElementById("sheet"),
-    status: document.getElementById("sheetStatus"),
-    error: document.getElementById("sheetError"),
-    timer: document.getElementById("timer"),
-    orb: document.getElementById("orb"),
-    orbRing: document.getElementById("orbRing"),
-    wave: document.getElementById("wave"),
-    muteBtn: document.getElementById("muteBtn"),
-    muteLabel: document.getElementById("muteLabel"),
-    hangupBtn: document.getElementById("hangupBtn"),
-  };
+  function stopMap() {
+    if (map.raf) cancelAnimationFrame(map.raf);
+    map.raf = null;
+  }
 
+  // Rotate the spotlight while the call runs. Slow — it is ambient, and a
+  // caller mid-sentence should not feel the screen hurrying them.
+  let rotateId = null;
+  function startRotation() {
+    let i = 0;
+    focusTopic(-1);
+    clearInterval(rotateId);
+    rotateId = setInterval(function () {
+      i = (i % TOPICS.length) + 1;
+      focusTopic(i);
+    }, 7000);
+    // First move comes sooner than the interval, so the screen does something
+    // while the agent is saying hello.
+    setTimeout(function () { if (rotateId) focusTopic(1); }, 2200);
+  }
+  function stopRotation() {
+    clearInterval(rotateId);
+    rotateId = null;
+  }
+
+  // If the provider ever sends us text, spotlight what is actually being said
+  // instead of the rotation. Nothing depends on this working.
+  function matchTopic(text) {
+    if (!text) return;
+    for (let i = 0; i < TOPICS.length; i++) {
+      if (TOPICS[i].match.test(text)) {
+        stopRotation();
+        focusTopic(i + 1);
+        // Fall back to the ambient rotation if the talk moves on to something
+        // none of the topics cover.
+        clearTimeout(matchTopic._idle);
+        matchTopic._idle = setTimeout(startRotation, 15000);
+        return;
+      }
+    }
+  }
+
+  // ── Devices ───────────────────────────────────────────────────────────────
+  let permissionGranted = false;
+
+  function fillSelect(select, devices, kind) {
+    select.innerHTML = "";
+    devices
+      .filter((d) => d.kind === kind)
+      .forEach(function (d, i) {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId;
+        opt.textContent = d.label || (kind === "audioinput" ? "Microphone " + (i + 1) : "Speaker " + (i + 1));
+        select.appendChild(opt);
+      });
+    return select.options.length;
+  }
+
+  async function listDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const mics = fillSelect(el.micSelect, devices, "audioinput");
+    const spks = fillSelect(el.spkSelect, devices, "audiooutput");
+    el.devices.hidden = mics === 0;
+    // Safari and Firefox do not expose output devices at all; showing an empty
+    // picker would be worse than showing none.
+    el.spkWrap.hidden = spks === 0;
+  }
+
+  async function requestPermission() {
+    el.briefMsg.textContent = "";
+    el.permBtn.disabled = true;
+    try {
+      // Requesting and immediately releasing: the point here is only to unlock
+      // device labels and get the OS prompt out of the way before the call. The
+      // real capture stream is opened by voiceClient.js inside the Join tap,
+      // which is what iOS needs to allow audio playback.
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((t) => t.stop());
+      permissionGranted = true;
+      await listDevices();
+      el.permBtn.hidden = true;
+      el.joinBtn.hidden = false;
+      el.joinBtn.focus({ preventScroll: true });
+    } catch (e) {
+      el.briefMsg.textContent =
+        e && e.name === "NotAllowedError"
+          ? "UPSY needs your microphone to talk to you. Allow it in your browser settings, then tap again."
+          : e && e.name === "NotFoundError"
+            ? "No microphone was found on this device. You can ask us to call you instead."
+            : "Couldn't get to your microphone. You can ask us to call you instead.";
+    } finally {
+      el.permBtn.disabled = false;
+    }
+  }
+
+  // ── Call lifecycle ────────────────────────────────────────────────────────
   let call = null;
   let timerId = null;
-  let levelRaf = null;
-  let waveCtx = null;
-  let waveBars = [];
-  let closing = false;
+  let closingSelf = false;
 
   const STATUS_TEXT = {
     connecting: "Connecting…",
@@ -163,99 +373,82 @@
     error: "Couldn't connect",
   };
 
-  function setStatus(state, detail) {
-    el.status.textContent = STATUS_TEXT[state] || detail || state;
-  }
-
-  function showError(message) {
-    el.error.textContent = message;
-    el.error.hidden = false;
-  }
-
-  function openSheet() {
-    closing = false;
-    el.error.hidden = true;
-    el.timer.hidden = true;
-    el.timer.textContent = "0:00";
-    el.sheet.classList.add("open");
-    // A sheet, not a page — but Back is the reflex for "get me out of here" on
-    // a phone, so give it a history entry to pop and treat that as hang up.
-    history.pushState({ upsyCall: true }, "");
-  }
-
-  function closeSheet() {
-    el.sheet.classList.remove("open");
-    el.callBtn.disabled = false;
-    if (history.state && history.state.upsyCall) {
-      closing = true;
-      history.back();
-    }
-  }
-
   function startTimer() {
-    el.timer.hidden = false;
     clearInterval(timerId);
     timerId = setInterval(function () {
       if (!call) return;
       const s = call.elapsedSeconds();
-      el.timer.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+      el.timer.textContent =
+        String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
     }, 1000);
   }
 
-  function setupWave() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = el.wave.clientWidth || 280;
-    const h = 46;
-    el.wave.width = Math.floor(w * dpr);
-    el.wave.height = Math.floor(h * dpr);
-    waveCtx = el.wave.getContext("2d");
-    waveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    waveBars = new Array(28).fill(0);
-  }
+  async function beginCall() {
+    if (call) return;
+    el.joinBtn.disabled = true;
+    el.callError.hidden = true;
+    el.callStatus.textContent = "";
+    el.timer.textContent = "00:00";
+    showView("connecting");
+    // A view, not a route — but Back is the reflex for "get me out of here" on
+    // a phone, so give it a history entry to pop and treat that as hang up.
+    history.pushState({ upsyCall: true }, "");
 
-  // One loop drives the orb and the bars off the same two levels, so what the
-  // caller sees always matches whether it is them or the agent making sound.
-  function runLevels() {
-    if (!call) return;
-    const out = call.readOutputLevel();
-    const inp = call.inputLevel;
-    const level = Math.max(out, inp * 0.85);
-
-    el.orb.style.transform = "scale(" + (1 + level * 0.28).toFixed(3) + ")";
-    el.orbRing.style.transform = "scale(" + (1 + level * 0.13).toFixed(3) + ")";
-    el.orbRing.style.opacity = (0.35 + level * 0.5).toFixed(2);
-
-    if (waveCtx) {
-      waveBars.shift();
-      waveBars.push(level);
-      const w = el.wave.clientWidth || 280;
-      const h = 46;
-      waveCtx.clearRect(0, 0, w, h);
-      const gap = 3;
-      const barW = (w - gap * (waveBars.length - 1)) / waveBars.length;
-      for (let i = 0; i < waveBars.length; i++) {
-        const v = waveBars[i];
-        const barH = Math.max(2, v * h * 0.92);
-        const x = i * (barW + gap);
-        const y = (h - barH) / 2;
-        // Newer samples (right edge) are brighter, so it reads as flowing.
-        const alpha = 0.18 + (i / waveBars.length) * 0.55;
-        waveCtx.fillStyle = "rgba(99, 216, 255," + alpha.toFixed(2) + ")";
-        waveCtx.beginPath();
-        waveCtx.roundRect ? waveCtx.roundRect(x, y, barW, barH, barW / 2) : waveCtx.rect(x, y, barW, barH);
-        waveCtx.fill();
+    try {
+      const started = await window.UpsyVoice.start({
+        leadId: leadId,
+        deviceId: el.micSelect.value || null,
+        sinkId: el.spkWrap.hidden ? null : el.spkSelect.value || null,
+        onStatus: function (state, detail) {
+          console.log("[voice] status:", state, detail || "");
+          el.callStatus.textContent = STATUS_TEXT[state] || detail || state;
+          if (state === "connected") {
+            showView("call");
+            if (map.start) map.start();
+            startTimer();
+            startRotation();
+          }
+          // "error" keeps its message on screen and must not close the view —
+          // only a clean "ended" ends the call by itself.
+          if (state === "ended" && call) endCall();
+        },
+        onError: function (message) {
+          console.error("[voice] error:", message);
+          showView("call");
+          stopRotation();
+          focusTopic(-1);
+          clearInterval(timerId);
+          el.callError.textContent = message;
+          el.callError.hidden = false;
+          el.callStatus.textContent = STATUS_TEXT.error;
+        },
+        onEvent: function (msg) {
+          // The provider's event vocabulary is not fully confirmed against a
+          // live call yet. Pick up anything that looks like text and let it
+          // drive the spotlight; ignore everything else.
+          const text = msg && (msg.text || msg.transcript || (msg.data && msg.data.text));
+          if (typeof text === "string") matchTopic(text);
+        },
+      });
+      call = started.call;
+      const name = started.session.caller && started.session.caller.name;
+      if (name) {
+        el.callStatus.textContent = "Listening — go ahead, " + name.split(/\s+/)[0];
       }
+    } catch (e) {
+      showView("call");
+      el.callError.textContent = (e && e.message) || "Couldn't start the call.";
+      el.callError.hidden = false;
+      el.callStatus.textContent = STATUS_TEXT.error;
+    } finally {
+      el.joinBtn.disabled = false;
     }
-    levelRaf = requestAnimationFrame(runLevels);
-  }
-
-  function stopLevels() {
-    if (levelRaf) cancelAnimationFrame(levelRaf);
-    levelRaf = null;
   }
 
   async function endCall() {
-    stopLevels();
+    stopRotation();
+    focusTopic(-1);
+    stopMap();
     clearInterval(timerId);
     timerId = null;
     const active = call;
@@ -264,60 +457,88 @@
       try {
         await active.stop();
       } catch (e) {
-        // Teardown is best-effort; the sheet closes either way.
+        // Teardown is best-effort; the view returns either way.
       }
     }
-    closeSheet();
+    showView("brief");
+    el.joinBtn.disabled = false;
+    if (history.state && history.state.upsyCall) {
+      closingSelf = true;
+      history.back();
+    }
   }
 
-  async function beginCall() {
-    if (call) return;
-    el.callBtn.disabled = true;
-    openSheet();
-    setStatus("connecting");
-    setupWave();
+  // ── Schedule a callback ───────────────────────────────────────────────────
+  function openSchedule() {
+    el.sheet.hidden = false;
+    // Force a reflow so the transition has a start state to animate from.
+    // Deliberately not requestAnimationFrame: rAF does not fire in a tab that
+    // is not compositing, and the sheet would then never become visible at all.
+    void el.sheet.offsetHeight;
+    el.sheet.classList.add("open");
+    el.cbMsg.textContent = "";
+    setTimeout(function () { el.cbName.focus({ preventScroll: true }); }, 260);
+  }
 
-    // Only present if this browser has signed in through /login in this tab —
-    // written by frontend/app.js. Absent means an anonymous caller, which the
-    // backend prompt handles as its own case rather than as an error.
-    const leadId = sessionStorage.getItem("upsy_lead");
+  function closeSchedule() {
+    el.sheet.classList.remove("open");
+    setTimeout(function () {
+      el.sheet.hidden = true;
+      // Reset for a second request in the same session.
+      el.scheduleForm.hidden = false;
+      el.scheduleDone.hidden = true;
+    }, 300);
+  }
 
+  async function submitCallback() {
+    const name = el.cbName.value.trim();
+    const phone = el.cbPhone.value.trim();
+    if (!name) { el.cbMsg.textContent = "Please tell us your name."; el.cbName.focus(); return; }
+    if (!phone) { el.cbMsg.textContent = "Please add a mobile number."; el.cbPhone.focus(); return; }
+
+    el.cbMsg.textContent = "";
+    el.cbSubmit.disabled = true;
+    el.cbSubmit.textContent = "Sending…";
     try {
-      const started = await window.UpsyVoice.start({
-        leadId: leadId,
-        onStatus: function (state, detail) {
-          console.log("[voice] status:", state, detail || "");
-          setStatus(state, detail);
-          if (state === "connected") { startTimer(); runLevels(); }
-          // "error" already shows a message via onError below and must stay on
-          // screen — only a clean "ended" should close the sheet on its own.
-          if (state === "ended" && call) endCall();
-        },
-        onError: function (message) {
-          console.error("[voice] error:", message);
-          stopLevels();
-          clearInterval(timerId);
-          showError(message);
-          setStatus("error");
-          el.callBtn.disabled = false;
-        },
+      const res = await fetch("/api/voice/callback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name,
+          phone: phone,
+          whenText: el.cbWhen.value.trim(),
+          leadId: leadId || null,
+          // Context for whoever picks this up, so they are not calling blind.
+          topic: "Requested from the /m voice page",
+        }),
       });
-      call = started.call;
-      if (started.session.caller && started.session.caller.name) {
-        el.status.textContent = "Connected — go ahead, " + started.session.caller.name.split(/\s+/)[0];
+      const data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        el.cbMsg.textContent = data.error || "That didn't go through. Please try again.";
+        return;
       }
+      const when = el.cbWhen.value.trim();
+      el.scheduleDoneLine.textContent =
+        "Someone from UPSY will call you on " + (data.phone || phone) +
+        (when ? " — we've noted " + when.toLowerCase() + "." : ".");
+      el.scheduleForm.hidden = true;
+      el.scheduleDone.hidden = false;
     } catch (e) {
-      showError(e && e.message ? e.message : "Couldn't start the call.");
-      setStatus("error");
-      stopLevels();
-      // Leave the sheet open so the caller can read why it failed, but give
-      // them the End button as the way out.
-      el.callBtn.disabled = false;
+      el.cbMsg.textContent = "Couldn't reach us just now. Check your connection and try again.";
+    } finally {
+      el.cbSubmit.disabled = false;
+      el.cbSubmit.textContent = "Request a callback";
     }
   }
 
-  el.callBtn.addEventListener("click", beginCall);
+  // ── Wiring ────────────────────────────────────────────────────────────────
+  el.permBtn.addEventListener("click", requestPermission);
+  el.joinBtn.addEventListener("click", beginCall);
   el.hangupBtn.addEventListener("click", endCall);
+  el.scheduleBtn.addEventListener("click", openSchedule);
+  el.cbCancel.addEventListener("click", closeSchedule);
+  el.cbClose.addEventListener("click", closeSchedule);
+  el.cbSubmit.addEventListener("click", submitCallback);
 
   el.muteBtn.addEventListener("click", function () {
     if (!call) return;
@@ -325,13 +546,14 @@
     el.muteBtn.classList.toggle("on", muted);
     el.muteBtn.setAttribute("aria-pressed", String(muted));
     el.muteBtn.setAttribute("aria-label", muted ? "Unmute microphone" : "Mute microphone");
-    el.muteLabel.textContent = muted ? "Unmute" : "Mute";
+    el.callStatus.textContent = muted ? "Microphone off" : STATUS_TEXT.connected;
   });
 
   window.addEventListener("popstate", function () {
-    // Ignore the pop we caused ourselves in closeSheet().
-    if (closing) { closing = false; return; }
-    if (call || el.sheet.classList.contains("open")) endCall();
+    if (closingSelf) { closingSelf = false; return; }
+    if (call || el.views.call.classList.contains("on") || el.views.connecting.classList.contains("on")) {
+      endCall();
+    }
   });
 
   // Never leave the microphone open on a page the caller has left — on a phone
@@ -340,6 +562,28 @@
     if (call) call.stop();
   });
 
-  startSky();
-  startReveals();
+  // Devices can be plugged in or removed while the brief is on screen.
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", function () {
+      if (permissionGranted) listDevices();
+    });
+  }
+
+  // Greet a signed-in caller by name — one round trip already told app.js who
+  // they are, so there is no reason for this page to be anonymous about it.
+  const knownName = sessionStorage.getItem("upsy_name");
+  if (knownName) {
+    el.briefSub.textContent =
+      "Hi " + knownName.split(/\s+/)[0] + " — I have your application open. Ask me anything about it.";
+  }
+
+  buildMap();
+  drawMap();
+
+  // Stop burning frames while the page is backgrounded, and only resume if a
+  // call is actually on screen.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) stopMap();
+    else if (map.start && el.views.call.classList.contains("on")) map.start();
+  });
 })();
