@@ -24,6 +24,8 @@ import { answerDocQuestion, assistConfigured } from "./assist.js";
 import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
+import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine } from "./voiceCall.js";
+import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -878,6 +880,49 @@ app.post("/api/assist", async (req, res) => {
   }
 });
 
+// ── Browser voice calls (mobile surface) ────────────────────────────────────
+// Mints a short-lived credential so the caller's phone can open a voice socket
+// directly to the provider. Unlike live-assist there is no meeting, no child
+// process and no global one-call lock — see backend/voiceCall.js.
+
+// Five calls per 10 minutes per device. A real caller starting over after a
+// dropped connection stays well inside this; a script does not.
+const voiceLimiter = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
+
+app.post("/api/voice/session", async (req, res) => {
+  if (!voiceConfigured()) {
+    return res.status(503).json({ error: voiceConfigError() });
+  }
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (voiceLimiter.check(ip)) {
+    return res.status(429).json({ error: "Too many calls started from this device. Please wait a few minutes and try again." });
+  }
+  try {
+    const leadId = req.body?.leadId ? String(req.body.leadId).slice(0, 64) : null;
+    const session = await createVoiceSession({ leadId });
+    console.log(`[voice] session started (${session.caller.known ? `lead ${leadId}` : "anonymous"})`);
+    // Best-effort timeline entry: a call that isn't recorded on the lead is
+    // still a call worth having, so never fail the session over this.
+    if (leadId && session.caller.known) {
+      source
+        .pushStatus(leadId, { event: "voice_call_started", label: "Applicant started a voice call with UPSY from their phone" })
+        .catch((e) => console.error("[voice] timeline write failed:", e.message));
+    }
+    res.json(session);
+  } catch (e) {
+    if (e.code === "NOT_CONFIGURED") return res.status(503).json({ error: e.message });
+    console.error("[voice] session failed:", e.message);
+    res.status(502).json({ error: "Couldn't start the call right now. Please try again in a moment." });
+  }
+});
+
+// The mobile surface. Its own page rather than a route of the applicant SPA —
+// it is a different design (dark, voice-first, phone-only) and shares nothing
+// with index.html but the API.
+app.get(["/m", "/m/*"], (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "frontend", "m.html"));
+});
+
 // SPA routing: serve the applicant app for its client-side routes
 // (/login → /intake → /docs, plus per-document steps like /docs/3 and /docs/done).
 app.get(["/login", "/intake", "/docs", "/docs/*"], (_req, res) => {
@@ -900,4 +945,7 @@ app.listen(PORT, () => {
   if (process.env.OPENROUTER_API_KEY) readers.push(`OpenRouter (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   readers.push("OCR (fallback)");
   console.log(`Document reader priority: ${readers.join(" → ")}`);
+  // Same reasoning as the reader-priority line: make it obvious at a glance
+  // whether the phone-call agent is live, instead of finding out on a 503.
+  console.log(voiceStatusLine());
 });
