@@ -24,3 +24,7 @@ services:
         sync: false
       - key: CARTESIA_AGENT_ID
         sync: false
+      # Where /m's "Schedule call" requests are texted. Unset is fine — they
+      # still persist and print to the server log.
+      - key: OPS_PHONE
+        sync: false

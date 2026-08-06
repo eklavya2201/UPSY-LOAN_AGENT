@@ -25,6 +25,7 @@ import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady } from "./voiceCall.js";
+import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -911,9 +912,9 @@ app.post("/api/voice/session", async (req, res) => {
     res.json(session);
   } catch (e) {
     if (e.code === "NOT_CONFIGURED") return res.status(503).json({ error: e.message });
-    // The agent exists but was never deployed. Worth its own branch: without
-    // this the caller only ever sees an opaque 1011 close after the socket
-    // opens, and the real cause never reaches anyone who could act on it.
+    // The agent exists but was never deployed. Worth its own branch: the fix is
+    // one button in the Cartesia dashboard, and without this the caller only
+    // ever sees an opaque 1011 close after the socket opens.
     if (e.code === "AGENT_NOT_READY") {
       console.error(`[voice] ${e.message}`);
       return res.status(503).json({ error: "UPSY's voice line isn't switched on yet. Please try the chat, or check back shortly.", detail: e.message });
@@ -921,6 +922,65 @@ app.post("/api/voice/session", async (req, res) => {
     console.error("[voice] session failed:", e.message);
     res.status(502).json({ error: "Couldn't start the call right now. Please try again in a moment." });
   }
+});
+
+// "Schedule call" on /m — the other half of the call button, for someone who
+// would rather be phoned back. Rate-limited like the session endpoint, but more
+// generously: this one costs us nothing per hit, it just needs to not become a
+// spam inbox.
+const callbackLimiter = createRateLimiter({ limit: 5, windowMs: 30 * 60 * 1000 });
+
+app.post("/api/voice/callback", async (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (callbackLimiter.check(ip)) {
+    return res.status(429).json({ error: "That's a few requests already — we'll be in touch about the ones you've sent." });
+  }
+
+  const phone = normalizePhone(req.body?.phone);
+  if (!phone) {
+    return res.status(400).json({ error: "Please enter a 10-digit Indian mobile number we can call you on." });
+  }
+  const name = String(req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ error: "Please tell us your name." });
+
+  try {
+    const leadId = req.body?.leadId ? String(req.body.leadId).slice(0, 64) : null;
+    const entry = await recordCallback({
+      name,
+      phone,
+      whenText: req.body?.whenText,
+      topic: req.body?.topic,
+      leadId,
+    });
+
+    // Best-effort, exactly like the voice_call_started write: a callback that
+    // is recorded but not announced is still a callback we will honour, so
+    // never fail the request because a notifier or the lead source is down.
+    const opsPhone = process.env.OPS_PHONE;
+    if (opsPhone) {
+      notifier.send(opsPhone, callbackOpsMessage(entry)).catch((e) => console.error("[callback] notify failed:", e.message));
+    } else {
+      console.log(`[callback] ${callbackOpsMessage(entry)}`);
+    }
+    if (leadId) {
+      source
+        .pushStatus(leadId, { event: "callback_requested", label: `Applicant asked UPSY to call them back on ${phone}${entry.whenText ? ` (${entry.whenText})` : ""}` })
+        .catch((e) => console.error("[callback] timeline write failed:", e.message));
+    }
+
+    // Echo the normalized number back: the caller may have typed it with +91,
+    // spaces or dashes, and the confirmation should show the number we will
+    // actually ring rather than the string they happened to type.
+    res.json({ ok: true, id: entry.id, phone: entry.phone });
+  } catch (e) {
+    console.error("[callback] failed:", e.message);
+    res.status(500).json({ error: "We couldn't save that request. Please try again." });
+  }
+});
+
+// The officer-facing side of the same queue.
+app.get("/api/voice/callbacks", async (_req, res) => {
+  res.json({ callbacks: await listCallbacks() });
 });
 
 // The mobile surface. Its own page rather than a route of the applicant SPA —
