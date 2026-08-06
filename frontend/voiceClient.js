@@ -217,6 +217,10 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
     async startCapture() {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          // Whatever the caller picked in the device list, when they picked one.
+          // `exact` on purpose: silently falling back to a different microphone
+          // than the one shown as selected is worse than failing and saying so.
+          ...(this.options.deviceId ? { deviceId: { exact: this.options.deviceId } } : {}),
           channelCount: 1,
           // All three matter far more on a phone held to a face in a noisy
           // room than on a laptop: without echo cancellation the agent hears
@@ -235,6 +239,18 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
       if (this.captureContext.state === "suspended") await this.captureContext.resume();
       if (this.playbackContext.state === "suspended") await this.playbackContext.resume();
       this.playbackQueueTime = this.playbackContext.currentTime;
+
+      // Route playback to a chosen speaker where the browser allows it. Only
+      // Chromium implements AudioContext.setSinkId today, and on a phone the
+      // OS owns this decision anyway — so this is a desktop nicety that must
+      // never break the call when it is unavailable or refused.
+      if (this.options.sinkId && typeof this.playbackContext.setSinkId === "function") {
+        try {
+          await this.playbackContext.setSinkId(this.options.sinkId);
+        } catch (e) {
+          console.warn("[voice] could not select that speaker, using the default:", e.message);
+        }
+      }
 
       this.outputAnalyser = this.playbackContext.createAnalyser();
       this.outputAnalyser.fftSize = 256;
@@ -521,6 +537,8 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
       config: session.config,
       agent: session.agent,
       metadata: session.metadata,
+      deviceId: opts.deviceId || null,
+      sinkId: opts.sinkId || null,
       onStatus: opts.onStatus,
       onError: opts.onError,
       onEvent: opts.onEvent,
