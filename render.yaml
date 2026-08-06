@@ -18,3 +18,9 @@ services:
         sync: false
       - key: AGENTCALL_API_KEY
         sync: false
+      # Browser voice calls on /m. Without these the page still loads and the
+      # Call button reports exactly what is missing — it does not break the app.
+      - key: CARTESIA_API_KEY
+        sync: false
+      - key: CARTESIA_AGENT_ID
+        sync: false
