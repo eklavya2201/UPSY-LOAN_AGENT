@@ -147,6 +147,9 @@ async function startSession(phone) {
   // Also readable from /m (frontend/m.js), so a voice call started there can be
   // grounded in this applicant's real record instead of running anonymously.
   if (LEAD && LEAD.leadId) sessionStorage.setItem("upsy_lead", LEAD.leadId);
+  // The name too, purely so /m can greet them before the call rather than
+  // waiting for the session round trip to tell it who is calling.
+  if (LEAD && LEAD.name) sessionStorage.setItem("upsy_name", LEAD.name);
 }
 
 async function beginSession() {
