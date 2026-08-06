@@ -72,6 +72,65 @@ export function voiceStatusLine() {
   return `Voice calls: ${PROVIDER} (agent ${String(process.env.CARTESIA_AGENT_ID).slice(0, 8)}…, ${INPUT_FORMAT})`;
 }
 
+// ── Agent readiness ─────────────────────────────────────────────────────────
+// A Cartesia agent that has been created but never deployed accepts the
+// WebSocket handshake and then closes it with `1011 Internal server error` —
+// no mention of deployment anywhere in the close reason. From the phone that is
+// indistinguishable from a bug in our own code, and it cost a debugging session
+// once already (the call sheet vanishing a second after "Connecting…").
+//
+// So check it here, where we can say what is actually wrong, instead of letting
+// the browser discover it as an opaque close code.
+const AGENT_READY_TTL_MS = 10 * 60 * 1000;
+let agentReadyUntil = 0;
+
+function notDeployedMessage() {
+  return (
+    "The Cartesia agent exists but has never been deployed, so calls are refused " +
+    "with an unhelpful internal-server-error close. Open the agent at play.cartesia.ai " +
+    "and press Publish/Deploy, then try again."
+  );
+}
+
+/**
+ * Ask Cartesia whether the configured agent can actually take a call.
+ * @returns {Promise<{ok: boolean, reason?: string, agent?: object}>}
+ */
+export async function checkAgentReady({ force = false } = {}) {
+  if (!force && Date.now() < agentReadyUntil) return { ok: true, cached: true };
+
+  const res = await fetch(
+    `https://${CARTESIA_HOST}/agents/${encodeURIComponent(process.env.CARTESIA_AGENT_ID)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
+        "Cartesia-Version": CARTESIA_VERSION,
+      },
+    }
+  );
+
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, reason: "Cartesia rejected the API key. Check CARTESIA_API_KEY in .env." };
+  }
+  if (res.status === 404) {
+    return { ok: false, reason: `No Cartesia agent with id ${process.env.CARTESIA_AGENT_ID}. Check CARTESIA_AGENT_ID in .env.` };
+  }
+  if (!res.ok) {
+    // Cartesia itself is unhappy for some other reason. Don't block the call on
+    // our own preflight — the socket is the authority, and a working call must
+    // not be prevented by a flaky status endpoint.
+    return { ok: true, unverified: true, reason: `agent status check returned HTTP ${res.status}` };
+  }
+
+  const agent = await res.json();
+  if (agent.is_live === false || agent.deployment_count === 0) {
+    return { ok: false, reason: notDeployedMessage(), agent };
+  }
+
+  agentReadyUntil = Date.now() + AGENT_READY_TTL_MS;
+  return { ok: true, agent };
+}
+
 // Mint a browser-safe credential. Cartesia's account key (sk_car_…) grants full
 // account access and must never be sent to a client; /access-token exchanges it
 // for a scoped, expiring one.
@@ -132,6 +191,14 @@ function nextPendingDocument(app) {
 export async function createVoiceSession({ leadId = null } = {}) {
   const err = voiceConfigError();
   if (err) throw Object.assign(new Error(err), { code: "NOT_CONFIGURED" });
+
+  // Cheap after the first success (cached for 10 minutes) and it converts the
+  // single most confusing failure this feature has into a sentence that names
+  // the fix. A network problem reaching the check is not a reason to block —
+  // checkAgentReady() reports ok:true/unverified for that case.
+  const ready = await checkAgentReady();
+  if (!ready.ok) throw Object.assign(new Error(ready.reason), { code: "AGENT_NOT_READY" });
+  if (ready.unverified) console.warn(`[voice] proceeding without a readiness check: ${ready.reason}`);
 
   let context = null;
   if (leadId) {
