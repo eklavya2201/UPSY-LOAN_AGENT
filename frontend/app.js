@@ -144,6 +144,9 @@ async function startSession(phone) {
   partnerInstitute = data.partnerInstitute || null;
   idx = firstPendingIdx();
   sessionStorage.setItem("upsy_phone", phone); // lets a page refresh restore the session
+  // Also readable from /m (frontend/m.js), so a voice call started there can be
+  // grounded in this applicant's real record instead of running anonymously.
+  if (LEAD && LEAD.leadId) sessionStorage.setItem("upsy_lead", LEAD.leadId);
 }
 
 async function beginSession() {
