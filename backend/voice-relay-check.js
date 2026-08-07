@@ -14,7 +14,7 @@ import http from "http";
 import WebSocket from "ws";
 import { attachVoiceRelay, mintRelayTicket, RELAY_PATH, SAMPLE_RATE } from "./voiceRelay.js";
 import { sttConfigured, sttConfigError } from "./voiceStt.js";
-import { ttsConfigured, ttsConfigError } from "./voiceTts.js";
+import { ttsConfigured, ttsConfigError, ttsStatusLine, phraseCacheStats } from "./voiceTts.js";
 import { brainConfigured, brainConfigError, brainStatusLine } from "./voiceBrain.js";
 import { buildVoiceSystemPrompt, buildIntroduction } from "./voicePrompt.js";
 import { speakReply } from "./voiceBrain.js";
@@ -98,7 +98,7 @@ function fakeBrowser(url, { onEvent, sendFrames = [] }) {
 step("Configuration");
 console.log(`   hear  (STT):   ${sttConfigured() ? "Deepgram" : "NOT CONFIGURED"}`);
 console.log(`   think (LLM):   ${brainStatusLine()}`);
-console.log(`   speak (TTS):   ${ttsConfigured() ? "Cartesia Sonic" : "NOT CONFIGURED"}`);
+console.log(`   speak (TTS):   ${ttsConfigured() ? ttsStatusLine() : "NOT CONFIGURED"}`);
 if (!sttConfigured()) warn(sttConfigError());
 if (!brainConfigured()) {
   bad(brainConfigError());
@@ -186,7 +186,7 @@ step("Tickets are single-use");
 // ── 4. The agent actually speaks (roadmap step 4) ────────────────────────────
 step("Voice — does it make a sound?");
 if (!ttsConfigured()) {
-  warn("skipped: no CARTESIA_API_KEY");
+  warn("skipped: no TTS key");
 } else {
   const { server, origin } = await startRelay();
   try {
@@ -214,6 +214,50 @@ if (!ttsConfigured()) {
     ok(`the agent spoke its introduction — first audio at ${firstAudioAt}ms, ${seconds}s of PCM received`);
   } catch (e) {
     bad(`the agent never spoke: ${e.message}`);
+    failures++;
+  } finally {
+    server.close();
+  }
+}
+
+// ── 4b. The phrase cache ────────────────────────────────────────────────────
+// The greeting and the acknowledgements are byte-identical on every call and
+// were being re-bought every time — which is what drained a month of Cartesia
+// credit in a day of testing. Cached, the second call should not pay at all.
+step("Phrase cache — is the greeting re-bought every call?");
+if (!ttsConfigured()) {
+  warn("skipped: no TTS key");
+} else {
+  const { server, origin } = await startRelay();
+  try {
+    const speakOnce = async () => {
+      const token = mintRelayTicket({
+        leadId: null, language: "en",
+        systemPrompt: buildVoiceSystemPrompt(null), introduction: buildIntroduction(null),
+      });
+      const t0 = Date.now();
+      let firstAt = null;
+      await fakeBrowser(`${origin}${RELAY_PATH}?token=${token}`, {
+        onEvent: (msg, finish) => {
+          if (msg.event === "media_output" && firstAt === null) firstAt = Date.now() - t0;
+          // Wait for the greeting to FINISH — the relay flips to "listening"
+          // once it has stopped talking. Cutting the socket at a byte count
+          // instead (which this test did at first) kills the sentence
+          // mid-synthesis, and the cache correctly refuses to store a truncated
+          // phrase — so the test reported a broken cache that was working.
+          if (msg.event === "state" && msg.state === "listening") finish(true);
+        },
+      });
+      return firstAt;
+    };
+    const cold = await speakOnce();
+    const warm = await speakOnce();
+    const stats = phraseCacheStats();
+    console.log(`   greeting: ${cold}ms first time, ${warm}ms second   (cache holds ${stats.ready}/${stats.known} phrases)`);
+    if (warm < cold) ok(`the greeting is served from cache on repeat — ${cold - warm}ms faster and free`);
+    else warn("the second greeting was not faster; the cache may not be holding");
+  } catch (e) {
+    bad(`cache test failed: ${e.message}`);
     failures++;
   } finally {
     server.close();
@@ -257,30 +301,30 @@ step("Hearing — the full loop, no microphone");
 if (!sttConfigured()) {
   warn("no DEEPGRAM_API_KEY: UPSY can speak and think, but cannot hear the caller. This is the last gap.");
 } else if (!ttsConfigured()) {
-  warn("skipped: synthesising a fake caller needs CARTESIA_API_KEY");
+  warn("skipped: synthesising a fake caller needs a TTS key");
 } else {
   const SPOKEN = "I need about fifteen lakh rupees for an MBA. Am I eligible?";
   const { server, origin } = await startRelay();
   try {
     // 6a. Record our fake caller.
-    const res = await fetch("https://api.cartesia.ai/tts/bytes", {
+    //
+    // Synthesised with a DIFFERENT voice from the agent's, so this is not
+    // accidentally testing whether Deepgram can hear itself. REST rather than
+    // the streaming socket on purpose: this is a test fixture, and latency here
+    // is irrelevant — it is the agent's own path that has to be fast.
+    const caller = new URL("https://api.deepgram.com/v1/speak");
+    caller.searchParams.set("model", "aura-2-orpheus-en"); // male; the agent is female
+    caller.searchParams.set("encoding", "linear16");
+    caller.searchParams.set("sample_rate", String(SAMPLE_RATE));
+    caller.searchParams.set("container", "none");
+    const res = await fetch(caller, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
-        "Cartesia-Version": process.env.CARTESIA_VERSION || "2025-04-16",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model_id: "sonic-2",
-        transcript: SPOKEN,
-        // A different voice from the agent's, so we are not accidentally
-        // testing whether Deepgram can hear UPSY talking to itself.
-        voice: { mode: "id", id: "630ed21c-2c5c-41cf-9d82-10a7fd668370" },
-        output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: SAMPLE_RATE },
-        language: "en",
-      }),
+      headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: SPOKEN }),
     });
-    if (!res.ok) throw new Error(`could not synthesise a caller: HTTP ${res.status}`);
+    if (!res.ok) {
+      throw new Error(`could not synthesise a caller: HTTP ${res.status} ${(await res.text()).slice(0, 120)}`);
+    }
     const callerPcm = Buffer.from(await res.arrayBuffer());
     console.log(`   fake caller says: "${SPOKEN}" (${(callerPcm.length / 2 / SAMPLE_RATE).toFixed(2)}s)`);
 
