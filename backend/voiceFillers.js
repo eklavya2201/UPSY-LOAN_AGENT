@@ -120,3 +120,23 @@ export function pickAcknowledgement(question, language = "en", lastUsed = null) 
 
 // Exported for tests and for anyone tuning the matcher.
 export const ACKNOWLEDGEMENT_BUCKETS = BUCKETS;
+
+/**
+ * Every acknowledgement this module can ever produce, in every language.
+ *
+ * These are the strings the agent repeats across calls, which makes them the
+ * ones worth synthesising once and keeping — see the phrase cache in
+ * voiceTts.js. Anything the model writes is unique and is not on this list.
+ */
+export function allFixedPhrases(language) {
+  // Ask for a language explicitly. An earlier version returned every language at
+  // once and left the caller to sort them out by regex — which quietly failed and
+  // sent a dozen Hindi lines to an English voice to be synthesised and paid for.
+  // The buckets already know which is which; guessing from the text was never
+  // necessary.
+  const langs = language ? [language] : ["en", "hi"];
+  const out = [];
+  for (const bucket of BUCKETS) for (const l of langs) out.push(...(bucket[l] || []));
+  for (const l of langs) out.push(...(GENERIC[l] || []));
+  return out;
+}
