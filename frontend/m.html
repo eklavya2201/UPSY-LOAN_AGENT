@@ -55,6 +55,13 @@
     overscroll-behavior-y: none;
   }
 
+  /* The `hidden` attribute must actually hide things. A class selector like
+     `.btn { display: flex }` outranks the browser's own `[hidden]` rule, so
+     without this every element this page hides in markup — the device pickers,
+     the second-stage call button — renders anyway. That is what filled the
+     brief screen with controls that were supposed to appear one at a time. */
+  [hidden] { display: none !important; }
+
   /* ── The frame ────────────────────────────────────────────────────────────
      Full-bleed on a phone, which is the only place this really matters. On a
      desktop it becomes a phone-shaped panel centred on a light page, so the
@@ -74,6 +81,58 @@
       radial-gradient(120% 70% at 50% 0%, #153545 0%, #0b1a24 45%, var(--ink) 100%);
     display: flex;
     flex-direction: column;
+  }
+
+  /* ── The breathing rim ────────────────────────────────────────────────────
+     A light that lives in the edges of the screen and tells you what the agent
+     is doing without a word of UI copy: slow cool breath while it listens, a
+     quicker warm one while it thinks, steady bright while it talks.
+
+     It earns its place because the brain needs over a second to answer. The
+     spoken acknowledgement covers that in the ear; this covers it in the eye —
+     between them, a pause reads as "it heard me and it's working" instead of
+     "this has frozen". Driven by the relay's `state` event (voiceRelay.js), so
+     it reflects what the server is actually doing, never a guess.
+
+     Inset shadow on an overlay rather than a border, so it glows inward from
+     the bezel and never shifts the layout by a pixel. */
+  .frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 5;
+    opacity: 0;
+    transition: opacity .5s ease;
+    box-shadow: inset 0 0 var(--rim-spread, 70px) var(--rim-thick, 2px) var(--rim, transparent);
+  }
+  .frame[data-voice]::after { animation: rim-breathe var(--rim-rate, 4.5s) ease-in-out infinite; }
+
+  .frame[data-voice="listening"]::after {
+    opacity: 1;
+    --rim: #4fd1e8cc;   /* cool: your turn */
+    --rim-rate: 4.5s;
+    --rim-spread: 60px;
+  }
+  .frame[data-voice="thinking"]::after {
+    opacity: 1;
+    --rim: #f0b46bd9;   /* warm and quicker: working on it */
+    --rim-rate: 1.6s;
+    --rim-spread: 80px;
+    --rim-thick: 3px;
+  }
+  .frame[data-voice="speaking"]::after {
+    opacity: 1;
+    --rim: #7fb2ffe6;   /* steady bright: UPSY is talking */
+    --rim-rate: 3s;
+    --rim-spread: 95px;
+    --rim-thick: 3px;
+  }
+
+  @keyframes rim-breathe {
+    0%, 100% { opacity: .38; }
+    50%      { opacity: 1; }
   }
 
   @media (min-width: 640px) {
@@ -248,6 +307,30 @@
 
   .btn.primary { background: #ffffff; color: #0d2333; }
   .btn.secondary { background: var(--accent); color: #eaf8ff; }
+  /* The secondary options: real controls, styled as text so they cannot compete
+     with the one thing the page is asking for. */
+  .alt-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+    margin: .15rem 0 0;
+    font-size: .82rem;
+    color: var(--faint);
+  }
+  .linkish {
+    background: none;
+    border: 0;
+    padding: .35rem .1rem;
+    font: inherit;
+    color: var(--muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .linkish:hover { color: #eaf8ff; }
+  .linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
   .btn.quiet {
     background: transparent;
     color: var(--muted);
@@ -525,6 +608,9 @@
   @media (prefers-reduced-motion: reduce) {
     .sheet, .sheet-card, .focus, .btn, .key { transition: none; }
     .dots::after { animation: none; content: "…"; }
+    /* The rim still shows state — it just holds steady instead of breathing,
+       so the information survives even though the motion doesn't. */
+    .frame[data-voice]::after { animation: none; opacity: .8; }
   }
 </style>
 </head>
@@ -596,10 +682,19 @@
         </span>
       </div>
 
-      <button class="btn secondary" id="scheduleBtn" type="button">Schedule call</button>
-      <button class="btn primary" id="permBtn" type="button">Allow Mic Permissions</button>
-      <button class="btn primary" id="joinBtn" type="button" hidden>Join call</button>
-      <a class="btn quiet" href="/login">Or skip ahead and check my eligibility</a>
+      <!-- One primary action, then a quiet row. There were three full-width
+           buttons here and they filled the screen, which pushed the brief's own
+           content out of view and made every option look equally important —
+           the caller could not tell what the page wanted them to do. Permission
+           and Join are the same single action at two stages, so they share one
+           slot; the alternatives are links, because that is what they are. -->
+      <button class="btn primary" id="permBtn" type="button">Allow microphone</button>
+      <button class="btn primary" id="joinBtn" type="button" hidden>Start call</button>
+      <p class="alt-row">
+        <button class="linkish" id="scheduleBtn" type="button">Schedule a callback</button>
+        <span aria-hidden="true">·</span>
+        <a class="linkish" href="/login">Check my eligibility</a>
+      </p>
     </div>
   </section>
 
