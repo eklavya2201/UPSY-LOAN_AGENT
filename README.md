@@ -28,7 +28,9 @@ So that this can never eat a session again, the failure is caught in three place
 | Thinking | Ours (OpenRouter, per turn) | The provider's hosted agent, on **our** prompt |
 | Concurrency | **1 call server-wide** | Whatever the provider allows |
 
-**What to work on next:** the **▶️ ACTIVE PRIORITY** block in the roadmap — *making the live-assist voice agent precise on Avanse's real application form*. Its spec is the failure-mode list in the Avanse section. The competing "build our own call stack" idea is **⏸️ ON HOLD** — do not start it. Note that `/m` is **Step 2 of that on-hold plan built early**, deliberately: it was cheap once we knew how, and it removes AgentCall from the in-app use case entirely.
+**What to work on next (2026-08-07): build our own voice stack.** Go to **"▶️ ACTIVE — build our own voice stack"** in the roadmap; it has a seven-step task list, the architecture, real per-minute costs, and — most usefully — the fact that Cartesia's own turn-taking implementation is Apache-2.0 and readable. **Start at step 1** (a relay that echoes PCM back and proves `voiceClient.js` connects to us unchanged); it de-risks the whole plan in an afternoon.
+
+The previous priority — *making the live-assist Meet agent precise on Avanse's form* — is **still real and still unverified live**, and its spec is the failure-mode list in the Avanse section. It is not cancelled, just no longer first: the voice work is blocked-and-unblockable today, and Hindi is a live product gap.
 
 **The six things that will bite you if you don't know them:**
 
@@ -47,7 +49,8 @@ So that this can never eat a session again, the failure is caught in three place
 |---|---|
 | Understand the Meet voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
 | Understand the phone-browser voice agent | "Browser voice calls (`/m`)" |
-| Work on the current priority | "Avanse (`online.avanse.com`)" then the ▶️ ACTIVE PRIORITY roadmap block |
+| Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
+| Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
 | Find which file does what | "Code map" |
 | Avoid repeating a past mistake | "Ops & reliability notes" |
 | Know what blocks real users | "Phase 2 — compliance HARD GATE" |
@@ -285,7 +288,7 @@ After submitting Screen 10, the flow shows: *"The co-applicant's verification is
 
 **⏸️ Walkthrough paused here (2026-08-04) — to be continued in a future session.** Everything above Screen 14 is confirmed by direct testing. Still completely unexplored: the rest of Income Verification (if it's even a separate stage — see the correction above), all of KYC Verification, and all of Additional Documents. Pick up from Screen 14 next time rather than re-walking earlier screens.
 
-**⚠️ Explicit scope decision (2026-08-04): live-assist coverage stops at Screen 14, on purpose.** The team's call is that the UPSY live-assist agent should be the one helping the applicant, in the Meet call, through everything from the `upsy.in` invite (Screen 0) all the way through co-applicant bank verification (Screen 14) — i.e. the whole "Two distinct entry paths" flow, sign-in, the 5-stage wizard, both people's Applicant Details, and bank verification. **Whatever comes after Screen 14 (KYC Verification, Additional Documents, and anything past that) is manual for now, not in scope for the agent.** This is a scope boundary for the spec, not a technical limitation — it should shape what "Ground the prompt in Avanse's actual form" (ACTIVE PRIORITY below) actually covers, and it may move once KYC Verification / Additional Documents are themselves walked and understood.
+**⚠️ Explicit scope decision (2026-08-04): live-assist coverage stops at Screen 14, on purpose.** The team's call is that the UPSY live-assist agent should be the one helping the applicant, in the Meet call, through everything from the `upsy.in` invite (Screen 0) all the way through co-applicant bank verification (Screen 14) — i.e. the whole "Two distinct entry paths" flow, sign-in, the 5-stage wizard, both people's Applicant Details, and bank verification. **Whatever comes after Screen 14 (KYC Verification, Additional Documents, and anything past that) is manual for now, not in scope for the agent.** This is a scope boundary for the spec, not a technical limitation — it should shape what "Ground the prompt in Avanse's actual form" (the ⏸️ PAUSED Avanse-precision block below) actually covers, and it may move once KYC Verification / Additional Documents are themselves walked and understood.
 
 ### Where applicants will get stuck — and what the agent should do
 
@@ -522,6 +525,51 @@ Against the hosted alternatives: **OpenAI Realtime mini ≈ $0.02–0.05/min**, 
 **What is already built and reusable unchanged:** `frontend/voiceClient.js` (the browser audio pump — it only knows "PCM over a WebSocket", which is what every provider on this list speaks), the whole `/m` surface, `voicePrompt.js`, the rate limiter, per-lead grounding, and the callback fallback.
 
 **What is genuinely missing is one thing:** a server-side relay (browser ⇄ our server ⇄ STT/LLM/TTS) that handles **turn-taking** — endpointing (has the caller actually finished?), barge-in (kill in-flight TTS the moment they speak), and streaming TTS so the first syllable starts before the sentence is finished. That is the part hosted agents actually sell, and it is what makes Profound feel like "a live customer care rep." Do not hand-roll VAD for it — Deepgram's turn-detection model exists for exactly this. Honest estimate: **2–3 days to a call that works, 1–2 weeks for it to feel as good as Cartesia's.**
+
+#### What Cartesia actually is, so we know what we are replacing
+
+Established 2026-08-07 from their own API, their template catalogue and their source repo — not from marketing pages. Reproduce any of it with the key in `.env`:
+
+```bash
+# our agent's real config — note stt_preset, and note what is ABSENT
+curl -s https://api.cartesia.ai/agents/$CARTESIA_AGENT_ID \
+  -H "Authorization: Bearer $CARTESIA_API_KEY" -H "Cartesia-Version: 2025-04-16"
+# the template it was built from, including its required env vars
+curl -s https://api.cartesia.ai/agents/templates \
+  -H "Authorization: Bearer $CARTESIA_API_KEY" -H "Cartesia-Version: 2025-04-16"
+```
+
+| Layer | What it is | Theirs? |
+|---|---|---|
+| Text → speech | **Sonic** — built on State Space Models rather than transformers (the company was founded by the Mamba/SSM authors). This is where the low latency comes from. | ✅ |
+| Speech → text | **Ink-2** — our agent literally reports `stt_preset: "ink-2"`. | ✅ |
+| Turn-taking | **Line** — orchestration, interruptions, barge-in. | ✅ |
+| The thinking | **Any LLM, via LiteLLM** (100+ providers). Our `at_basic_chat` template declares `required_env_vars: ["ANTHROPIC_API_KEY"]`. | ❌ **not theirs** |
+
+**They never sold us the intelligence.** Cartesia's own reference voice agent thinks with Claude, on your key — the same conclusion this README already reached about AgentCall ("0% AgentCall, fully ours already"). What a voice vendor actually sells is speech models plus turn-taking, which means **the stack planned above is architecturally identical to their own**.
+
+**🎁 The accelerator, and the single most useful fact in this section: [`github.com/cartesia-ai/line`](https://github.com/cartesia-ai/line) is public and Apache-2.0, and it handles interruptions and turn-taking out of the box.** Steps 2 and 5 above — the honest risk in this whole plan — have a working reference implementation we are licensed to read. **Caveat: Line is Python and this server is Node**, so read it, do not import it; a Python sidecar would cost more in Render deployment complexity than it saves.
+
+**⚠️ A governance gap worth its own line.** The hosted agent object exposes `llm_system_prompt` and `llm_introduce` and **no model field at all** — on that path we could not see or pin which model quotes eligibility rules and rate bands to loan applicants. For a lending product that is a real problem independent of the outage, and owning the stack fixes it. Related to, but separate from, the Phase 2 compliance gate.
+
+#### Cartesia's plans, if the hosted path is ever revisited
+
+Official monthly pricing (annual billing is 20% less — the $4/$39/$239 figures floating around are the annual rates):
+
+| Plan | Price/mo | Credits | Agent minutes | Concurrency | Agent slots |
+|---|---|---|---|---|---|
+| Free | $0 | 20K | $1 prepaid | 2 TTS / 8 STT | 1 |
+| **Pro** | **$5** | 100K | $5 prepaid | 3 TTS / 12 STT | 3 |
+| Startup | $49 | 1.25M | $49 prepaid | higher | more |
+| Scale | $299 | 8M | $299 prepaid | higher | 10 |
+
+Two separate wallets, and the difference decides how to spend: **credits** feed TTS/STT (~750 credits per minute of generated speech, so 100K ≈ 133 min), while **agent minutes** are a separate prepaid balance for the hosted agent (~$0.05–0.06/min, so $5 ≈ 85 min).
+
+**Which means using Cartesia for TTS only stretches the same $5 about 4×** — ~330 call-minutes (133 min of speech at ~40% talk time) versus ~85 on the hosted agent, with STT moving to Deepgram's free credit. Pro also adds a **commercial-use licence**, which the Free tier's feature list does not appear to include — worth confirming before any real applicant uses this.
+
+**Ceilings to remember:** 3 concurrent TTS requests on Pro means at most 3 simultaneous callers server-wide, and ~85 agent-minutes a month is demo scale. The hosted path cannot carry production regardless of whether the deployment pause lifts.
+
+*A shareable 3-page version of this analysis is generated at `UPSY-voice-decision-brief.pdf` (gitignored, since `*.pdf` is excluded for the real ITR fixtures).*
 
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
@@ -887,7 +935,7 @@ npm start
 
 **Where things stand (2026-08-02):** the full applicant + team flow is live on Render, and the live-assist voice agent is confirmed working in production and now texts officer-started join links to the applicant.
 
-**The next session should start with the ▶️ ACTIVE PRIORITY block below — making the agent precise on Avanse's real form.** That is the team's current direction, and its spec is the failure-mode list in the Avanse section above.
+**The next session should start with "▶️ ACTIVE — build our own voice stack" below.** The Avanse-precision phase that used to be first is now **⏸️ PAUSED** — still real, still unverified live, just no longer the thing to open with.
 
 Reading the rest of this roadmap:
 - **Phase 0 (prove the reader)** is not competing with the active phase — it's a *dependency of it*. The Avanse `Loan Amount` field needs digits read reliably, and we have already caught `gpt-4o-mini` misreading numbers. Doing Phase 0 makes the active phase better.
@@ -910,7 +958,9 @@ Reading the rest of this roadmap:
 
 ---
 
-### ▶️ ACTIVE PRIORITY — make the live-assist agent precise on Avanse (agreed 2026-08-02, next session starts here)
+### ⏸️ PAUSED — make the live-assist agent precise on Avanse (was active 2026-08-02, paused 2026-08-07)
+
+> **Paused, not cancelled, and not finished.** The build below is written but **has never been exercised on a real call** — that verification item is still the most valuable single thing in this section. It lost priority on 2026-08-07 only because the voice work became both blocked and unblockable in the same day (see "▶️ ACTIVE — build our own voice stack" further down). Come back to this the moment a live Meet call is possible.
 
 **The goal in one line:** an applicant on a call with UPSY, screen-sharing the flow from a `upsy.in` course invite through `online.avanse.com`, should get through it correctly on the first try — no wrong loan amount, no name mismatch, no panic at an unclear confirmation screen, no missed co-applicant hand-off. **Scope boundary (2026-08-04): the agent covers this all the way through co-applicant bank verification (Screen 14 in "Observed screens and fields") — KYC Verification and Additional Documents, past that point, are explicitly manual for now, not agent scope.** See "Explicit scope decision" in the Avanse section above.
 
@@ -939,7 +989,7 @@ Reading the rest of this roadmap:
 
 **⏸️ ON HOLD — "UPSY AgentCall": own the live-call stack (raised 2026-07-31, paused 2026-08-02):**
 
-> **⚠️ PARTIALLY THAWED 2026-08-07 — read the ACTIVE block above first.** **Step 2 (in-app voice widget) is now being built**, because Cartesia paused agent deployments for free accounts and Hindi is still unserved. Its concrete task list lives in "▶️ ACTIVE — build our own voice stack" above; the sketch below is kept only as the original architecture note.
+> **⚠️ PARTIALLY THAWED 2026-08-07.** **Step 2 (in-app voice widget) is now being built**, because Cartesia paused agent deployments for free accounts and Hindi is still unserved. Its concrete task list lives in **"▶️ ACTIVE — build our own voice stack" further down this roadmap**; the sketch below is kept only as the original architecture note.
 >
 > **Steps 1 and 3 remain parked.** Step 1 (AgentCall as a dumb pipe) is now largely redundant — the `/m` relay covers the same voice layer without a meeting platform. Step 3 (our own meeting bot) is still weeks-to-months of browser automation and still not UPSY differentiation. Do not start either.
 
@@ -1024,10 +1074,10 @@ This is the README's old **Step 2 — in-app voice widget** (below), which was a
 ```
 
 - [ ] **1. Stand up the relay skeleton** — `backend/voiceRelay.js`: a `ws` server that accepts the browser socket, echoes PCM back, and proves the existing `voiceClient.js` connects to us unchanged. No AI yet. This de-risks the whole plan in an afternoon.
-- [ ] **2. Wire Deepgram streaming STT** — pipe inbound PCM up, log transcripts. Use their **turn-detection** model rather than hand-rolling VAD; endpointing is the hard part of this whole project, not the transcription.
+- [ ] **2. Wire Deepgram streaming STT** — pipe inbound PCM up, log transcripts. Use their **turn-detection** model rather than hand-rolling VAD; endpointing is the hard part of this whole project, not the transcription. **Read `cartesia-ai/line` first** (Apache-2.0, Python) — it solves exactly this and is why the estimate below is days rather than weeks.
 - [ ] **3. Wire Claude** — on each finalized turn, call Haiku 4.5 with `buildVoiceSystemPrompt()` (unchanged) plus history. **Cache the system prompt** — it is ~1.3k tokens on every turn and is the single biggest cost lever. Reuse the `respondTo()` turn-serialisation lesson from `liveAssist.js`: a caller who speaks again mid-generation must abort the in-flight turn, not race it.
 - [ ] **4. Wire streaming TTS** — Cartesia Sonic first (its TTS API works on the free tier today, unlike its agents). Stream sentence-by-sentence so the first syllable lands before the sentence is finished; do not wait for the full reply.
-- [ ] **5. Barge-in** — when STT reports speech during playback, stop synthesis and flush the client queue. `voiceClient.js` already has `flushPlayback()`; the relay needs to tell it when.
+- [ ] **5. Barge-in** — when STT reports speech during playback, stop synthesis and flush the client queue. `voiceClient.js` already has `flushPlayback()`; the relay needs to tell it when. Same reference as step 2 — Line handles interruptions out of the box, so compare against it rather than inventing the semantics.
 - [ ] **6. Swap in Sarvam for Hindi** behind the same relay interface, and let the caller choose a language on `/m` before dialling. This is the payoff — it is the thing no hosted English-first vendor gives us.
 - [ ] **7. Delete the Cartesia agent path** (`createVoiceSession`, `checkAgentReady`, the agent-scoped token mint) once the relay is proven, or keep it behind `VOICE_PROVIDER=cartesia` as a fallback. Decide deliberately rather than letting both rot.
 
