@@ -30,6 +30,7 @@ import { makeStt, sttConfigured, sttConfigError } from "./voiceStt.js";
 import { makeTts, ttsConfigured, ttsConfigError, TTS_SAMPLE_RATE } from "./voiceTts.js";
 import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HISTORY } from "./voiceBrain.js";
 import { pickAcknowledgement } from "./voiceFillers.js";
+import { stretchGaps } from "./voicePacing.js";
 
 export const RELAY_PATH = "/voice/stream";
 
@@ -67,6 +68,12 @@ const SENTENCE_PAUSE_MS = Number(process.env.VOICE_SENTENCE_PAUSE_MS || 280);
 // reject stray echo without making a real interruption feel unresponsive; one
 // would let a leaked "yes" or "okay" from the agent's own speech cut it off.
 const BARGE_IN_MIN_WORDS = Number(process.env.VOICE_BARGE_IN_MIN_WORDS || 2);
+
+// Silence added to each natural gap between words, to drag the speaking rate
+// from ~220 wpm down into the 140-160 conversational band. 110ms measured out
+// at ~166 wpm; raise it if she still sounds rushed, lower it if she sounds
+// stilted. 0 disables the pacing pass entirely. See backend/voicePacing.js.
+const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 110);
 
 // Silent PCM at the pipeline's one and only sample rate. Int16 zeroes.
 function silence(ms) {
@@ -485,7 +492,11 @@ class RelayCall {
       text,
       (pcm) => {
         if (signal?.aborted || this.closed) return;
-        send(this.ws, { event: "media_output", media: { payload: pcm.toString("base64") } });
+        // Slow her down. Cartesia runs 195-222 wpm and its own speed control is
+        // inert on sonic-2, so the pacing is fixed here by lengthening the gaps
+        // she already leaves between words — no pitch change, speech untouched.
+        const paced = PACE_EXTRA_MS > 0 ? stretchGaps(pcm, { sampleRate: SAMPLE_RATE, extraMs: PACE_EXTRA_MS }) : pcm;
+        send(this.ws, { event: "media_output", media: { payload: paced.toString("base64") } });
       },
       signal
     );
