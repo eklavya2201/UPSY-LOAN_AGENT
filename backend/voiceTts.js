@@ -31,13 +31,21 @@ export const TTS_SAMPLE_RATE = 44100;
 // (confirmed against the live account, so don't "fix" this back to it).
 const CARTESIA_MODEL = process.env.CARTESIA_TTS_MODEL || "sonic-2";
 
-// Kiara — Indian-accented English female, described by Cartesia as
-// "enunciating". Not a cosmetic choice: almost every caller here is an Indian
-// student or parent, and a US voice reading "lakh", "Aadhaar" and Indian
-// institution names is measurably harder to follow. Was Skylar (US) until
-// 2026-08-07, changed after a real listener could not tell whether the problem
-// was the speed or the accent. It was both.
-const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d";
+// Jacqueline — "confident, young adult female for empathic customer support",
+// which is the closest thing in the catalogue to what this agent actually does.
+//
+// Chosen by listening, after two picks made from written descriptions were both
+// wrong. Skylar (US, "customer care") was the original; Kiara replaced her on
+// the reasoning that an Indian-accented voice would be easier for Indian callers
+// to follow — a sound argument that did not survive contact with the ear, since
+// Cartesia's Indian-accented English is not good. Note the register trap too:
+// Kiara is sold as "joyful… for happy conversations", which is the wrong tone
+// for someone anxious about borrowing fifteen lakh.
+//
+// If this is changed again, LISTEN FIRST. The catalogue has 412 English voices
+// and exactly three Indian-accented ones (Kiara, Devansh, Aarav), so there is
+// not much to choose from on accent — pick on clarity and register instead.
+const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc";
 
 // ⚠️ Cartesia's speech-rate controls do NOT work on sonic-2 — measured, not
 // assumed. The same sentence came back at 4.32s baseline, 4.27s with
