@@ -32,7 +32,21 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 **🗣️ Two things a real listener caught that no test did (2026-08-07).** Both were reported from an actual call, and both turned out to be measurable once someone went looking:
 
 - **"She said yes, then stopped."** The agent was **interrupting itself**. Barge-in fired on Deepgram's raw voice-activity event, and a caller on speakerphone leaks the agent's own voice back into the mic — so it spoke two or three words, cut its own reply, flushed the playback queue, and went silent. Barge-in now requires **two recognised words**, not a VAD blip: browser echo suppression mangles leaked audio enough that it rarely survives as clean multi-word text, while a person actually interrupting always does.
-- **"She's replying so fast — I don't know if it's the accent."** Both, and both were fixable. Measured: every Cartesia voice runs **195–209 words/min** against a conversational norm of 140–160 (over ~185 reads as rushed). **Cartesia's speech-rate controls are inert on sonic-2** — the same sentence came back at 4.32s baseline, 4.27s on `speed: "slow"`, 4.55s on `"slowest"`, 4.32s on a top-level `speed` field. That is noise, not a control. So: the voice is now **Kiara, Indian-accented English** (a US voice reading "lakh", "Aadhaar" and Indian institution names is genuinely harder to follow), and the relay **inserts a real pause between sentences** — pacing fixed where we actually own the stream rather than where the vendor pretends to offer a knob.
+- **"She's replying so fast — I don't know if it's the accent."** Both, and both were fixable. Measured: every Cartesia voice runs **195–222 words/min** against a conversational norm of 140–160 (over ~185 reads as rushed).
+
+  **Cartesia's speech-rate control does nothing on sonic-2.** Not "works badly" — does nothing. Tested across string values, numeric values from -0.3 to -1, nested and top-level shapes, and two newer API versions: 197 to 222 wpm, which is the spread you get from re-requesting the same sentence twice. Do not re-add a `speed` field expecting it to help.
+
+  So pacing is fixed in `backend/voicePacing.js`, where we actually own the stream. Not by resampling — that drops the pitch with the rate and turns her into a different, deeper person — and not by time-stretching, which costs CPU per sentence and smears consonants. It does what a person does when asked to slow down: **it doesn't stretch the words, it lengthens the gaps between them.** Speech untouched, pitch identical, only the silence grows. Runs per streamed chunk, so the first syllable still leaves on time.
+
+  Tuned by sweeping against real audio rather than by taste — the silence floor decides how many inter-word gaps get found, and that is the whole ball game:
+
+  | silence floor | gaps found in a 16-word sentence | result |
+  |---|---|---|
+  | 900 | 8 | 188 wpm — still rushed |
+  | **2500** | **14** (~one per word) | **166 wpm** ✅ |
+  | 5000 | 15 | 163 wpm, but starts biting into quiet consonants |
+
+  One knob if it needs adjusting on a real phone: **`VOICE_PACE_EXTRA_MS`** (110). Raise toward 150 for slower, drop to 70 if she sounds stilted. The voice is also now **Kiara, Indian-accented English** — a US voice reading "lakh", "Aadhaar" and Indian institution names is genuinely harder to follow.
 
 **Still worth doing:** a faster brain would remove the problem rather than mask it. The Groq key on this machine is **expired** and the `OPENAI_API_KEY` is a placeholder (`your_ope…here`); either a working Groq key or `ANTHROPIC_API_KEY` (Haiku 4.5) should cut first-sentence time well under a second. Re-run `npm run eval:voice` after adding one — it ranks whatever is configured.
 
@@ -850,6 +864,32 @@ Live test deploy, 2026-07-30: **https://upsy-loan-agent.onrender.com**
 - `render.yaml` (Blueprint config) defines the web service — `npm install` / `npm start`, free plan. `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `APP_URL`, and (as of 2026-07-31) `AGENTCALL_API_KEY` are all `sync: false` (entered in the Render dashboard, never stored in the yaml). `NOTIFY_CHANNEL=mock` is baked in, matching the local "Exotel off" state.
 - **Verified live end-to-end**: `/login` → `/intake` sign-in with a demo lead works and greets correctly; `/team.html` dashboard loads and reflects live applications; no console errors on either page.
 - **Re-deployed 2026-07-31** (manual deploy, after `AGENTCALL_API_KEY` was added to the Blueprint and filled in on the dashboard): confirmed the redeployed instance is up (`/login` returns 200) and `/api/session/start` correctly signs in a demo lead (`LD-1001` / Aarav Sharma) on the fresh container. **Live-assist itself confirmed working on the deployed instance as of 2026-08-01** (user-tested) — no longer local-only.
+### Deploying the voice stack (2026-08-07)
+
+The relay changes what deployment means for voice: on the old hosted path the browser streamed audio straight to Cartesia and this service only minted a token, so it barely mattered where it ran. **Now the audio flows through this service** — STT up, TTS down, plus a pacing pass per chunk.
+
+**Two variables must be set in the Render dashboard** (both `sync: false`, so they are never in the repo). Copy the values from your local `.env`:
+
+| Variable | Where the value comes from | Notes |
+|---|---|---|
+| `DEEPGRAM_API_KEY` | local `.env` | Hearing. Without it the agent speaks, then says out loud that it cannot hear. |
+| `VOICE_PROVIDER` | set to `upsy` | Blueprint already defaults to this; confirm the dashboard is not overriding it with `cartesia`. |
+
+`CARTESIA_API_KEY` should already be present from the hosted-agent era — it is now used for **TTS only**. `CARTESIA_AGENT_ID` is dead weight on this path and can be left or removed. One of `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` is required for the brain; OpenRouter is what runs today.
+
+**Check the boot log after deploying.** It states the whole chain in one line, and is the fastest way to know a key did not take:
+
+```
+Voice relay: Deepgram → OpenRouter (openai/gpt-4o-mini) → Cartesia Sonic
+```
+
+Anything reading `DEAF (no DEEPGRAM_API_KEY)` or `MUTE` means the dashboard variable did not land.
+
+**⚠️ Free tier will bite a demo, specifically:**
+- **Cold start is ~50s after 15 min idle.** Someone opening the link cold waits on a blank page long enough to form an opinion. Open it yourself a minute before sending it to anyone.
+- **Shared CPU, and audio now passes through.** Fine for one call; several concurrent callers on a free instance is untested and is the first thing to break.
+- WebSockets themselves are fine on Render's free tier — the relay needs no special configuration beyond running on the service's own port, which it does.
+
 - **⚠️ Storage is ephemeral on the free tier.** `data/applications.json` + `data/uploads/` are gitignored, local-disk-only (`backend/store.js`, `backend/files.js`). Free-tier instances spin down after 15 min idle and lose that disk on respin — any application created mid-testing won't survive a gap in usage or a redeploy. The 3 pre-seeded demo leads (`mockSource.js`) always survive, since they're code, not `data/`. Fine for single-sitting testing (decided against a paid instance + persistent Disk for now — revisit if multi-day test persistence is ever needed). Confirmed again on the 2026-07-31 redeploy: application list was back to empty on the fresh container, as expected.
 
 ## Configuration (.env)
