@@ -8,27 +8,52 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 **Where the project is (2026-08-07):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**, and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
 
-**🔑 The `/m` failure is diagnosed, and it is not ours to fix (2026-08-07).** The call closing itself a second after connecting was never our code. `GET /agents/<id>` reports `is_live: false, deployment_count: 0`, and an undeployed agent accepts the WebSocket handshake and then closes it with `1011 Internal server error` — a message that names nothing. Proven by bisection: **every** payload gets the same 1011, including a bare `{"event":"start"}`, so it cannot be our request shape.
+**🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — Deepgram for hearing, Claude Haiku 4.5 for thinking, Cartesia Sonic for speaking, turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` is the default and it is what `/m` uses.**
 
-**⛔ And we cannot deploy it.** Cartesia's dashboard shows *"New agent deployment creation is temporarily paused for free accounts"* — the Publish button is unavailable to us, with no restore date. So `/m`'s voice line is blocked on a third party's queue, not on any work in this repo.
+**✅ The audio round trip is closed — the thing that had never worked.** Verified in a real browser against a real Cartesia account: `POST /api/voice/session` → 200 with a URL pointing at *us*, socket opens, and **the agent's spoken introduction arrives 524ms later** — 2.06s of continuous PCM, no gaps, decoded by `voiceClient.js`'s own codec and accepted by an `AudioContext`. `npm run voice:relay` reproduces the whole thing in one command with no server running.
 
-**✅ Cartesia's TTS API still works on the same key** (verified: `POST /tts/bytes` → 200, real WAV audio back). Only *agent deployments* are paused. That matters, because it means the "build our own voice stack" path — README Step 2, already 80% built — is unblocked **today** without waiting for them.
+**The browser did not change, which was the test.** `frontend/voiceClient.js` only knows "PCM over a WebSocket". It was pointed at a different socket and everything still worked, first try — the provider abstraction was real, not aspirational.
 
-So that this can never eat a session again, the failure is caught in three places: `npm run voice:check` walks the whole chain and names the cause, the server **preflights the agent at boot and before every call** (`checkAgentReady()` in `voiceCall.js`) so the caller gets a sentence instead of an opaque close, and `/m` itself was rebuilt (see "Browser voice calls" below).
+**🎁 And owning the socket gave us something the hosted agent could not.** We have the caller's words as text, so the relay emits `transcript` events. `/m`'s constellation was built to spotlight the topic being discussed and had to settle for a timed rotation because Cartesia only ever sent audio; `matchTopic()` has been waiting for exactly this event and needs no changes.
 
-**Three ways out, cheapest first:** (1) put the account on Cartesia's **Pro plan (~$4/mo)** — the pause is scoped to *free* accounts, so this is the cheapest possible test of whether it lifts; (2) wait for them to restore free deployments; (3) **build our own pipeline** — see "Own the voice stack" below, which is now costed and is the only option that also solves Hindi.
+**✅ And it hears you — the loop is closed (2026-08-07).** A `DEEPGRAM_API_KEY` already existed on this machine, in the separate `UPSY AI AGENT` project (`backend/.env`, same team account, `upsytechno@gmail.com`); it is now in this project's `.env` too, along with the `SARVAM_API_KEY` that was sitting beside it. `npm run voice:relay` runs the **whole loop with no microphone and no human**: it synthesises a caller with Cartesia, streams that audio in at real-time pace, and asserts Deepgram transcribes it, the brain answers, and the answer comes back as speech.
+
+```
+✅ heard, 765ms after the caller stopped: "I need about 15 lakh rupees for an MBA. Am I eligible?"
+✅ UPSY answered out loud 2203ms after the caller stopped
+```
+
+**⏱️ Latency: the reply now lands ~0.85–1.5s after the caller stops, down from 2.3–3.4s.** `npm run eval:voice` measures the cause — **time to first *sentence*, not total generation**, because the relay speaks each sentence as it lands, so a long reply costs nothing extra. It found the brain is ~65% of the wait: OpenRouter's `gpt-4o-mini` averages **2086ms** (worst 3635ms) against a ~1.2s budget. Three fixes, in order of how much they actually bought:
+
+1. **Spoken acknowledgements (`voiceFillers.js`) — the big one.** The agent says *"Okay, so you want to know which documents you'll need"* the instant the turn confirms, while the model is still generating. The caller hears a response in ~400ms instead of ~2s, and it doubles as confirmation they were understood. Chosen by keyword match, never by the model, so it costs nothing — which is exactly why **every line restates the question and stops**: it is picked before the model has decided anything, so any hint of a number, rate or verdict would be this server inventing lending advice. Hindi lines are written and waiting on Sarvam.
+2. **Speculative thinking.** When Deepgram settles a fragment mid-utterance, the relay starts generating against it and buffers the sentences, releasing them instantly if the turn confirms unchanged. Real but partial: on a short question Deepgram sends one final chunk, so there is nothing to get a head start on — which is why the acknowledgement carries most of the win.
+3. **A breathing rim light on `/m`.** The relay emits `state` (listening / thinking / speaking) and the frame's edge glows to match — slow and cool while listening, quick and warm while thinking. Verified painting all three states from a live socket. This is the other thing owning the socket bought us: the hosted agent sent audio and nothing else, so the page could only guess.
+
+**🗣️ Two things a real listener caught that no test did (2026-08-07).** Both were reported from an actual call, and both turned out to be measurable once someone went looking:
+
+- **"She said yes, then stopped."** The agent was **interrupting itself**. Barge-in fired on Deepgram's raw voice-activity event, and a caller on speakerphone leaks the agent's own voice back into the mic — so it spoke two or three words, cut its own reply, flushed the playback queue, and went silent. Barge-in now requires **two recognised words**, not a VAD blip: browser echo suppression mangles leaked audio enough that it rarely survives as clean multi-word text, while a person actually interrupting always does.
+- **"She's replying so fast — I don't know if it's the accent."** Both, and both were fixable. Measured: every Cartesia voice runs **195–209 words/min** against a conversational norm of 140–160 (over ~185 reads as rushed). **Cartesia's speech-rate controls are inert on sonic-2** — the same sentence came back at 4.32s baseline, 4.27s on `speed: "slow"`, 4.55s on `"slowest"`, 4.32s on a top-level `speed` field. That is noise, not a control. So: the voice is now **Kiara, Indian-accented English** (a US voice reading "lakh", "Aadhaar" and Indian institution names is genuinely harder to follow), and the relay **inserts a real pause between sentences** — pacing fixed where we actually own the stream rather than where the vendor pretends to offer a knob.
+
+**Still worth doing:** a faster brain would remove the problem rather than mask it. The Groq key on this machine is **expired** and the `OPENAI_API_KEY` is a placeholder (`your_ope…here`); either a working Groq key or `ANTHROPIC_API_KEY` (Haiku 4.5) should cut first-sentence time well under a second. Re-run `npm run eval:voice` after adding one — it ranks whatever is configured.
+
+**Two defects that test caught, which no amount of reading would have:**
+- **`language=en` mangles the vocabulary this product is made of.** "fifteen lakh rupees" came back as "15 **locker piece**", and on another run "fifteen" vanished entirely. Fixed with `en-IN` plus keyterm boosting for *lakh / crore / EMI / moratorium / Aadhaar / …* — 3 for 3 exact afterwards. An agent that mishears the loan amount is worse than one that cannot hear at all, because it answers the wrong question confidently.
+- **Deepgram's default 300ms endpointing ends a turn at every sentence boundary.** "I need fifteen lakh for an MBA. Am I eligible?" was answered after the first sentence, and the second sentence then barged in on that answer. Raised to 800ms; one thought is now one turn.
+
+**The old hosted path is still in the repo and still blocked**, deliberately not deleted: Cartesia's dashboard shows *"New agent deployment creation is temporarily paused for free accounts"*, so `VOICE_PROVIDER=cartesia` fails preflight with `is_live: false, deployment_count: 0`. It costs nothing to keep as a fallback. `npm run voice:check` still reports its real state.
 
 **⚠️ There are now TWO voice agents and confusing them will waste your session:**
 
-| | `liveAssist.js` (AgentCall) | `voiceCall.js` (browser) |
+| | `liveAssist.js` (AgentCall) | `voiceRelay.js` (browser, `/m`) |
 |---|---|---|
 | Where | Joins a **Google Meet** as a bot | The caller's **own phone browser** on `/m` |
 | Sees | A screen share of a lender's form | Nothing — voice only |
 | For | Guiding someone through Avanse | Answering loan questions on the spot |
-| Thinking | Ours (OpenRouter, per turn) | The provider's hosted agent, on **our** prompt |
-| Concurrency | **1 call server-wide** | Whatever the provider allows |
+| Thinking | Ours (OpenRouter, per turn) | Ours (Claude Haiku 4.5, per turn) |
+| Turn-taking | AgentCall's | **Ours** (`voiceRelay.js`) |
+| Concurrency | **1 call server-wide** | One socket per caller, capped only by our providers |
 
-**What to work on next (2026-08-07): build our own voice stack.** Go to **"▶️ ACTIVE — build our own voice stack"** in the roadmap; it has a seven-step task list, the architecture, real per-minute costs, and — most usefully — the fact that Cartesia's own turn-taking implementation is Apache-2.0 and readable. **Start at step 1** (a relay that echoes PCM back and proves `voiceClient.js` connects to us unchanged); it de-risks the whole plan in an afternoon.
+**What to work on next (2026-08-07): talk to it on an actual phone.** Every link is built and verified, and the loop closes end to end — but the only "caller" so far has been a synthesised voice speaking one clean sentence into a socket. A real person, in a noisy room, who interrupts and pauses mid-thought, is the test that has not happened. Go to **"▶️ ACTIVE — build our own voice stack"** in the roadmap for what is measured and what is still open. After that, the previous priority (Avanse precision) is the next real piece of work.
 
 The previous priority — *making the live-assist Meet agent precise on Avanse's form* — is **still real and still unverified live**, and its spec is the failure-mode list in the Avanse section. It is not cancelled, just no longer first: the voice work is blocked-and-unblockable today, and Hindi is a live product gap.
 
@@ -36,12 +61,12 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 
 1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
 2. **`ANTHROPIC_API_KEY` is still not set.** PDFs therefore have *no working reader at all*, and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading the same file as ₹1,39,100 and ₹13,91,000. This is Phase 0 and it blocks real precision work.
-3. **`CARTESIA_API_KEY` / `CARTESIA_AGENT_ID` are set locally, but the agent is not deployed** — so every call fails until someone presses Publish at `play.cartesia.ai` (see the block above). The key came from the team pasted directly into chat, so **treat it as compromised and rotate it** once `/m` testing is done, same pattern as every other secret in point 6. Run `npm run voice:check` before assuming anything about voice is broken on our side.
+3. **The voice stack is ours now and it works end to end** — `DEEPGRAM_API_KEY` (hearing), `CARTESIA_API_KEY` (speech only; the agent-deployment pause never applied to their TTS API) and an LLM key are all set. `CARTESIA_AGENT_ID` is now **dead weight** — only the old hosted path reads it. The Cartesia key was pasted directly into chat, so **treat it as compromised and rotate it**, same pattern as every other secret in point 6. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
 4. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
 5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/m` — different vendor, different path.)
 6. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
 
-**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team`. The mobile surface is at **`/m`** — it renders as a phone-shaped frame on a desktop, so you do not need a device to look at it. `npm run voice:check` tells you whether its voice line will actually connect.
+**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team`. The mobile surface is at **`/m`** — it renders as a phone-shaped frame on a desktop, so you do not need a device to look at it. **`npm run voice:relay` tells you whether the voice line works, and it makes the agent speak** — no server, no browser, no microphone needed.
 
 **Where to read next, by question:**
 
@@ -81,7 +106,8 @@ npm start
 
 npm run eval          # batch-test PAN/Aadhaar card reading on files in data/uploads/ (or pass file paths)
 npm run eval:income   # batch-test ITR/Form16/salary-slip income reading (scans project root + data/uploads/, or pass file paths)
-npm run voice:check   # preflight the /m voice line: keys → agent deployed? → token → socket → does it actually speak
+npm run voice:relay   # preflight OUR OWN voice stack: transport → tickets → does it actually speak → does the brain stream
+npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
 ```
 
 On boot the server prints its **document-reader priority** so you can see at a glance which AI path is active, e.g. `Document reader priority: Claude (claude-opus-4-8) → OpenRouter (openai/gpt-4o-mini) → OCR (fallback)`.
@@ -511,16 +537,24 @@ Their onboarding is behind a phone-OTP gate we did not sign up for, but the whol
 | Piece | Provider | Rate | Per call-minute |
 |---|---|---|---|
 | Speech → text | Deepgram Nova-3 streaming | $0.0077 / min audio | **$0.008** |
-| The thinking | Claude Haiku 4.5 ($1/$5 per MTok) | ~$0.0012 / turn cached | **$0.005** |
+| The thinking | Claude Haiku 4.5 ($1/$5 per MTok) | ~$0.002 / turn **uncached** — see below | **$0.008** |
 | Text → speech | Cartesia Sonic | $0.03 / min generated | **$0.012** |
-| | | **own stack, English** | **≈ $0.025/min** |
+| | | **own stack, English** | **≈ $0.028/min** |
 | Speech → text | Sarvam (Hindi) | ₹1.5 / min | $0.017 |
 | Text → speech | Sarvam (Hindi) | ₹15–30 / 10k chars | $0.009 |
-| | | **own stack, Hindi** | **≈ $0.031/min** |
+| | | **own stack, Hindi** | **≈ $0.034/min** |
+
+**⚠️ Correction found while building it (2026-08-07): prompt caching will not fire, and this section previously assumed it would.** The original estimate called the system prompt "the single biggest cost lever" and costed the brain at $0.005/min on the assumption it would be served from cache. It will not be: **Claude Haiku 4.5's minimum cacheable prefix is 4,096 tokens**, and `buildVoiceSystemPrompt()` is ~1,300. A prompt below the minimum does not error — it silently does not cache, and `cache_creation_input_tokens` just reads 0. `voiceBrain.js` sends `cache_control` anyway (free, and it starts working if the prompt grows or the model changes) and **logs Anthropic's own cache counters on every turn**, so this is now checkable rather than assumed:
+
+```
+[voice:brain] claude usage in=1712 cache_read=0 cache_write=0
+```
+
+The practical answer is to stop worrying about it. Caching a 1.3k-token prompt would save ~$0.003/min; models with a small enough minimum to cache it (Opus 5 at 512 tokens) cost 5× more per token, which loses far more than it saves. **The corrected all-in figure is ~$0.028/min English, ~$0.034/min Hindi** — still well under hosted alternatives, and the conclusion below does not change.
 
 Against the hosted alternatives: **OpenAI Realtime mini ≈ $0.02–0.05/min**, **full gpt-realtime-2.1 ≈ $0.06–0.11/min** (both token-billed, so the range is real and caching-dependent); **Cartesia's own agent product is plan-gated** rather than cleanly per-minute — Pro $4/mo, Startup $39/mo, Scale $239/mo, with credits and concurrency scaling by tier.
 
-**At UPSY's likely volume the money is not the argument.** 1,000 calls × 5 minutes ≈ 5,000 minutes/month: ~$125 on our own stack, ~$175 on Realtime mini, ~$400 on full Realtime. Real, but not decisive. **The decisive reasons are that our own stack speaks Hindi, keeps the prompt and the eligibility grounding in git, and cannot be switched off by someone else's free-tier policy** — which is exactly what happened.
+**At UPSY's likely volume the money is not the argument.** 1,000 calls × 5 minutes ≈ 5,000 minutes/month: ~$140 on our own stack, ~$175 on Realtime mini, ~$400 on full Realtime. Real, but not decisive. **The decisive reasons are that our own stack speaks Hindi, keeps the prompt and the eligibility grounding in git, and cannot be switched off by someone else's free-tier policy** — which is exactly what happened.
 
 **What is already built and reusable unchanged:** `frontend/voiceClient.js` (the browser audio pump — it only knows "PCM over a WebSocket", which is what every provider on this list speaks), the whole `/m` surface, `voicePrompt.js`, the rate limiter, per-lead grounding, and the callback fallback.
 
@@ -847,7 +881,12 @@ npm start
 - `backend/eval-income.js` — `npm run eval:income`: batch income-doc eval / model A/B harness over the project root + `data/uploads/` or given paths (now also prints extracted address).
 - `backend/leadSources/` — the pluggable lead-source layer (`mockSource.js` + `index.js` registry). **Add real platforms here.**
 - `backend/lenderForms/` — per-site screen/field guides for the live-assist agent. `upsyIn.js` (the course-invite entry path — **a real third-party platform, not this product, despite the name**) and `avanse.js` (the lender's own 14-screen journey, plus cross-cutting rules like "verify every auto-filled field"). `index.js`'s `buildLenderGuidancePrompt()` renders all registered portals into one system-prompt block in journey order; the agent works out which site is on screen itself (URL/logo), so there's deliberately no code-side selector. **Add a portal by creating `<name>.js` here and registering it in `index.js`.**
-- `backend/voiceCall.js` — **browser voice calls** (`/m`): mints Cartesia's short-lived agent token and assembles the session the caller's phone opens directly. Written as a provider adapter (`VOICE_PROVIDER`) so Sarvam/Deepgram can replace Cartesia without touching the client. **Not the same thing as `liveAssist.js`** — see the comparison table in "Start here".
+- `backend/voiceCall.js` — **browser voice calls** (`/m`): the session builder behind `POST /api/voice/session`, and the `VOICE_PROVIDER` switch. `upsy` mints a single-use ticket for our own relay; `cartesia` mints the vendor's short-lived agent token. Both return the identical shape, which is why the browser needs no branch. **Not the same thing as `liveAssist.js`** — see the comparison table in "Start here".
+- `backend/voiceRelay.js` — **our own voice agent.** A WebSocket server on this process's own port (`/voice/stream`) that terminates the caller's audio socket and orchestrates the call: turn-taking, barge-in, conversation history, per-call teardown. Speaks `voiceClient.js`'s existing vocabulary exactly (`start`/`ack`/`media_input`/`media_output`/`clear`) so the browser never changed. `VOICE_RELAY_MODE=echo` bounces the caller's audio straight back — the transport test, with no AI in the path.
+- `backend/voiceStt.js` — hearing: Deepgram streaming + endpointing. Emits *speech started* (barge-in), interim transcripts (the constellation), and *turn finished*. Falls back to a deliberately deaf engine when no key is set, so the agent still speaks and says plainly that it cannot hear.
+- `backend/voiceBrain.js` — thinking: Claude Haiku 4.5 → OpenRouter, **streamed and split into sentences as it arrives** so speech starts before the reply is finished. Abortable mid-generation (the `respondTo()` lesson from `liveAssist.js`), and it logs Anthropic's cache-hit counters so the cost model is checked against evidence.
+- `backend/voiceTts.js` — speaking: Cartesia Sonic over their streaming websocket, one socket per call rather than per sentence (opening one costs ~600ms). Barge-in works by advancing the context id, so audio already in flight for an abandoned sentence is dropped on arrival.
+- `backend/voice-relay-check.js` — `npm run voice:relay`: runs the relay in-process on an ephemeral port and drives it with a fake browser — config → transport echo → single-use tickets → *does it actually speak* → does the brain stream sentences. Needs no running server and no real applicant data.
 - `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, and a document checklist generated from `documents.js` so it cannot drift.
 - `backend/voice-check.js` — `npm run voice:check`: walks the same chain a real call walks (env → agent exists → agent deployed → token mints → socket accepts `start` → the agent actually speaks) and stops at the first thing that is wrong. Written because an undeployed agent's `1011 Internal server error` sent a whole session through the audio code before anyone looked at the account.
 - `backend/callbacks.js` — the "Schedule call" queue behind `/m`: phone normalization, file-backed storage in `data/callbacks.json`, and the ops message. Deliberately a queue an officer reads, not a system of record.
@@ -1057,35 +1096,59 @@ Now that the flow works end-to-end and is live on Render, the next round is UI/U
 
 ### ▶️ ACTIVE — build our own voice stack (team decision 2026-08-07)
 
-**Why this moved from ⏸️ ON HOLD to the top of the list.** The hold was written when AgentCall was working and the only argument for owning the stack was cost. Two things changed: Cartesia **paused agent deployments for free accounts**, so `/m` cannot be switched on at all by us, and Hindi is still a product gap. Owning the stack is now the only path that solves both. Costs are worked out in "Own the voice stack" above — roughly **$0.025/min** English, **$0.031/min** Hindi, against $0.06–0.11/min for full OpenAI Realtime.
+**Why this moved from ⏸️ ON HOLD to the top of the list.** The hold was written when AgentCall was working and the only argument for owning the stack was cost. Two things changed: Cartesia **paused agent deployments for free accounts**, so `/m` could not be switched on at all by us, and Hindi is still a product gap. Owning the stack was the only path that solves both. Costs are worked out in "Own the voice stack" above — roughly **$0.028/min** English, **$0.034/min** Hindi, against $0.06–0.11/min for full OpenAI Realtime.
 
 This is the README's old **Step 2 — in-app voice widget** (below), which was always the piece with standalone value. Steps 1 and 3 stay parked.
 
-**The seam already exists.** `frontend/voiceClient.js` only knows "PCM over a WebSocket". Today that socket points at Cartesia; it will point at us. **The browser code should not need to change** — if it does, the abstraction was wrong and that is worth knowing early.
+**Status: built, and it speaks.** Five of the seven steps are done and verified against live accounts; the blocker is now a missing Deepgram key, not a vendor's queue. **`VOICE_PROVIDER=upsy` is the default.**
+
+**The seam held.** `frontend/voiceClient.js` only knows "PCM over a WebSocket". That socket now points at us instead of Cartesia and **the browser code did not change by one line** — which was the actual hypothesis being tested, and it passed.
 
 ```
 [Applicant on /m]
-   mic → AudioWorklet → PCM ──WS──►  UPSY relay (new)
+   mic → AudioWorklet → PCM ──WS──►  voiceRelay.js  (ours, /voice/stream)
                                         │
-                                        ├─► Deepgram  streaming STT + turn detection
-                                        ├─► Claude Haiku 4.5  (voicePrompt.js, unchanged)
-                                        └─► Cartesia Sonic / Sarvam  streaming TTS
+                                        ├─► voiceStt.js    Deepgram  ⚠️ no key yet
+                                        ├─► voiceBrain.js  Claude Haiku 4.5 (voicePrompt.js, unchanged)
+                                        └─► voiceTts.js    Cartesia Sonic  ✅ heard
    speaker ◄── PCM ◄──WS───────────────┘
+                          ▲
+                          └── plus `transcript` events, which the hosted agent never gave us
 ```
 
-- [ ] **1. Stand up the relay skeleton** — `backend/voiceRelay.js`: a `ws` server that accepts the browser socket, echoes PCM back, and proves the existing `voiceClient.js` connects to us unchanged. No AI yet. This de-risks the whole plan in an afternoon.
-- [ ] **2. Wire Deepgram streaming STT** — pipe inbound PCM up, log transcripts. Use their **turn-detection** model rather than hand-rolling VAD; endpointing is the hard part of this whole project, not the transcription. **Read `cartesia-ai/line` first** (Apache-2.0, Python) — it solves exactly this and is why the estimate below is days rather than weeks.
-- [ ] **3. Wire Claude** — on each finalized turn, call Haiku 4.5 with `buildVoiceSystemPrompt()` (unchanged) plus history. **Cache the system prompt** — it is ~1.3k tokens on every turn and is the single biggest cost lever. Reuse the `respondTo()` turn-serialisation lesson from `liveAssist.js`: a caller who speaks again mid-generation must abort the in-flight turn, not race it.
-- [ ] **4. Wire streaming TTS** — Cartesia Sonic first (its TTS API works on the free tier today, unlike its agents). Stream sentence-by-sentence so the first syllable lands before the sentence is finished; do not wait for the full reply.
-- [ ] **5. Barge-in** — when STT reports speech during playback, stop synthesis and flush the client queue. `voiceClient.js` already has `flushPlayback()`; the relay needs to tell it when. Same reference as step 2 — Line handles interruptions out of the box, so compare against it rather than inventing the semantics.
-- [ ] **6. Swap in Sarvam for Hindi** behind the same relay interface, and let the caller choose a language on `/m` before dialling. This is the payoff — it is the thing no hosted English-first vendor gives us.
-- [ ] **7. Delete the Cartesia agent path** (`createVoiceSession`, `checkAgentReady`, the agent-scoped token mint) once the relay is proven, or keep it behind `VOICE_PROVIDER=cartesia` as a fallback. Decide deliberately rather than letting both rot.
+**Measured, not assumed** (`npm run voice:relay`, and a real browser at `/m`):
 
-**Budget for testing: near zero.** Deepgram ships **$200 of free credit** (~45,000 streaming minutes) and Cartesia's free tier still allows ~20k TTS characters/month. The whole pipeline can be built and demoed before anyone pays for anything.
+| | |
+|---|---|
+| Session → first spoken audio, in a browser | **524 ms** |
+| TTS websocket → first chunk | ~360 ms (a fresh socket costs ~600 ms more, so it is opened once per call) |
+| Audio format, end to end | `pcm_s16le` @ 44.1 kHz — **no resampling anywhere, in either direction** |
+| PCM echo round trip | byte-identical |
+| Tickets | single-use; a redeemed one is refused at the handshake, not after |
+
+- [x] ~~**1. Stand up the relay skeleton**~~ — done. `backend/voiceRelay.js`, mounted on the existing HTTP server at `/voice/stream` (`noServer` + the `upgrade` event, because Render gives us one port). **`voiceClient.js` was not touched and connected first try**, which was the real thing being tested. Echo mode survives as `VOICE_RELAY_MODE=echo` — it answers "is it us or is it them?" in one env var, and `npm run voice:relay` asserts a 2048-sample frame round-trips byte-identical.
+- [x] ~~**2. Wire Deepgram streaming STT**~~ — done and exercised against a real key. `backend/voiceStt.js`: nova-3, **`en-IN`**, keyterm boosting, `endpointing=800`, `utterance_end_ms=1000`, `vad_events`. Both non-default settings were forced by measurement, not taste — see the two defects in "Start here". Still worth doing: A/B against Deepgram's newer **turn-detection** model (we chose the stable endpointing protocol because we could not evaluate the alternative blind), and re-tune `DEEPGRAM_ENDPOINTING_MS` against real callers rather than one synthetic sentence. **`cartesia-ai/line`** (Apache-2.0, Python) is still the reference worth comparing turn-taking semantics against.
+- [x] ~~**3. Wire Claude**~~ — done. `backend/voiceBrain.js` streams Haiku 4.5 with `buildVoiceSystemPrompt()` unchanged, splits the reply into sentences *as it arrives* via `sentences.js`, and aborts the in-flight turn when the caller speaks again (the `respondTo()` lesson). OpenRouter is the fallback and is what actually runs today, since `ANTHROPIC_API_KEY` is still unset. **The "cache the system prompt" plan was wrong** — see the correction in "Own the voice stack" above; it is measured now, not assumed.
+- [x] ~~**4. Wire streaming TTS**~~ — done and **heard**. Cartesia Sonic over their TTS websocket, one socket per call rather than per sentence (opening one costs ~600ms, which would otherwise land on the front of every reply). Verified against the live account: raw `pcm_s16le` @ 44.1kHz, first chunk ~360ms after the request, **524ms from a real browser to first spoken audio**.
+- [x] ~~**5. Barge-in**~~ — implemented, **not yet observed** (it cannot fire without STT). When Deepgram reports speech during playback the relay aborts generation, advances the TTS context id so in-flight audio is dropped on arrival, and sends `clear` — which `voiceClient.js`'s existing regex already matches, so `flushPlayback()` runs untouched.
+- [ ] **6. Swap in Sarvam for Hindi** — the plumbing is in (`language` flows from `POST /api/voice/session` → the ticket → `makeTts()`), but **Sarvam itself is not implemented and there is no key**; asking for a non-English language throws a named error rather than quietly reading Hindi in an English voice. This is still the payoff no hosted English-first vendor gives us.
+- [ ] **7. Decide the Cartesia agent path's fate** — **deliberately kept**, not deleted, behind `VOICE_PROVIDER=cartesia`. It costs nothing to leave and it is the only fallback if our relay has a bad day. Revisit once the relay has carried real calls.
+
+**Still open, and honest about it:**
+- [ ] **Nobody has actually held a conversation with it.** Every link is verified and the loop closes end to end, but the only "caller" so far has been a synthesised voice speaking one clean sentence into a socket. A real person, on a phone, in a noisy room, interrupting, is a different test.
+- [ ] **Re-tune endpointing against real callers.** 800ms was chosen from one synthetic sentence. People who pause mid-thought need more; clipped Q-and-A needs less. `npm run voice:relay` reports how many turns one spoken thought got split into — that is the number to watch.
+- [ ] **Test on a real phone, iOS Safari first.** Unchanged from the Cartesia path and still unobserved: the `AudioContext` resume-inside-the-tap and the 48kHz resample fallback are reasoned, not seen.
+- [ ] **Watch for playback stutter.** One probe had Cartesia deliver 6.13s of audio over 16.9s of wall clock — slower than real time, which would drain `voiceClient.js`'s playback queue and produce gaps. The browser test showed 2.06s continuous with no gaps, so this may have been free-tier throttling on a cold socket. Measure it on a long reply before trusting it.
+- [ ] **Echo cancellation is now load-bearing.** The relay treats "speech during playback" as barge-in, so if the caller's browser echoes the agent's own voice back into the mic, the agent will interrupt itself. `voiceClient.js` requests `echoCancellation: true`; a phone on speaker is where this will be found out.
+- [ ] **Wire the `transcript` event into `/m`'s constellation properly.** The relay emits it and `matchTopic()` consumes anything with a `text` field, so it should already work — but nobody has watched it happen.
+
+**Budget for testing: still near zero.** Deepgram's free credit plus Cartesia's free TTS tier covers the whole pipeline before anyone pays for anything.
+
+**If the agent ever greets you and then goes silent, it is deaf, not broken.** With no `DEEPGRAM_API_KEY` the relay still connects, greets, and **says out loud that its hearing is not switched on**, then points at "Schedule call". That sentence exists because the failure was first found by hand — a greeting followed by silence, reasonably read as a bug. The boot log says the same thing (`Voice relay: DEAF (no DEEPGRAM_API_KEY) → …`). The key is set today, so you should never see this.
 
 **Still open on the old Cartesia path, if it ever unblocks:**
 - [ ] Try the **$4 Pro plan** — the deployment pause is scoped to *free* accounts, so this is the cheapest test of whether paid lifts it. Inference from their wording, not confirmed.
-- [ ] **Hear it actually talk.** Everything up to the provider boundary is proven; the audio round trip is not. (The barge-in event name is no longer a question — Cartesia documents it as `clear`, which `voiceClient.js` already matches.)
+- [x] ~~**Hear it actually talk.**~~ — done 2026-08-07, though not on this path: our own relay speaks, verified from a real browser (524ms to first audio). The hosted agent still has never made a sound. (The barge-in event name was never a question either — Cartesia documents it as `clear`, which `voiceClient.js` already matches, and our relay sends the same event.)
 - [ ] **Test on a real phone**, iOS Safari first. The `AudioContext` resume-inside-the-tap and the 48kHz resample fallback are reasoned, not observed — as are the CSS transitions and the constellation animation, which were verified structurally in a non-compositing browser.
 - [ ] Rotate the Cartesia API key once testing is done — it was pasted into a chat session during setup.
 - [ ] Surface the callback queue in the team dashboard. `GET /api/voice/callbacks` exists and `data/callbacks.json` fills up, but nobody sees it without curl — and note the free-tier ephemeral-storage caveat applies to this file like every other `data/` file.

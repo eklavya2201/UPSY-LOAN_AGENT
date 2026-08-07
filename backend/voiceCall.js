@@ -15,18 +15,26 @@
 // the reply back (see frontend/voiceClient.js). That also means no applicant
 // audio is stored on our disk.
 //
-// ── Provider ────────────────────────────────────────────────────────────────
-// Cartesia today. The client side is provider-agnostic by construction (it is
-// just "PCM over a WebSocket"), so adding Sarvam/Deepgram later is a matter of
-// writing a second builder below and switching VOICE_PROVIDER — the browser
-// code does not change. Sarvam matters because it speaks Hindi and regional
-// languages, which Cartesia's English-first voices do not cover well and which
-// is a genuine product gap for Indian applicants.
+// ── Providers ───────────────────────────────────────────────────────────────
+// Two, selected by VOICE_PROVIDER:
+//
+//   "upsy"     — our own relay (backend/voiceRelay.js). The audio DOES pass
+//                through this server, because we are the ones running STT, the
+//                LLM and TTS. Speaks Hindi, keeps the prompt in git, and cannot
+//                be switched off by someone else's free-tier policy.
+//   "cartesia" — the hosted agent. Kept because it is proven up to the provider
+//                boundary and costs nothing to leave in place, but it is
+//                unusable today: Cartesia has paused agent deployments for free
+//                accounts, so every call fails at checkAgentReady().
+//
+// The browser is identical either way. frontend/voiceClient.js only knows "PCM
+// over a WebSocket", which is exactly why this swap is a server-side change.
 
 import { getApplication } from "./store.js";
 import { buildContextPayload } from "./liveAssistManager.js";
 import { DOCUMENTS, STAGES } from "./documents.js";
 import { buildVoiceSystemPrompt, buildIntroduction } from "./voicePrompt.js";
+import { mintRelayTicket, relayConfigError, RELAY_PATH, SAMPLE_RATE as RELAY_SAMPLE_RATE } from "./voiceRelay.js";
 
 const PROVIDER = (process.env.VOICE_PROVIDER || "cartesia").toLowerCase();
 
@@ -47,6 +55,7 @@ export const SAMPLE_RATE = 44100;
 const TOKEN_TTL_SECONDS = 600;
 
 export function voiceConfigured() {
+  if (PROVIDER === "upsy") return !relayConfigError();
   if (PROVIDER === "cartesia") {
     return Boolean(process.env.CARTESIA_API_KEY && process.env.CARTESIA_AGENT_ID);
   }
@@ -57,8 +66,9 @@ export function voiceConfigured() {
 // this hunting through the README, which is the failure mode the startup
 // reader-priority log was added to avoid elsewhere in this repo.
 export function voiceConfigError() {
+  if (PROVIDER === "upsy") return relayConfigError();
   if (PROVIDER !== "cartesia") {
-    return `VOICE_PROVIDER is "${PROVIDER}", but only "cartesia" is implemented today.`;
+    return `VOICE_PROVIDER is "${PROVIDER}", but only "upsy" and "cartesia" are implemented.`;
   }
   const missing = [];
   if (!process.env.CARTESIA_API_KEY) missing.push("CARTESIA_API_KEY");
@@ -68,8 +78,13 @@ export function voiceConfigError() {
 }
 
 export function voiceStatusLine() {
-  if (!voiceConfigured()) return "Voice calls: not configured";
+  if (!voiceConfigured()) return `Voice calls: not configured (${voiceConfigError()})`;
+  if (PROVIDER === "upsy") return `Voice calls: upsy relay at ${RELAY_PATH} (${INPUT_FORMAT})`;
   return `Voice calls: ${PROVIDER} (agent ${String(process.env.CARTESIA_AGENT_ID).slice(0, 8)}…, ${INPUT_FORMAT})`;
+}
+
+export function voiceProvider() {
+  return PROVIDER;
 }
 
 // ── Agent readiness ─────────────────────────────────────────────────────────
@@ -176,6 +191,53 @@ function nextPendingDocument(app) {
   return stage ? `${next.label} (${stage.title})` : next.label;
 }
 
+// The applicant's own facts, or null for an anonymous caller. Shared by both
+// providers so the two paths can never drift on what the agent knows.
+async function loadCallerContext(leadId) {
+  if (!leadId) return null;
+  try {
+    const app = await getApplication(leadId);
+    // getApplication() creates an empty shell for an unknown id, so an
+    // absent profile is the real "we don't know this person" signal.
+    if (!app?.profile?.name) return null;
+    const context = buildContextPayload(app);
+    context.nextDocument = nextPendingDocument(app);
+    return context;
+  } catch (e) {
+    console.error(`[voice] could not load lead ${leadId}, continuing anonymously:`, e.message);
+    return null;
+  }
+}
+
+// Our own relay. The prompt is deliberately NOT returned to the browser here —
+// it is stored server-side against the ticket and read back when the socket
+// opens. On the Cartesia path the browser had to forward the prompt because the
+// socket went straight to the vendor; now that the socket terminates on our own
+// server, sending the agent's instructions to the client and trusting them back
+// would be handing an anonymous caller an edit box for the loan rules.
+function createRelaySession({ leadId, context, origin, language }) {
+  const token = mintRelayTicket({
+    leadId,
+    language,
+    systemPrompt: buildVoiceSystemPrompt(context),
+    introduction: buildIntroduction(context),
+  });
+
+  const wsOrigin = String(origin || "").replace(/^http/, "ws");
+  return {
+    provider: "upsy",
+    signedUrl: `${wsOrigin}${RELAY_PATH}?token=${encodeURIComponent(token)}`,
+    expiresInSeconds: 300,
+    config: { input_format: `pcm_${RELAY_SAMPLE_RATE}`, output_audio_delivery: "as_available" },
+    // Sent by the client in its `start` event and ignored by the relay, for the
+    // reason above. Kept in the response only so the two providers return the
+    // same shape and voiceClient.js needs no branch.
+    agent: {},
+    metadata: { product: "upsy-loan-agent", lead_id: leadId || null, known_applicant: Boolean(context) },
+    caller: context ? { name: context.name, known: true } : { name: null, known: false },
+  };
+}
+
 /**
  * Start a voice session.
  *
@@ -184,13 +246,20 @@ function nextPendingDocument(app) {
  *   for an anonymous caller from the public mobile page. An unknown leadId is
  *   treated as anonymous rather than failing: a stale id in someone's tab
  *   should downgrade the call, never block it.
+ * @param {string|null} opts.origin - this server's own origin, used to build
+ *   the relay URL on the "upsy" path. Ignored by the Cartesia path.
+ * @param {string} opts.language - "en" today; the seam for Hindi via Sarvam.
  * @returns {Promise<object>} everything the browser needs to open the socket.
- *   The system prompt is included so the whole agent definition lives in this
- *   repo and is reviewable in git, rather than on a vendor dashboard.
  */
-export async function createVoiceSession({ leadId = null } = {}) {
+export async function createVoiceSession({ leadId = null, origin = null, language = "en" } = {}) {
   const err = voiceConfigError();
   if (err) throw Object.assign(new Error(err), { code: "NOT_CONFIGURED" });
+
+  const context = await loadCallerContext(leadId);
+
+  if (PROVIDER === "upsy") {
+    return createRelaySession({ leadId, context, origin, language });
+  }
 
   // Cheap after the first success (cached for 10 minutes) and it converts the
   // single most confusing failure this feature has into a sentence that names
@@ -199,21 +268,6 @@ export async function createVoiceSession({ leadId = null } = {}) {
   const ready = await checkAgentReady();
   if (!ready.ok) throw Object.assign(new Error(ready.reason), { code: "AGENT_NOT_READY" });
   if (ready.unverified) console.warn(`[voice] proceeding without a readiness check: ${ready.reason}`);
-
-  let context = null;
-  if (leadId) {
-    try {
-      const app = await getApplication(leadId);
-      // getApplication() creates an empty shell for an unknown id, so an
-      // absent profile is the real "we don't know this person" signal.
-      if (app?.profile?.name) {
-        context = buildContextPayload(app);
-        context.nextDocument = nextPendingDocument(app);
-      }
-    } catch (e) {
-      console.error(`[voice] could not load lead ${leadId}, continuing anonymously:`, e.message);
-    }
-  }
 
   const token = await mintCartesiaToken();
 

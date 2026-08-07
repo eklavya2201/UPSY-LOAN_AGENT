@@ -20,8 +20,19 @@ services:
         sync: false
       # Browser voice calls on /m. Without these the page still loads and the
       # Call button reports exactly what is missing — it does not break the app.
+      #
+      # "upsy" is our own relay: Deepgram → Claude → Cartesia Sonic, with
+      # turn-taking in backend/voiceRelay.js. Unlike the hosted path, the audio
+      # passes through this service — so a paid instance type is worth revisiting
+      # if calls ever get real traffic (free instances sleep and have no
+      # persistent disk, which the data/ caveat elsewhere already notes).
+      - key: VOICE_PROVIDER
+        value: upsy
+      - key: DEEPGRAM_API_KEY
+        sync: false
       - key: CARTESIA_API_KEY
         sync: false
+      # Only used when VOICE_PROVIDER=cartesia (the hosted agent path).
       - key: CARTESIA_AGENT_ID
         sync: false
       # Where /m's "Schedule call" requests are texted. Unset is fine — they
