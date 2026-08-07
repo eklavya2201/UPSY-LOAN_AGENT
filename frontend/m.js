@@ -292,6 +292,17 @@
 
   // If the provider ever sends us text, spotlight what is actually being said
   // instead of the rotation. Nothing depends on this working.
+  // Paint the frame's rim to match what the agent is doing. Unknown states are
+  // dropped rather than rendered, so the server can add one later without this
+  // page showing a rim with no styling behind it.
+  var VOICE_STATES = { listening: 1, thinking: 1, speaking: 1 };
+  function setVoiceState(state) {
+    var frameEl = document.getElementById("frame");
+    if (!frameEl) return;
+    if (state && VOICE_STATES[state]) frameEl.setAttribute("data-voice", state);
+    else frameEl.removeAttribute("data-voice");
+  }
+
   function matchTopic(text) {
     if (!text) return;
     for (let i = 0; i < TOPICS.length; i++) {
@@ -423,6 +434,14 @@
           el.callStatus.textContent = STATUS_TEXT.error;
         },
         onEvent: function (msg) {
+          // The relay tells us what it is doing — listening / thinking /
+          // speaking — and the frame's rim light shows it. This is the one
+          // thing the hosted agent could never give us: it sent audio and
+          // nothing else, so the page had to guess. Now it doesn't.
+          if (msg && msg.event === "state" && typeof msg.state === "string") {
+            setVoiceState(msg.state);
+            return;
+          }
           // The provider's event vocabulary is not fully confirmed against a
           // live call yet. Pick up anything that looks like text and let it
           // drive the spotlight; ignore everything else.
@@ -449,6 +468,7 @@
     stopRotation();
     focusTopic(-1);
     stopMap();
+    setVoiceState(null); // the rim must not keep breathing over a dead call
     clearInterval(timerId);
     timerId = null;
     const active = call;
