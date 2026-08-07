@@ -11,13 +11,52 @@
 // phone call that silence reads as "it didn't hear me". Streaming lets the first
 // syllable land while the rest is still being generated.
 //
-// ── Provider ────────────────────────────────────────────────────────────────
-// Cartesia Sonic. Verified working on the free tier 2026-08-07 — note that only
-// *agent deployments* are paused for free accounts, the TTS API itself is fine,
-// which is exactly why owning the stack unblocks /m today. Sarvam slots in here
-// for Hindi behind the same interface; see makeTts() at the bottom.
+// ── Providers ───────────────────────────────────────────────────────────────
+// Deepgram Aura by default, Cartesia Sonic behind TTS_PROVIDER=cartesia.
+//
+// Cartesia was first and works, but its free tier bills 1 credit per CHARACTER
+// against 20,000 a month — which is about 21 four-turn calls, and ran dry inside
+// a single day of building this. Deepgram bills the same speech at roughly
+// $0.03 per thousand characters against a balance the team already has, which is
+// ~7,000 calls on credit already paid for.
+//
+// Measured head to head on the same sentences before switching (see
+// Desktop/testing-deepgram/FINDINGS.md):
+//
+//   first audio, warm socket   Cartesia ~360ms   Deepgram ~396ms
+//   pace                       Jacqueline 218wpm  athena 195wpm
+//   audio format               raw pcm_s16le 44.1kHz, identical on both
+//   Indian-accented voices     Cartesia 3, Deepgram 0
+//
+// The 40ms latency difference is far below perception, and it is dwarfed by the
+// 1.4-2s the language model takes to produce a first sentence. Cartesia stays as
+// a fallback rather than being deleted: it is proven, and it costs nothing to
+// leave a working second path in place.
+//
+// Sarvam still slots in here for Hindi behind the same interface — neither
+// provider has an Indian-accented voice worth using.
 
 import WebSocket from "ws";
+
+const PROVIDER = (process.env.TTS_PROVIDER || "deepgram").toLowerCase();
+
+const DEEPGRAM_HOST = "api.deepgram.com";
+
+// athena — "calm, smooth, professional", 195 wpm. Chosen by listening to five
+// candidates rather than from the catalogue's prose, which had already produced
+// two wrong picks on the Cartesia side.
+//
+// If "too fast" ever comes back, `aura-2-vesta-en` measured 137 wpm — the only
+// voice tested inside the 140-160 conversational band — and switching is one
+// env var. Avoid anything sold as "energetic", "cheerful" or "enthusiastic":
+// that register is wrong for someone anxious about borrowing fifteen lakh, and
+// it is exactly how the Cartesia pick went astray.
+const DEEPGRAM_VOICE = process.env.DEEPGRAM_TTS_MODEL || "aura-2-athena-en";
+
+// Ceiling on one sentence. Generously above the ~400ms a sentence really takes,
+// because this is a safety net against a stalled socket, not a latency control —
+// tripping it means something is already wrong.
+const SPEAK_TIMEOUT_MS = Number(process.env.TTS_SPEAK_TIMEOUT_MS || 10000);
 
 const CARTESIA_HOST = "api.cartesia.ai";
 const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2025-04-16";
@@ -58,12 +97,189 @@ const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "9626c31c-bec5-4cca-baa8
 // re-add a `speed` field here expecting it to do something.
 
 export function ttsConfigured() {
-  return Boolean(process.env.CARTESIA_API_KEY);
+  if (PROVIDER === "cartesia") return Boolean(process.env.CARTESIA_API_KEY);
+  return Boolean(process.env.DEEPGRAM_API_KEY);
 }
 
 export function ttsConfigError() {
-  if (process.env.CARTESIA_API_KEY) return null;
-  return "CARTESIA_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak.";
+  if (ttsConfigured()) return null;
+  if (PROVIDER === "cartesia") {
+    return "CARTESIA_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak.";
+  }
+  return "DEEPGRAM_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak. (The same key does the hearing.)";
+}
+
+// For the boot line, so which voice is live is visible at a glance rather than
+// discovered on a call.
+export function ttsStatusLine() {
+  if (PROVIDER === "cartesia") return `Cartesia Sonic (${CARTESIA_MODEL})`;
+  return `Deepgram Aura (${DEEPGRAM_VOICE})`;
+}
+
+/**
+ * Deepgram Aura over their streaming WebSocket.
+ *
+ * Same three methods as CartesiaTts — connect / speak / close — because the
+ * relay only knows "give me PCM for this sentence" and must not learn which
+ * vendor is behind that.
+ *
+ * ⚠️ Do NOT swap this for the REST endpoint (`POST /v1/speak`). It returns the
+ * whole clip in one response, measured at 3.3 SECONDS before any audio exists at
+ * all, against 396ms for the first chunk here. On a phone call that gap reads as
+ * a dead line.
+ */
+class AuraTts {
+  constructor({ onError } = {}) {
+    this.onError = onError || (() => {});
+    this.ws = null;
+    this.ready = null;
+    this.pending = null;
+    this.closed = false;
+    // Aura has no per-request id to filter late audio by, unlike Cartesia's
+    // context_id. A monotonic counter does the same job: chunks are handed to
+    // whichever request is current, and anything still arriving for an
+    // abandoned one is dropped because `pending` has already moved on.
+    this.seq = 0;
+  }
+
+  connect() {
+    if (this.ready) return this.ready;
+    this.ready = new Promise((resolve, reject) => {
+      const params = new URLSearchParams({
+        model: DEEPGRAM_VOICE,
+        encoding: "linear16",
+        sample_rate: String(TTS_SAMPLE_RATE),
+      });
+      const ws = new WebSocket(`wss://${DEEPGRAM_HOST}/v1/speak?${params}`, {
+        headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}` },
+      });
+      this.ws = ws;
+
+      ws.on("open", () => resolve());
+      ws.on("message", (raw, isBinary) => this.handleMessage(raw, isBinary));
+      ws.on("error", (e) => {
+        this.onError(`TTS socket error: ${e.message}`);
+        reject(e);
+      });
+      ws.on("close", (code) => {
+        this.ws = null;
+        this.ready = null;
+        if (!this.closed && this.pending) {
+          this.pending.reject(new Error(`TTS socket closed mid-sentence (code ${code})`));
+          this.pending = null;
+        }
+      });
+    });
+    return this.ready;
+  }
+
+  handleMessage(raw, isBinary) {
+    const pending = this.pending;
+    // Audio frames arrive as binary; everything else is a JSON control message.
+    // The `ws` package hands us Buffers directly — note that Node's *built-in*
+    // WebSocket would give Blobs instead, whose length is `.size` not
+    // `.byteLength`, which silently measures every frame as empty.
+    if (isBinary) {
+      if (pending && raw.length) pending.onAudio(Buffer.from(raw));
+      return;
+    }
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch (e) {
+      return;
+    }
+    if (!pending) return;
+
+    if (msg.type === "Flushed") {
+      this.pending = null;
+      pending.resolve();
+    } else if (msg.type === "Error" || msg.type === "Fatal") {
+      this.pending = null;
+      pending.reject(new Error(msg.description || msg.message || "Deepgram reported a TTS error"));
+    }
+  }
+
+  async speak(text, onAudio, signal) {
+    if (!text || !text.trim()) return;
+    if (signal?.aborted) return;
+    await this.connect();
+    if (signal?.aborted) return;
+
+    const mine = ++this.seq;
+
+    return new Promise((resolve, reject) => {
+      // A sentence must never be able to hang the speech chain.
+      //
+      // speak() only settles when Deepgram sends `Flushed`, and if that never
+      // arrives — a stalled socket, a dropped frame, a provider hiccup — the
+      // await above blocks forever. Because every spoken line goes through one
+      // serial queue (see this.speechChain in voiceRelay.js), a single hang
+      // silences the agent for the rest of the call while the caller hears
+      // nothing and no error is raised anywhere. This was not theoretical: it
+      // deadlocked the boot-time prewarm on the very first run.
+      //
+      // Resolve rather than reject: whatever audio did arrive has already been
+      // played, and the next sentence should still get its turn.
+      const timeout = setTimeout(() => {
+        if (this.pending?.seq !== mine) return;
+        this.pending = null;
+        this.onError(`TTS timed out waiting for the end of a sentence (${SPEAK_TIMEOUT_MS}ms)`);
+        resolve();
+      }, SPEAK_TIMEOUT_MS);
+
+      const settle = (fn) => (v) => {
+        clearTimeout(timeout);
+        fn(v);
+      };
+      resolve = settle(resolve);
+      reject = settle(reject);
+
+      this.pending = { onAudio, resolve, reject, seq: mine };
+
+      const onAbort = () => {
+        if (this.pending?.seq !== mine) return;
+        this.pending = null;
+        // Tell Deepgram to stop generating too, so we are not paying for audio
+        // the caller has already talked over.
+        try {
+          this.ws?.send(JSON.stringify({ type: "Clear" }));
+        } catch (e) {
+          /* socket already going away */
+        }
+        // Resolve, not reject: an interrupted sentence is a normal event on a
+        // phone call, not a failure.
+        resolve();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        this.ws.send(JSON.stringify({ type: "Speak", text }));
+        // Without an explicit Flush, Aura waits for more text before it starts
+        // synthesising — which is right for a token stream and wrong for us,
+        // because the relay already hands it one complete sentence at a time.
+        this.ws.send(JSON.stringify({ type: "Flush" }));
+      } catch (e) {
+        this.pending = null;
+        reject(e);
+      }
+    });
+  }
+
+  close() {
+    this.closed = true;
+    this.pending = null;
+    const ws = this.ws;
+    this.ws = null;
+    this.ready = null;
+    if (ws && ws.readyState <= WebSocket.OPEN) {
+      try {
+        ws.close();
+      } catch (e) {
+        /* already gone */
+      }
+    }
+  }
 }
 
 class CartesiaTts {
@@ -203,21 +419,143 @@ class CartesiaTts {
   }
 }
 
+// ── The phrase cache ────────────────────────────────────────────────────────
+// Some of what this agent says is byte-identical on every single call: the
+// anonymous greeting, and the ten acknowledgements in voiceFillers.js. They were
+// being re-synthesised every time, and paid for every time.
+//
+// That is not a rounding error. An acknowledgement fires on most turns, so a
+// four-turn call spends roughly a third of its characters on strings we have
+// already bought. It is also what drained a month of Cartesia credit in a day of
+// testing: every preflight run re-bought the same greeting.
+//
+// Caching them makes the agent faster as well as cheaper — a cached phrase skips
+// the ~400ms round trip entirely, and the acknowledgement is precisely the thing
+// whose job is to land fast.
+//
+// Deliberately NOT a general-purpose cache. Only exact strings from a known
+// fixed set are stored, because a model's replies never repeat and caching them
+// would grow without bound while never being read.
+const phraseCache = new Map(); // text -> Buffer[]
+
+// A personalised greeting ("Hi Aarav, this is UPSY again") is unique per caller
+// and per call count, so it is not cacheable and is not worth trying to be.
+// Only the anonymous opener and the acknowledgements qualify.
+export function cacheablePhrases(phrases) {
+  for (const p of phrases) if (p && !phraseCache.has(p)) phraseCache.set(p, null);
+}
+
+export function phraseCacheStats() {
+  let ready = 0;
+  for (const v of phraseCache.values()) if (v) ready++;
+  return { known: phraseCache.size, ready };
+}
+
+/**
+ * Synthesise the fixed phrases once at boot, so no caller pays for them.
+ *
+ * Without this the cache still works, but the FIRST caller after every deploy
+ * waits ~1.2s for the greeting and again for their first acknowledgement — and
+ * on a free-tier host that sleeps after 15 minutes, "the first caller after a
+ * deploy" is very often the only caller, which is exactly the person a demo is
+ * being shown to.
+ *
+ * English only: the Hindi lines cannot be spoken until Sarvam exists, and
+ * buying them from an English voice would be wasted spend on audio we would
+ * never play.
+ *
+ * Failures are swallowed on purpose. A cold cache costs latency; a server that
+ * refuses to boot because a TTS provider was briefly unreachable costs the
+ * whole product.
+ */
+export async function prewarmPhrases(phrases) {
+  if (!ttsConfigured()) return { warmed: 0, skipped: "no TTS key" };
+  const wanted = phrases.filter((p) => p && !phraseCache.get(p));
+  if (!wanted.length) return { warmed: 0 };
+
+  const engine = makeTts({ language: "en", onError: () => {} });
+  let warmed = 0;
+  try {
+    for (const phrase of wanted) {
+      try {
+        await engine.speak(phrase, () => {}, null);
+        warmed++;
+      } catch (e) {
+        /* one phrase failing is not worth abandoning the rest */
+      }
+    }
+  } finally {
+    engine.close();
+  }
+  return { warmed };
+}
+
+/**
+ * Wraps any engine and serves the fixed phrases from memory after their first
+ * synthesis. Transparent: same speak() signature, so the relay cannot tell.
+ */
+class CachedTts {
+  constructor(engine) {
+    this.engine = engine;
+  }
+
+  async speak(text, onAudio, signal) {
+    const key = text?.trim();
+    const cached = key ? phraseCache.get(key) : undefined;
+
+    if (cached) {
+      // Replay. Handing back the same chunk boundaries the provider produced
+      // keeps playback identical to a live synthesis rather than arriving as
+      // one large block.
+      for (const chunk of cached) {
+        if (signal?.aborted) return;
+        onAudio(chunk);
+      }
+      return;
+    }
+
+    // Not cached, but worth keeping? Capture on the way past.
+    const collecting = key && phraseCache.has(key) ? [] : null;
+    await this.engine.speak(
+      text,
+      (pcm) => {
+        if (collecting) collecting.push(pcm);
+        onAudio(pcm);
+      },
+      signal
+    );
+    // Only store a complete phrase. A sentence cut short by barge-in would
+    // otherwise be cached truncated and replayed truncated for the rest of time.
+    if (collecting && collecting.length && !signal?.aborted) {
+      phraseCache.set(key, collecting);
+    }
+  }
+
+  close() {
+    this.engine.close();
+  }
+}
+
 /**
  * Build the TTS engine for a call.
  *
- * The language argument is the seam for Hindi: Sarvam speaks it well and
- * Cartesia's voices do not, and swapping here changes nothing above this
- * function — the relay only knows "give me PCM for this sentence".
+ * The language argument is the seam for Hindi: Sarvam speaks it well and neither
+ * Deepgram nor Cartesia has an Indian-accented voice worth using. Swapping here
+ * changes nothing above this function — the relay only knows "give me PCM for
+ * this sentence".
  */
 export function makeTts({ language = "en", onError } = {}) {
-  if (language !== "en" && process.env.SARVAM_API_KEY) {
+  if (language !== "en") {
     // Deliberately not implemented rather than silently falling through to an
     // English voice reading Hindi text, which sounds worse than an honest error.
     throw new Error(
-      "Sarvam TTS is not implemented yet — the relay accepts a language so this " +
-        "swap is a one-file change, but nobody has written or tested it. Use language=en."
+      "Hindi TTS (Sarvam) is not implemented yet — the relay accepts a language so " +
+        "this swap is a one-file change, but nobody has written or tested it. Use language=en."
     );
   }
-  return new CartesiaTts({ language: "en", onError });
+  const engine =
+    PROVIDER === "cartesia"
+      ? new CartesiaTts({ language: "en", onError })
+      : new AuraTts({ onError });
+  return new CachedTts(engine);
 }
