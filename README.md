@@ -46,7 +46,37 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
   **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude.
 
-**On the voice itself, three picks in one day, and only the last one was made properly.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → **Jacqueline**, "empathic customer support", after actually listening. The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from the catalogue's prose was wrong twice.
+**On the voice itself, four picks in one day, and only the ones made by listening were any good.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → Jacqueline, "empathic customer support" → **`aura-2-athena-en` on Deepgram**, "calm, smooth, professional". The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good; Deepgram has none at all. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from a catalogue's prose was wrong twice.
+
+### 🔁 TTS moved to Deepgram Aura (2026-08-07)
+
+**Why: Cartesia's free tier ran out mid-build.** 1 credit per *character*, 20,000 a month — about **21 four-turn calls** — and most of a month went on this session's own preflight runs, each of which re-bought the same greeting. 204 credits were left, which is two greetings, not two calls. Deepgram bills comparable speech against a **$200 balance the team already had**, unused: roughly **7,000 calls on credit already paid for**.
+
+Measured head to head before switching, on the same sentences (working files in `Desktop/testing-deepgram/`, outside this repo):
+
+| | Cartesia Sonic | Deepgram Aura-2 |
+|---|---|---|
+| Credit available | 204 chars | **$200 ≈ 6.7M chars** |
+| First audio, warm socket | ~360 ms | ~396 ms |
+| Pace | Jacqueline 218 wpm | athena 195 wpm |
+| Audio format | raw pcm_s16le 44.1 kHz | **identical — drop-in** |
+| Indian-accented voices | 3 | **0** |
+
+The 40 ms latency difference is far below perception and is dwarfed by the 1.4–2 s the model takes to write a first sentence. **Cartesia stays behind `TTS_PROVIDER=cartesia`** — it works, and a second proven path costs nothing to keep.
+
+⚠️ **Use Aura's WebSocket, never its REST endpoint.** `POST /v1/speak` returns the whole clip in one response: measured at **3.3 seconds before any audio exists at all**, against 396 ms for the first streamed chunk.
+
+### 💸 The phrase cache — and the mistake that made it necessary
+
+The greeting and the ten acknowledgements are byte-identical on every call and were **re-synthesised, and re-paid for, every single time**. An acknowledgement fires on most turns, so roughly a third of a four-turn call's characters were spent on audio already bought. It is also precisely what drained Cartesia in a day: every preflight run bought the same greeting again.
+
+They are now synthesised once and replayed — **1593 ms → 25 ms**, and free. Faster as well as cheaper, and the acknowledgement is the one line whose entire job is to land fast. `warmVoiceCache()` buys them at boot so no caller pays: on a free instance that sleeps after 15 minutes, "the first caller after a wake-up" is usually the person being shown a demo.
+
+Deliberately **not** a general-purpose cache — only exact strings from a known fixed set. Model replies never repeat, so caching them would grow without bound and never be read. A personalised greeting ("Hi Aarav, this is UPSY again") is unique per caller and is excluded for the same reason.
+
+**Two bugs this work surfaced, both worth remembering:**
+- **`speak()` could hang forever.** It settled only on Deepgram's `Flushed`, so a stalled socket blocked the shared speech queue and silenced the agent for the rest of the call, with no error raised anywhere. It deadlocked the boot prewarm on its first run. There is a 10 s ceiling now (`TTS_SPEAK_TIMEOUT_MS`).
+- **The prewarm was buying all twelve Hindi lines** and feeding them to an English voice. Language was being guessed from the text by regex; the regex silently matched nothing. `allFixedPhrases(language)` now returns them by language, because the buckets already know — guessing was never necessary.
 
   **So the agent still speaks at ~200 wpm and that is a known, accepted gap.** Reviving it properly means pacing a whole sentence after synthesis and eating the latency, or getting real word boundaries from the provider (Cartesia's TTS supports `add_timestamps`). Do not try to make the per-chunk energy detector smarter — the information is not in a 130ms window.
 
@@ -1091,7 +1121,7 @@ npm start
 - `backend/voiceRelay.js` — **our own voice agent.** A WebSocket server on this process's own port (`/voice/stream`) that terminates the caller's audio socket and orchestrates the call: turn-taking, barge-in, conversation history, per-call teardown. Speaks `voiceClient.js`'s existing vocabulary exactly (`start`/`ack`/`media_input`/`media_output`/`clear`) so the browser never changed. `VOICE_RELAY_MODE=echo` bounces the caller's audio straight back — the transport test, with no AI in the path.
 - `backend/voiceStt.js` — hearing: Deepgram streaming + endpointing. Emits *speech started* (barge-in), interim transcripts (the constellation), and *turn finished*. Falls back to a deliberately deaf engine when no key is set, so the agent still speaks and says plainly that it cannot hear.
 - `backend/voiceBrain.js` — thinking: Claude Haiku 4.5 → OpenRouter, **streamed and split into sentences as it arrives** so speech starts before the reply is finished. Abortable mid-generation (the `respondTo()` lesson from `liveAssist.js`), and it logs Anthropic's cache-hit counters so the cost model is checked against evidence.
-- `backend/voiceTts.js` — speaking: Cartesia Sonic over their streaming websocket, one socket per call rather than per sentence (opening one costs ~600ms). Barge-in works by advancing the context id, so audio already in flight for an abandoned sentence is dropped on arrival.
+- `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Cartesia Sonic** kept behind `TTS_PROVIDER=cartesia`. One socket per call rather than per sentence, since opening one costs ~1s. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
 - `backend/voice-relay-check.js` — `npm run voice:relay`: runs the relay in-process on an ephemeral port and drives it with a fake browser — config → transport echo → single-use tickets → *does it actually speak* → does the brain stream sentences. Needs no running server and no real applicant data.
 - `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, and a document checklist generated from `documents.js` so it cannot drift.
 - `backend/voice-check.js` — `npm run voice:check`: walks the same chain a real call walks (env → agent exists → agent deployed → token mints → socket accepts `start` → the agent actually speaks) and stops at the first thing that is wrong. Written because an undeployed agent's `1011 Internal server error` sent a whole session through the audio code before anyone looked at the account.

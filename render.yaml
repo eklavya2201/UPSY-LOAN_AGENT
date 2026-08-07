@@ -21,13 +21,15 @@ services:
       # Browser voice calls on /m. Without these the page still loads and the
       # Call button reports exactly what is missing — it does not break the app.
       #
-      # "upsy" is our own relay: Deepgram → Claude → Cartesia Sonic, with
+      # "upsy" is our own relay: Deepgram → Claude → Deepgram Aura, with
       # turn-taking in backend/voiceRelay.js. Unlike the hosted path, the audio
       # passes through this service — so a paid instance type is worth revisiting
       # if calls ever get real traffic (free instances sleep and have no
       # persistent disk, which the data/ caveat elsewhere already notes).
       - key: VOICE_PROVIDER
         value: upsy
+      # Does both the hearing (STT) and the speaking (Aura TTS) now — Cartesia's
+      # free tier bills per character and ran dry at ~21 calls a month.
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: CARTESIA_API_KEY
