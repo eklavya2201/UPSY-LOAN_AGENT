@@ -26,7 +26,7 @@ import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
-import { attachVoiceRelay, relayStatusLine } from "./voiceRelay.js";
+import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail } from "./voiceAccounts.js";
 import { createRateLimiter } from "./rateLimit.js";
@@ -1165,7 +1165,19 @@ server.listen(PORT, () => {
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
   console.log(voiceStatusLine());
-  if (voiceProvider() === "upsy") console.log(relayStatusLine());
+  if (voiceProvider() === "upsy") {
+    console.log(relayStatusLine());
+    // Buy the greeting and the acknowledgements once, now, rather than making
+    // the first caller wait ~1.2s for each. On a free instance that sleeps after
+    // 15 minutes, "the first caller after a wake-up" is very often the only
+    // caller — usually the person being shown a demo.
+    //
+    // Deliberately not awaited: a TTS provider having a slow minute must not
+    // hold up the server accepting requests.
+    warmVoiceCache()
+      .then((r) => r.warmed && console.log(`Voice: pre-synthesised ${r.warmed} repeated phrases (greeting + acknowledgements).`))
+      .catch((e) => console.warn(`⚠️  Could not pre-warm the voice cache: ${e.message}`));
+  }
 });
 
 // app.listen() used to surface this as an uncaught exception, which the handler

@@ -27,11 +27,34 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import { makeStt, sttConfigured, sttConfigError } from "./voiceStt.js";
-import { makeTts, ttsConfigured, ttsConfigError, TTS_SAMPLE_RATE } from "./voiceTts.js";
+import { makeTts, ttsConfigured, ttsConfigError, ttsStatusLine, cacheablePhrases, prewarmPhrases, TTS_SAMPLE_RATE } from "./voiceTts.js";
 import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HISTORY } from "./voiceBrain.js";
-import { pickAcknowledgement } from "./voiceFillers.js";
+import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
 import { recordCall } from "./voiceAccounts.js";
+import { buildIntroduction } from "./voicePrompt.js";
+
+// Register the lines the agent repeats across calls, so each is synthesised once
+// and replayed thereafter. The anonymous opener qualifies because it is a fixed
+// string; a personalised greeting ("Hi Aarav, this is UPSY again") is unique per
+// caller and is deliberately left out. See the phrase cache in voiceTts.js.
+// Every fixed line, in every language, registered as cacheable so that whichever
+// ones actually get spoken are bought once rather than per call.
+cacheablePhrases([buildIntroduction(null), ...allFixedPhrases()]);
+
+/**
+ * Buy the repeated English lines once, at boot, so no caller waits for them.
+ *
+ * English only, taken from the buckets by language rather than guessed from the
+ * text: the Hindi acknowledgements cannot be spoken until Sarvam exists, and
+ * synthesising them in an English voice is paying for audio that will never be
+ * played. A first attempt filtered by regex, silently matched nothing, and
+ * bought all twelve Hindi lines.
+ */
+export function warmVoiceCache() {
+  return prewarmPhrases([buildIntroduction(null), ...allFixedPhrases("en")]);
+}
+
 
 export const RELAY_PATH = "/voice/stream";
 
@@ -128,7 +151,7 @@ export function relayConfigError() {
 export function relayStatusLine() {
   if (relayMode() === "echo") return "Voice relay: ECHO MODE (transport only, no AI)";
   const hear = sttConfigured() ? "Deepgram" : "DEAF (no DEEPGRAM_API_KEY)";
-  const speak = ttsConfigured() ? "Cartesia Sonic" : "MUTE (no CARTESIA_API_KEY)";
+  const speak = ttsConfigured() ? ttsStatusLine() : "MUTE (no TTS key)";
   return `Voice relay: ${hear} → ${brainStatusLine()} → ${speak}`;
 }
 
