@@ -69,11 +69,16 @@ const SENTENCE_PAUSE_MS = Number(process.env.VOICE_SENTENCE_PAUSE_MS || 280);
 // would let a leaked "yes" or "okay" from the agent's own speech cut it off.
 const BARGE_IN_MIN_WORDS = Number(process.env.VOICE_BARGE_IN_MIN_WORDS || 2);
 
-// Silence added to each natural gap between words, to drag the speaking rate
-// from ~220 wpm down into the 140-160 conversational band. 110ms measured out
-// at ~166 wpm; raise it if she still sounds rushed, lower it if she sounds
-// stilted. 0 disables the pacing pass entirely. See backend/voicePacing.js.
-const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 110);
+// ⚠️ OFF (0). This shipped at 110ms and made the agent stutter mid-word on real
+// calls, on a laptop and a phone alike — the per-chunk gap detector cannot tell
+// a pause between words from a quiet moment inside one in a ~130ms window, so
+// it spliced silence into the middle of speech. Full post-mortem at the top of
+// backend/voicePacing.js. An agent that talks slightly fast is fine; an agent
+// that sounds like a bad line is not.
+//
+// Pacing that IS on: the between-sentence pause below, which is safe because a
+// sentence boundary is a place we actually know about rather than one we guess.
+const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 0);
 
 // Silent PCM at the pipeline's one and only sample rate. Int16 zeroes.
 function silence(ms) {

@@ -38,15 +38,13 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
   So pacing is fixed in `backend/voicePacing.js`, where we actually own the stream. Not by resampling — that drops the pitch with the rate and turns her into a different, deeper person — and not by time-stretching, which costs CPU per sentence and smears consonants. It does what a person does when asked to slow down: **it doesn't stretch the words, it lengthens the gaps between them.** Speech untouched, pitch identical, only the silence grows. Runs per streamed chunk, so the first syllable still leaves on time.
 
-  Tuned by sweeping against real audio rather than by taste — the silence floor decides how many inter-word gaps get found, and that is the whole ball game:
+  **❌ That gap-widening shipped, broke the audio, and is now OFF by default (`VOICE_PACE_EXTRA_MS=0`).** It made the agent stutter mid-word on a real call — on a laptop and a phone alike, so not a bandwidth problem. Cause: it runs per streamed chunk to protect first-syllable latency, Cartesia's chunks are only ~130ms, and in a 130ms window the detector genuinely cannot tell "a pause between words" from "a quiet moment inside a word". A rule that also treated *quiet at the end of a chunk* as a gap fired on roughly every other chunk, splicing 110ms of silence into the middle of words.
 
-  | silence floor | gaps found in a 16-word sentence | result |
-  |---|---|---|
-  | 900 | 8 | 188 wpm — still rushed |
-  | **2500** | **14** (~one per word) | **166 wpm** ✅ |
-  | 5000 | 15 | 163 wpm, but starts biting into quiet consonants |
+  **The measurement that missed it is the lesson worth keeping.** It was validated by comparing **duration** before and after — a clean +32% on a whole buffer — and never by listening. Run the same settings the way they actually execute, per chunk, and it is +47% with 19 inserts across 34 chunks: 2.1s of silence shot through 4.4s of speech. Duration was the wrong metric; it cannot see stuttering. Every other number in this section came from a harness, and this is the one that a harness structurally could not catch.
 
-  One knob if it needs adjusting on a real phone: **`VOICE_PACE_EXTRA_MS`** (110). Raise toward 150 for slower, drop to 70 if she sounds stilted. The voice is also now **Kiara, Indian-accented English** — a US voice reading "lakh", "Aadhaar" and Indian institution names is genuinely harder to follow.
+  **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude. The voice is also now **Kiara, Indian-accented English** — a US voice reading "lakh", "Aadhaar" and Indian institution names is genuinely harder to follow.
+
+  **So the agent still speaks at ~200 wpm and that is a known, accepted gap.** Reviving it properly means pacing a whole sentence after synthesis and eating the latency, or getting real word boundaries from the provider (Cartesia's TTS supports `add_timestamps`). Do not try to make the per-chunk energy detector smarter — the information is not in a 130ms window.
 
 **Still worth doing:** a faster brain would remove the problem rather than mask it. The Groq key on this machine is **expired** and the `OPENAI_API_KEY` is a placeholder (`your_ope…here`); either a working Groq key or `ANTHROPIC_API_KEY` (Haiku 4.5) should cut first-sentence time well under a second. Re-run `npm run eval:voice` after adding one — it ranks whatever is configured.
 

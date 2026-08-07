@@ -17,9 +17,27 @@
 // moments the speaker already produced and lengthen them. No pitch change, no
 // artifacts, and the speech itself is untouched — only the silence grows.
 //
-// Runs per streamed chunk rather than per sentence, so the first syllable still
-// leaves as soon as Cartesia produces it. Gaps that straddle a chunk boundary
-// are missed; that costs a little stretch, never correctness.
+// ⚠️ OFF BY DEFAULT (VOICE_PACE_EXTRA_MS=0), and read this before turning it on.
+//
+// It runs per streamed chunk, because buffering a whole sentence would cost the
+// first-syllable latency the acknowledgement and speculative generation were
+// built to remove. But Cartesia's chunks are only ~130ms long, and reliably
+// telling "a pause between words" from "a quiet moment inside a word" in a
+// 130ms window is not something this detector can do. Turned on, it audibly
+// stutters mid-word — reported from a real call on two different devices.
+//
+// The measurement that missed it is the lesson: this was validated by comparing
+// DURATION before and after (a clean +32% on a whole buffer) and never by
+// listening. Per chunk, as it actually runs, the same settings insert +47% at
+// arbitrary points. Duration was the wrong metric; it cannot see stuttering.
+//
+// If you want to revive it, pace a WHOLE SENTENCE after synthesis and accept
+// the latency, or get word timings from the provider (Cartesia's TTS supports
+// add_timestamps) and insert silence only at real word boundaries. Do not try
+// to make the per-chunk energy detector smarter — the information is not there.
+//
+// The shipped pacing is the between-sentence pause in voiceRelay.js, which is
+// safe because a sentence boundary is a place we actually know about.
 
 // Anything quieter than this is treated as a gap rather than speech (Int16
 // scale, peak over a 5ms window). Tuned by sweeping against real Cartesia
@@ -81,9 +99,12 @@ export function stretchGaps(
       runStart = -1;
     }
   }
-  // A gap running to the very end of the chunk counts too — with streamed audio
-  // that is usually the pause before the next chunk's first word.
-  if (runStart >= 0 && samples - runStart >= minGap) gaps.push(runStart + ((samples - runStart) >> 1));
+  // NOTE: a gap running to the end of the chunk is deliberately NOT counted.
+  // It used to be, and it is what broke this: chunks arrive ~130ms long and end
+  // wherever the network split them, so "quiet at the end of a chunk" is almost
+  // never a real pause. That rule fired on roughly every other chunk and spliced
+  // 110ms of silence into the middle of words — 19 inserts across 34 chunks,
+  // 2.1s of silence shot through 4.4s of speech. It sounded like a bad line.
 
   if (!gaps.length) return pcm;
 
