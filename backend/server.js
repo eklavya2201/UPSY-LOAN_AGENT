@@ -1,5 +1,6 @@
 import "dotenv/config"; // loads .env (credentials for Exotel / SMTP) if present
 import fs from "fs/promises";
+import http from "http";
 import express from "express";
 import multer from "multer";
 import path from "path";
@@ -24,7 +25,8 @@ import { answerDocQuestion, assistConfigured } from "./assist.js";
 import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
-import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady } from "./voiceCall.js";
+import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
+import { attachVoiceRelay, relayStatusLine } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { createRateLimiter } from "./rateLimit.js";
 
@@ -900,7 +902,15 @@ app.post("/api/voice/session", async (req, res) => {
   }
   try {
     const leadId = req.body?.leadId ? String(req.body.leadId).slice(0, 64) : null;
-    const session = await createVoiceSession({ leadId });
+    // Our own relay needs to hand the browser a URL back to this server, and
+    // only the request knows what this server is reachable as — behind Render's
+    // proxy the protocol is in x-forwarded-proto, not req.protocol.
+    const proto = req.get("x-forwarded-proto") || req.protocol || "http";
+    const session = await createVoiceSession({
+      leadId,
+      origin: `${proto}://${req.get("host")}`,
+      language: req.body?.language === "hi" ? "hi" : "en",
+    });
     console.log(`[voice] session started (${session.caller.known ? `lead ${leadId}` : "anonymous"})`);
     // Best-effort timeline entry: a call that isn't recorded on the lead is
     // still a call worth having, so never fail the session over this.
@@ -1004,7 +1014,14 @@ app.get("/team", (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+
+// An explicit http.Server rather than app.listen(), because the voice relay is a
+// WebSocket endpoint on this same origin and needs the `upgrade` event. Render
+// gives us exactly one port, so a second listener would not survive deployment.
+const server = http.createServer(app);
+attachVoiceRelay(server);
+
+server.listen(PORT, () => {
   console.log(`UPSY loan agent running on http://localhost:${PORT} (lead source: ${source.name})`);
   // Show which document reader is active so it's obvious the moment Claude is wired in.
   const readers = [];
@@ -1015,7 +1032,9 @@ app.listen(PORT, () => {
   // The agent can be configured (keys present) and still refuse every call
   // because it was never deployed. Say so at boot rather than letting a caller
   // find out — this is exactly the failure that looked like our bug on 2026-08-06.
-  if (voiceConfigured()) {
+  // Only the hosted path has a deployment that can be un-published. Our own
+  // relay is live whenever this process is, which is most of the point of it.
+  if (voiceProvider() === "cartesia" && voiceConfigured()) {
     checkAgentReady({ force: true })
       .then((r) => {
         if (!r.ok) console.warn(`⚠️  Voice calls will fail: ${r.reason}`);
@@ -1027,4 +1046,17 @@ app.listen(PORT, () => {
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
   console.log(voiceStatusLine());
+  if (voiceProvider() === "upsy") console.log(relayStatusLine());
+});
+
+// app.listen() used to surface this as an uncaught exception, which the handler
+// at the top of this file turned into a fatal exit. http.Server emits it as an
+// 'error' event instead, so keep the "never run two instances" rule explicit
+// here rather than depending on an unhandled event throwing — see the ops notes.
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error("FATAL: port already in use — another server instance is running. Exiting.");
+    process.exit(1);
+  }
+  throw err;
 });
