@@ -197,6 +197,43 @@
   .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
   .view.on { display: flex; }
 
+  /* ── Sign in ──────────────────────────────────────────────────────────────
+     Reuses .brief / .actions / .field / .btn wholesale — the only new pieces
+     are the two-way switch and the reassurance line under it. */
+  .tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .25rem;
+    background: #0f2839;
+    border: 1px solid #ffffff0f;
+    border-radius: 14px;
+    padding: .25rem;
+    margin: 0 0 1.2rem;
+  }
+  .tabs button {
+    background: none;
+    border: 0;
+    border-radius: 11px;
+    padding: .62rem .5rem;
+    font: 600 .88rem/1 Hind, sans-serif;
+    color: var(--muted);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background .18s ease, color .18s ease;
+  }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: #eaf8ff; }
+  .tabs button:focus-visible { outline: 2px solid var(--accent-lift); outline-offset: 2px; }
+
+  /* Why we are asking at all. Sits under the fields rather than above them:
+     someone who already intends to sign up should not have to read past a
+     justification to reach the first input. */
+  .why {
+    font-size: .78rem;
+    line-height: 1.5;
+    color: var(--faint);
+    margin: .9rem 0 0;
+  }
+
   /* ── Brief ────────────────────────────────────────────────────────────── */
   .brief {
     flex: 1;
@@ -634,8 +671,54 @@
     <span class="bar-spacer" aria-hidden="true"></span>
   </div>
 
+  <!-- ── 0. Sign in ─────────────────────────────────────────────────────────
+       /m has its own account, separate from the phone-number lookup behind
+       /login, because this page is for someone on a phone who has never seen
+       that flow. It is also what makes a second call able to remember the
+       first. Skippable on purpose: the anonymous call still works and always
+       should — an account is what buys continuity, not what buys access. -->
+  <section class="view" id="viewAuth" aria-label="Sign in to UPSY">
+    <div class="brief">
+      <h1 id="authTitle">Pick up where<br/>you left off</h1>
+      <p class="sub" id="authSub">Sign in so UPSY remembers this conversation the next time you call.</p>
+
+      <div class="tabs" role="tablist" aria-label="Sign in or create an account">
+        <button type="button" role="tab" id="tabLogin" aria-selected="true" aria-controls="authForm">Log in</button>
+        <button type="button" role="tab" id="tabSignup" aria-selected="false" aria-controls="authForm">Create account</button>
+      </div>
+
+      <div id="authForm">
+        <div class="field" id="authNameField" hidden>
+          <label for="authName">Your name</label>
+          <input id="authName" type="text" autocomplete="name" placeholder="Aarav Sharma" maxlength="80"/>
+        </div>
+        <div class="field">
+          <label for="authPhone">Mobile number</label>
+          <input id="authPhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="98765 43210" maxlength="18"/>
+        </div>
+        <div class="field">
+          <label for="authPassword">Password</label>
+          <!-- autocomplete is switched between current-password and new-password
+               in m.js, so a password manager offers the right thing for the
+               mode the form is actually in. -->
+          <input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 8 characters" maxlength="200"/>
+        </div>
+
+        <p class="why" id="authWhy">UPSY will never ask for your PAN, Aadhaar or bank details — here or on the call.</p>
+      </div>
+    </div>
+
+    <div class="actions">
+      <p class="msg" id="authMsg" role="status"></p>
+      <button class="btn primary" id="authSubmit" type="button">Log in</button>
+      <p class="alt-row">
+        <button class="linkish" id="skipAuth" type="button">Just talk, don't save anything</button>
+      </p>
+    </div>
+  </section>
+
   <!-- ── 1. Brief ───────────────────────────────────────────────────────── -->
-  <section class="view on" id="viewBrief" aria-label="Before your call">
+  <section class="view" id="viewBrief" aria-label="Before your call">
     <div class="brief">
       <h1>Eligibility, documents,<br/>and what it costs</h1>
       <p class="sub" id="briefSub">I'll help you work out what you can borrow and what you'll need to get there.</p>
@@ -695,6 +778,9 @@
         <span aria-hidden="true">·</span>
         <a class="linkish" href="/login">Check my eligibility</a>
       </p>
+      <!-- Filled by m.js: who is signed in and how to leave, or an invitation
+           to sign in for the caller who skipped past it. -->
+      <p class="alt-row" id="accountRow" hidden></p>
     </div>
   </section>
 

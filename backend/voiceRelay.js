@@ -31,6 +31,7 @@ import { makeTts, ttsConfigured, ttsConfigError, TTS_SAMPLE_RATE } from "./voice
 import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HISTORY } from "./voiceBrain.js";
 import { pickAcknowledgement } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
+import { recordCall } from "./voiceAccounts.js";
 
 export const RELAY_PATH = "/voice/stream";
 
@@ -163,6 +164,11 @@ class RelayCall {
     this.spec = null;
     this.state = null;
     this.lastAck = null;
+    // The call's transcript, kept so it can be filed against the caller's
+    // account when they hang up. Only what was actually said — this is the same
+    // text the browser already receives, not a recording: no audio is written
+    // anywhere, on this path or any other.
+    this.turns = [];
     // Everything spoken goes through one chain. The TTS socket carries a single
     // context at a time, so two overlapping speak() calls would cut each other
     // off — and the acknowledgement is deliberately spoken WHILE the model is
@@ -270,6 +276,7 @@ class RelayCall {
     // proves the audio round trip: voiceClient.js treats a socket that closes
     // before any audio arrived as a failed call rather than a hang-up.
     this.setState("speaking");
+    this.turns.push({ role: "agent", text: this.ticket.introduction, at: new Date().toISOString() });
     await this.speak(this.ticket.introduction, null);
     this.setState("listening");
 
@@ -320,6 +327,17 @@ class RelayCall {
     send(this.ws, { event: "state", state });
   }
 
+  // Send a finished line to the page AND keep it. One helper rather than a
+  // `send` next to a `push` at each of the four places the agent speaks: those
+  // two had already drifted apart once (the acknowledgement was emitted to the
+  // page but never entered the history), and a transcript missing the lines the
+  // caller actually heard is worse than no transcript at all.
+  sendAgentText(text) {
+    if (!text) return;
+    send(this.ws, { event: "transcript", role: "agent", text, final: true });
+    this.turns.push({ role: "agent", text, at: new Date().toISOString() });
+  }
+
   // ── Speculative thinking ──────────────────────────────────────────────────
   // Deepgram will not confirm a turn until it has heard ~800ms of silence, and
   // the model then needs another 1.4–2s to produce a first sentence. Run those
@@ -347,7 +365,7 @@ class RelayCall {
       signal: controller.signal,
       onSentence: async (sentence) => {
         if (spec.live) {
-          send(this.ws, { event: "transcript", role: "agent", text: sentence, final: true });
+          this.sendAgentText(sentence);
           await this.speak(sentence, controller.signal);
         } else {
           spec.buffered.push(sentence);
@@ -396,6 +414,10 @@ class RelayCall {
   async handleTurn(text) {
     if (!text || this.closed) return;
     send(this.ws, { event: "transcript", role: "caller", text, final: true });
+    // Recorded here and not in onTranscript: a turn is one finished thought,
+    // whereas Deepgram's interim fragments are the same words several times
+    // over, and a transcript full of half-sentences is not worth keeping.
+    this.turns.push({ role: "caller", text, at: new Date().toISOString() });
 
     // Did we already start thinking about exactly this during the silence?
     const spec = this.spec;
@@ -424,7 +446,7 @@ class RelayCall {
       const ack = pickAcknowledgement(text, this.ticket.language, this.lastAck);
       if (ack) {
         this.lastAck = ack;
-        send(this.ws, { event: "transcript", role: "agent", text: ack, final: true });
+        this.sendAgentText(ack);
         this.speak(ack, controller.signal);
       }
     }
@@ -439,7 +461,7 @@ class RelayCall {
         while (spec.buffered.length) {
           const sentence = spec.buffered.shift();
           if (myTurn !== this.turnSeq) break;
-          send(this.ws, { event: "transcript", role: "agent", text: sentence, final: true });
+          this.sendAgentText(sentence);
           await this.speak(sentence, controller.signal);
         }
         spec.live = true;
@@ -454,7 +476,7 @@ class RelayCall {
         signal: controller.signal,
         onSentence: async (sentence) => {
           if (myTurn !== this.turnSeq) return;
-          send(this.ws, { event: "transcript", role: "agent", text: sentence, final: true });
+          this.sendAgentText(sentence);
           await this.speak(sentence, controller.signal);
         },
       });
@@ -515,6 +537,33 @@ class RelayCall {
 
   // ── Teardown ──────────────────────────────────────────────────────────────
 
+  /**
+   * File the finished call against the caller's /m account.
+   *
+   * Fire-and-forget by design. stop() is synchronous and runs on socket close,
+   * where there is nothing left to await into — and a disk write that fails must
+   * never keep a call from tearing down, because a call that will not end holds
+   * an STT socket, a TTS socket and a timer open.
+   *
+   * An anonymous caller has no account, so nothing is written at all. That is
+   * the intended outcome, not a gap: with no account there is no one to show it
+   * to and no next call to inform.
+   */
+  persist(seconds, reason) {
+    if (!this.ticket.accountId || !this.turns.length) return;
+    recordCall(this.ticket.accountId, {
+      startedAt: new Date(this.startedAt).toISOString(),
+      endedAt: new Date().toISOString(),
+      seconds,
+      endedBecause: reason,
+      turns: this.turns,
+    })
+      .then((entry) => {
+        if (entry) this.log(`saved ${this.turns.length} turns to account ${this.ticket.accountId}`);
+      })
+      .catch((e) => console.error("[voice:relay] could not save the call:", e.message));
+  }
+
   stop(reason) {
     if (this.closed) return;
     this.closed = true;
@@ -533,6 +582,7 @@ class RelayCall {
     }
     const seconds = Math.round((Date.now() - this.startedAt) / 1000);
     this.log(`call ended after ${seconds}s (${reason})`);
+    this.persist(seconds, reason);
     if (this.ws.readyState <= WebSocket.OPEN) {
       try {
         this.ws.close();

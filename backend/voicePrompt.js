@@ -58,6 +58,59 @@ function publicContextBlock() {
 - When they are ready to actually apply, tell them to close the call and tap Check my eligibility on the same page — that is where they sign in and upload documents. You cannot do it for them.`;
 }
 
+// ── What earlier calls established ──────────────────────────────────────────
+// Rendered generically on purpose. What the calls capture is defined elsewhere
+// (and is expected to grow), so this walks whatever object it is handed rather
+// than naming fields — adding a branch or a sub-branch to what the agent
+// collects needs no edit here.
+
+// "collegeName" → "college name", "coApplicant" → "co applicant". Only for
+// display inside the prompt, so a merely-readable result is enough.
+function humanizeKey(key) {
+  return String(key)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .toLowerCase()
+    .trim();
+}
+
+// Nested because the profile is a set of branches with sub-branches under them.
+// Depth is capped so a malformed or self-referential object cannot produce an
+// unbounded prompt.
+function renderFacts(value, depth = 0) {
+  const pad = "  ".repeat(depth);
+  if (depth > 3) return [];
+  if (value === null || value === undefined || value === "") return [];
+  if (Array.isArray(value)) {
+    return value.length ? [`${pad}${value.map((v) => String(v)).join(", ")}`] : [];
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).flatMap(([k, v]) => {
+      if (v === null || v === undefined || v === "") return [];
+      if (typeof v === "object" && !Array.isArray(v)) {
+        const nested = renderFacts(v, depth + 1);
+        return nested.length ? [`${pad}- ${humanizeKey(k)}:`, ...nested] : [];
+      }
+      const flat = Array.isArray(v) ? v.join(", ") : String(v);
+      return [`${pad}- ${humanizeKey(k)}: ${flat}`];
+    });
+  }
+  return [`${pad}- ${String(value)}`];
+}
+
+function priorFactsBlock(c) {
+  const lines = renderFacts(c.priorFacts);
+  if (!lines.length) return null;
+  const when = c.lastCallAt ? new Date(c.lastCallAt).toDateString() : null;
+  const times = c.callCount > 1 ? `${c.callCount} times` : "once";
+  return [
+    `You have spoken to this person before — ${times}${when ? `, most recently on ${when}` : ""}. Greet them as someone you already know, not as a stranger.`,
+    `Here is what those earlier calls established about them:`,
+    lines.join("\n"),
+    `How to use this: do NOT ask them again for anything already listed above. If something matters to your answer, confirm it in passing ("you're doing the MBA at IIM Bangalore, right?") rather than asking from scratch — but believe them over this list if they correct you, because people's plans change and this is only what they told us last time.`,
+  ].join("\n");
+}
+
 // Signed-in caller: the same summary facts backend/liveAssistManager.js already
 // passes to the Meet agent. Never PAN/Aadhaar/account numbers — names only.
 function applicantContextBlock(c) {
@@ -82,7 +135,9 @@ function applicantContextBlock(c) {
     lines.push(`The co-applicant's name as it reads on their verified ID is "${c.coApplicantKycName}". Same rule for co-applicant name fields.`);
   }
   if (!lines.length) return publicContextBlock();
-  return `Who you are speaking to — this is UPSY's own record of them, so you may use it directly:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+  const known = `Who you are speaking to — this is UPSY's own record of them, so you may use it directly:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+  const prior = priorFactsBlock(c);
+  return prior ? `${known}\n\n${prior}` : known;
 }
 
 /**
@@ -111,7 +166,15 @@ export function buildVoiceSystemPrompt(context) {
  */
 export function buildIntroduction(context) {
   const name = context?.name ? context.name.split(/\s+/)[0] : null;
-  return name
-    ? `Hi ${name}, this is UPSY. What would you like help with today?`
-    : `Hi, this is UPSY. Tell me what you are studying and what you need, and I will tell you where you stand.`;
+  if (!name) {
+    return `Hi, this is UPSY. Tell me what you are studying and what you need, and I will tell you where you stand.`;
+  }
+  // Someone who has called before should not be greeted as a new enquiry —
+  // being asked your own name twice is the fastest way to make an agent feel
+  // like a phone tree. Still two sentences: the opening is not the place to
+  // recite what we remember.
+  if (context.callCount > 0) {
+    return `Hi ${name}, this is UPSY again. Where would you like to pick up?`;
+  }
+  return `Hi ${name}, this is UPSY. What would you like help with today?`;
 }

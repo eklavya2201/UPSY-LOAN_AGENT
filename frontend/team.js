@@ -21,6 +21,14 @@ const DOC_STATUS = {
   reupload: { label: "Re-upload requested", dot: "bg-amber", txt: "text-amber" },
 };
 
+// Escape before interpolating anything a person supplied. The voice surface
+// makes this load-bearing rather than hygiene: an /m account's name is typed by
+// the caller, and a call transcript is literally every word they said, rendered
+// into innerHTML on an officer's screen. Anything reaching this dashboard from
+// a caller must go through here.
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
 const rupees = (n) => {
   if (!n) return "—";
@@ -624,6 +632,147 @@ async function askReupload(leadId, docId) {
   await loadList(); selectApp(leadId);
 }
 
+// ---------- voice callers ----------
+// People who have only ever talked to UPSY on the phone, via /m. A separate
+// population from borrower files on purpose — see the note in team.html. What
+// the calls establish about someone lands in `profile`, which is rendered
+// generically here so that adding a field to what the agent captures needs no
+// change on this side.
+
+let voiceAccounts = [];
+let selectedVoice = null;
+
+async function loadVoiceAccounts() {
+  const r = await (await fetch("/api/voice/accounts")).json();
+  voiceAccounts = r.accounts || [];
+  renderVoiceList();
+}
+
+function renderVoiceList() {
+  const q = ($("#search").value || "").toLowerCase();
+  const list = voiceAccounts.filter((a) => !q || (a.name || "").toLowerCase().includes(q) || (a.phone || "").includes(q));
+  $("#pageSub").textContent = `${voiceAccounts.length} voice caller${voiceAccounts.length === 1 ? "" : "s"} · from the /m phone line.`;
+  if (!list.length) {
+    $("#appList").innerHTML = `<div class="p-6 text-sm text-on-surface-variant bg-white rounded-2xl border border-outline-variant/50">${
+      voiceAccounts.length ? "No caller matches that search." : "Nobody has signed up on the phone line yet. Accounts appear here as soon as someone creates one at /m."
+    }</div>`;
+    return;
+  }
+  $("#appList").innerHTML = list.map((a) => {
+    const sel = selectedVoice === a.accountId;
+    const facts = Object.keys(a.profile || {}).length;
+    return `
+    <div data-voice="${a.accountId}" class="voice-card cursor-pointer bg-white rounded-2xl p-4 border transition card-shadow ${sel ? "border-primary border-l-4" : "border-outline-variant/50 hover:border-primary/50"}">
+      <div class="flex justify-between items-start mb-1">
+        <div>
+          <h3 class="font-bold">${esc(a.name)}</h3>
+          <p class="text-xs text-on-surface-variant">${esc(a.phone)}</p>
+        </div>
+        <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${a.callCount ? "bg-primary-soft text-primary-dark" : "bg-surface-container text-on-surface-variant"}">${
+          a.callCount ? `${a.callCount} call${a.callCount === 1 ? "" : "s"}` : "No calls yet"
+        }</span>
+      </div>
+      <div class="flex items-center justify-between mt-2.5">
+        <span class="text-[11px] text-on-surface-variant">${facts ? `${facts} detail${facts === 1 ? "" : "s"} captured` : "Nothing captured yet"}</span>
+        <span class="text-[11px] text-on-surface-variant">${a.lastCallAt ? fmtTime(a.lastCallAt) : "signed up " + fmtTime(a.createdAt)}</span>
+      </div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll(".voice-card").forEach((el) => el.addEventListener("click", () => selectVoice(el.dataset.voice)));
+}
+
+async function selectVoice(accountId) {
+  selectedVoice = accountId;
+  renderVoiceList();
+  const r = await (await fetch(`/api/voice/accounts/${encodeURIComponent(accountId)}`)).json();
+  if (selectedVoice !== accountId) return; // clicked elsewhere while we fetched
+  renderVoiceDetail(r.account);
+}
+
+// Nested, because what the calls capture is a set of branches with sub-branches
+// under them. Depth-capped for the same reason the prompt side is.
+function factRows(value, depth = 0) {
+  if (depth > 3 || value === null || value === undefined || value === "") return "";
+  return Object.entries(value).map(([k, v]) => {
+    // Same transform as humanizeKey() in backend/voicePrompt.js, so the officer
+    // reads a field under the same name the agent was told it by.
+    const label = esc(String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase().trim());
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const inner = factRows(v, depth + 1);
+      if (!inner) return "";
+      return `<div class="mt-3"><div class="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">${label}</div><div class="pl-3 border-l-2 border-outline-variant/60">${inner}</div></div>`;
+    }
+    const shown = Array.isArray(v) ? v.join(", ") : String(v);
+    return `<div class="flex justify-between gap-4 py-1.5 border-b border-outline-variant/40 last:border-0">
+      <span class="text-xs text-on-surface-variant capitalize">${label}</span>
+      <span class="text-xs font-bold text-right">${esc(shown)}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderVoiceDetail(a) {
+  if (!a) { $("#detail").innerHTML = EMPTY_DETAIL; return; }
+  const facts = factRows(a.profile || {});
+  const calls = (a.calls || []).map((c) => {
+    const mins = Math.floor(c.seconds / 60);
+    const secs = c.seconds % 60;
+    const turns = (c.turns || []).map((t) => `
+      <div class="flex gap-2 py-1">
+        <span class="text-[10px] font-bold uppercase tracking-wider w-12 flex-none pt-0.5 ${t.role === "caller" ? "text-primary" : "text-on-surface-variant"}">${t.role === "caller" ? "Them" : "UPSY"}</span>
+        <span class="text-xs leading-relaxed">${esc(t.text)}</span>
+      </div>`).join("");
+    return `
+    <details class="bg-white rounded-2xl border border-outline-variant/50 card-shadow mb-3">
+      <summary class="cursor-pointer list-none p-4 flex justify-between items-center">
+        <span class="text-sm font-bold">${fmtTime(c.startedAt)}</span>
+        <span class="text-xs text-on-surface-variant">${mins ? `${mins}m ` : ""}${secs}s · ${(c.turns || []).length} turns</span>
+      </summary>
+      <div class="px-4 pb-4 border-t border-outline-variant/40 pt-3 max-h-96 overflow-y-auto custom-scrollbar">${turns || `<p class="text-xs text-on-surface-variant">Nothing was said on this call.</p>`}</div>
+    </details>`;
+  }).join("");
+
+  $("#detail").innerHTML = `
+    <div class="bg-white rounded-2xl p-6 border border-outline-variant/50 card-shadow mb-6">
+      <div class="flex justify-between items-start">
+        <div>
+          <h2 class="text-2xl font-bold">${esc(a.name)}</h2>
+          <p class="text-on-surface-variant text-sm mt-0.5">${esc(a.phone)} · voice caller since ${fmtTime(a.createdAt)}</p>
+        </div>
+        <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-primary-soft text-primary-dark">${a.callCount} call${a.callCount === 1 ? "" : "s"}</span>
+      </div>
+      <p class="text-[11px] text-on-surface-variant mt-4 pt-3 border-t border-outline-variant/40">
+        This person signed up on the phone line. They are not linked to a borrower file — if that is the same human as one of the applications, link them by hand.
+      </p>
+    </div>
+
+    <div class="bg-white rounded-2xl p-6 border border-outline-variant/50 card-shadow mb-6">
+      <h3 class="font-bold mb-3">What the calls established</h3>
+      ${facts || `<p class="text-sm text-on-surface-variant">Nothing captured yet. Details appear here as the agent picks them up during a call.</p>`}
+    </div>
+
+    <h3 class="font-bold mb-3">Call history</h3>
+    ${calls || `<div class="p-6 text-sm text-on-surface-variant bg-white rounded-2xl border border-outline-variant/50">No calls yet — the account exists but nobody has talked to UPSY on it.</div>`}`;
+}
+
+// ---------- list mode ----------
+let listMode = "leads";
+
+function setListMode(mode) {
+  listMode = mode === "voice" ? "voice" : "leads";
+  document.querySelectorAll(".list-mode").forEach((b) => {
+    const on = b.dataset.mode === listMode;
+    b.classList.toggle("bg-white", on);
+    b.classList.toggle("text-primary", on);
+    b.classList.toggle("card-shadow", on);
+    b.classList.toggle("text-on-surface-variant", !on);
+  });
+  $("#search").placeholder = listMode === "voice" ? "Search callers…" : "Search applicants…";
+  $("#pageTitle").textContent = listMode === "voice" ? "Voice callers" : "Applications";
+  $("#detail").innerHTML = EMPTY_DETAIL;
+  if (listMode === "voice") { selectedVoice = null; loadVoiceAccounts(); }
+  else { selected = null; renderList(); }
+}
+
 // ---------- boot ----------
 window.addEventListener("popstate", () => {
   const q = new URLSearchParams(location.search);
@@ -632,10 +781,21 @@ window.addEventListener("popstate", () => {
   else { selected = null; activeTab = "extract"; renderList(); $("#detail").innerHTML = EMPTY_DETAIL; }
 });
 
-$("#search").addEventListener("input", renderList);
+document.querySelectorAll(".list-mode").forEach((b) => b.addEventListener("click", () => setListMode(b.dataset.mode)));
+
+// One search box, two lists — it filters whichever one is on screen.
+$("#search").addEventListener("input", () => (listMode === "voice" ? renderVoiceList() : renderList()));
+
 loadList().then(() => {
   // Deep link / refresh: restore the lead + tab from the URL.
   const q = new URLSearchParams(location.search);
   if (q.get("lead")) selectApp(q.get("lead"), q.get("tab") || "extract", true);
 });
-setInterval(async () => { await loadList(); }, 7000);
+
+// Auto-refresh only the list the officer is actually looking at. Refreshing
+// both would re-render the voice list out from under a click, and re-rendering
+// the lead list while the voice view is open puts the wrong cards on screen.
+setInterval(async () => {
+  if (listMode === "voice") await loadVoiceAccounts();
+  else await loadList();
+}, 7000);

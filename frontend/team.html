@@ -129,6 +129,15 @@
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
       <!-- Applicant list -->
       <aside class="lg:col-span-4">
+        <!-- Two different populations, deliberately not merged into one list.
+             A borrower file is someone working through documents; a voice caller
+             is someone who has only ever talked to UPSY on the phone. They can
+             be the same human, but we do not assume that from a matching phone
+             number — guessing wrong merges two applicants. -->
+        <div class="flex gap-1 p-1 mb-4 bg-surface-container rounded-xl border border-outline-variant/50">
+          <button id="modeLeads" data-mode="leads" class="list-mode flex-1 h-9 rounded-lg text-xs font-bold transition bg-white text-primary card-shadow">Borrower files</button>
+          <button id="modeVoice" data-mode="voice" class="list-mode flex-1 h-9 rounded-lg text-xs font-bold transition text-on-surface-variant hover:text-primary">Voice callers</button>
+        </div>
         <div class="relative mb-4">
           <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline">search</span>
           <input id="search" class="w-full h-12 pl-10 pr-4 bg-white rounded-xl border border-outline-variant focus:border-primary focus:ring-1 focus:ring-primary outline-none transition text-sm" placeholder="Search applicants…" type="text"/>

@@ -16,6 +16,8 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 **🎁 And owning the socket gave us something the hosted agent could not.** We have the caller's words as text, so the relay emits `transcript` events. `/m`'s constellation was built to spotlight the topic being discussed and had to settle for a timed rotation because Cartesia only ever sent audio; `matchTopic()` has been waiting for exactly this event and needs no changes.
 
+**👤 `/m` has accounts now, and a second call knows what the first one said (2026-08-07).** Until today every call started from zero — the transcript existed and was thrown away the moment the socket closed. `backend/voiceAccounts.js` adds a **standalone account** (name + mobile + password, scrypt-hashed) that is deliberately *not* the lead record; the relay files each call's transcript against it, and `buildVoiceSystemPrompt()` reads it back on the next call. The team dashboard grew a **Voice callers** view. Full detail in "`/m` accounts and remembered calls". **The extractor that turns a transcript into structured branch data is the one piece not built** — it is waiting on the team's schema, and everything downstream of it already accepts any shape.
+
 **✅ And it hears you — the loop is closed (2026-08-07).** A `DEEPGRAM_API_KEY` already existed on this machine, in the separate `UPSY AI AGENT` project (`backend/.env`, same team account, `upsytechno@gmail.com`); it is now in this project's `.env` too, along with the `SARVAM_API_KEY` that was sitting beside it. `npm run voice:relay` runs the **whole loop with no microphone and no human**: it synthesises a caller with Cartesia, streams that audio in at real-time pace, and asserts Deepgram transcribes it, the brain answers, and the answer comes back as speech.
 
 ```
@@ -80,7 +82,9 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/m` — different vendor, different path.)
 6. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
 
-**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team`. The mobile surface is at **`/m`** — it renders as a phone-shaped frame on a desktop, so you do not need a device to look at it. **`npm run voice:relay` tells you whether the voice line works, and it makes the agent speak** — no server, no browser, no microphone needed.
+**Fastest way to see it work:** `npm install && npm start`, then open `http://localhost:3000` and sign in as **9999999999** (Aarav, eligible) — the demo leads live in `backend/leadSources/mockSource.js` and always exist. Team view is at `/team`. The mobile surface is at **`/m`** — it renders as a phone-shaped frame on a desktop, so you do not need a device to look at it, and it now opens on its own sign-in screen (create an account, or tap "Just talk, don't save anything"). Voice callers show up under the **Voice callers** toggle on `/team`. **`npm run voice:relay` tells you whether the voice line works, and it makes the agent speak** — no server, no browser, no microphone needed.
+
+**⚠️ `/m` accounts do not survive a Render respin.** `data/voiceAccounts.json` is gitignored local disk like everything else in `data/` — so on the free tier a caller who signs up today is a stranger again after the instance sleeps. Fine for testing, and the first thing to fix before real callers are told their calls are remembered.
 
 **Where to read next, by question:**
 
@@ -88,6 +92,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 |---|---|
 | Understand the Meet voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
 | Understand the phone-browser voice agent | "Browser voice calls (`/m`)" |
+| Work on what a call captures and remembers | "`/m` accounts and remembered calls" |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
 | Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
 | Find which file does what | "Code map" |
@@ -513,9 +518,11 @@ Their onboarding is behind a phone-OTP gate we did not sign up for, but the whol
 
 **★ is where we deliberately diverge from Profound.** Cartesia's `start` event accepts `agent.system_prompt` inline, so the entire agent definition lives in `backend/voicePrompt.js` and is reviewed in git — rather than on a vendor dashboard where it is invisible to code review and drifts silently from `eligibility.js`.
 
-**Two callers, one button:**
-- **Anonymous** (no login) — the common case. The prompt says outright that it does not know who this is, must not guess a name or amount, and should point them at "Check my eligibility" when they are ready to apply.
-- **Signed in** — `frontend/app.js` now writes `upsy_lead` to `sessionStorage`, so a call from the same tab is grounded in that applicant's real record: name, course, eligibility verdict, indicative amount, document progress, **the next document they still owe**, and the **name as it reads on their verified ID**. Same facts `liveAssistManager.buildContext()` feeds the Meet agent — names only, never ID numbers. `buildContextPayload()` is now exported from `liveAssistManager.js` so both agents share one definition of those facts instead of drifting.
+**Three kinds of caller, one button.** They are independent — someone can be any one, or the last two at once — and `mergeCallerContext()` folds them into a single context rather than picking:
+- **Anonymous** (no account, no login) — still the common case. The prompt says outright that it does not know who this is, must not guess a name or amount, and should point them at "Check my eligibility" when they are ready to apply.
+- **Signed in with an `/m` account** (2026-08-07) — name from signup, plus everything earlier calls established. See "`/m` accounts and remembered calls" below.
+- **Signed in through `/login` in the same tab** — `frontend/app.js` writes `upsy_lead` to `sessionStorage`, so the call is grounded in that applicant's real record: name, course, eligibility verdict, indicative amount, document progress, **the next document they still owe**, and the **name as it reads on their verified ID**. Same facts `liveAssistManager.buildContext()` feeds the Meet agent — names only, never ID numbers. `buildContextPayload()` is exported from `liveAssistManager.js` so both agents share one definition of those facts instead of drifting.
+  - **Where the two disagree, the lead record wins.** It is built from verified documents and the eligibility engine; an account's profile is what a conversation established, which is weaker evidence.
 
 **Voice-specific safety rules** (in `voicePrompt.js`, and genuinely different from the screen-share agent's): never ask the caller to say a PAN / Aadhaar / account number / OTP **out loud**, interrupt them if they start reading one, say it is an AI the moment it is asked, never promise an approval or a rate, and never claim to have done something it cannot do (it cannot see documents, upload anything, or check live status).
 
@@ -618,6 +625,165 @@ Two separate wallets, and the difference decides how to spend: **credits** feed 
 **Ceilings to remember:** 3 concurrent TTS requests on Pro means at most 3 simultaneous callers server-wide, and ~85 agent-minutes a month is demo scale. The hosted path cannot carry production regardless of whether the deployment pause lifts.
 
 *A shareable 3-page version of this analysis is generated at `UPSY-voice-decision-brief.pdf` (gitignored, since `*.pdf` is excluded for the real ITR fixtures).*
+
+## `/m` accounts and remembered calls (built 2026-08-07)
+
+**The gap this closes, stated plainly: every call was a first call.** The raw material was already there and was being thrown away — `voiceRelay.js` has emitted `transcript` events since the day it was written, `m.js` used them for exactly one thing (moving the constellation spotlight) and then dropped them, and `RelayCall.history` lived in memory and died with the socket. A caller could have a ten-minute conversation, hang up, ring back an hour later, and be greeted as a stranger. Nothing an officer could look at, either.
+
+Team ask, verbatim in spirit: *a login page where the user signs in with their name and details, saved to the team page; after every call it updates; and the next call from the same account already has that person's data.*
+
+### The identity decision, and why it went the way it did
+
+**It is a standalone account, not the lead record — and that was the team's explicit call.** The alternative on the table was resolving the caller's mobile to the same `leadId` that `/login` uses, so a voice caller and a borrower file would be one row. The team chose standalone, on the reasoning that `/m` is for someone on a phone who has never seen the desktop flow, and requiring them to exist in the lead source first is a step they have no reason to take.
+
+That choice has a consequence worth stating rather than discovering: **the same human can now exist twice** — once as a borrower file, once as a voice caller — and nothing joins them automatically, *even when the mobile numbers match*. This is deliberate. Guessing that two records are the same person and being wrong merges two applicants' documents and income, which is far worse than leaving them side by side. The dashboard says so directly on the caller's card: *"They are not linked to a borrower file — if that is the same human as one of the applications, link them by hand."*
+
+**Login is mobile + password; the name is captured at signup.** The ask said "name and password", and this deviates on purpose: names collide (two Rahul Sharmas cannot both own an account), while a mobile number is unique, memorable, and the one field an officer needs anyway to call someone back. Changing it is a one-line change in `findByPhone()` if the team prefers the literal reading.
+
+### Passwords — the only place in this repo that handles one
+
+`backend/voiceAccounts.js` is the sole owner. The rules are narrow because the blast radius is not:
+
+| Concern | How it is handled |
+|---|---|
+| Hashing | `scrypt` from node's own `crypto` — **no new dependency**, nothing hand-rolled. 16-byte random per-account salt, 64-byte key, stored as a self-describing `scrypt$<salt>$<hash>` so a future algorithm change is detectable rather than silently mis-verified |
+| Comparison | `timingSafeEqual`, with a length guard because it throws rather than returning false on a mismatch |
+| Escaping the module | It doesn't. `publicAccount()` is the only shape any route returns, and **`/api/voice/session` is handed that shape rather than the raw record specifically so a hash cannot end up inside a system prompt** |
+| Logging | Never — not the password, not the hash. Even the signup log line prints only the `accountId`, not the name or number, so this feature does not widen the plaintext-PII gap in Phase 2 |
+| In the browser | The password field is cleared the moment signup or login succeeds. Already out of our hands by then, but a filled password box left behind a hung-up call is an avoidable thing to leave on a shared phone |
+
+**Account enumeration is closed, and it is not free — it cost a deliberate wasted hash.** A wrong password and an unknown mobile number return the *identical* message, and the unknown-number path still runs a full scrypt against a dummy hash so the two take the same time. Without that, response latency alone answers "does this person have an account?" — which, for a lending product, tells a stranger that someone is shopping for a loan. **Measured: 115ms on both paths.** Signup is the deliberate exception and *does* say "there's already an account on this number" — the person typing already knows whether the number is theirs, and "log in instead" is the actual next step.
+
+Both endpoints share one rate limiter (10 attempts / 15 min / IP, via the existing `backend/rateLimit.js`), tighter than the voice limiter, so a script cannot walk numbers against a password list.
+
+### Sessions, and why they are long
+
+Server-side random tokens (32 bytes), stored against the account, swept opportunistically once the map passes 500 — the same reasoning as the ticket sweep in `voiceRelay.js`: an endpoint anyone can hit must not accumulate state forever because nobody logged out.
+
+**TTL is 30 days, and the token lives in `localStorage`, not `sessionStorage`.** Both follow from what the feature is *for*: the person who calls again next week. A session that expires in a day would put a password prompt in front of the call button, which is the one place this product cannot afford friction. `sessionStorage` would die with the tab and make "remember me" a lie.
+
+### Signing in is optional, and stays optional
+
+**"Just talk, don't save anything"** sits on the sign-in screen, and the anonymous call is completely unchanged. **An account buys continuity, not access.** Skipping is not remembered either — someone who skips today and has a useful call is exactly the person worth inviting again tomorrow, so the brief carries a quiet *"Sign in so UPSY remembers this"* rather than a wall.
+
+The first screen is chosen **synchronously from whether a token exists at all**, then confirmed against `/api/m/me` in the background. Waiting for that round trip would put a blank frame in front of every caller; showing the sign-in screen first would make a returning caller watch it flash past. A token that turns out to be dead bounces back and clears itself; any *other* failure (offline) keeps them on the brief, because being offline should not lock someone out of a page they are already on.
+
+### What a call now leaves behind
+
+```
+[caller on /m]  signs in ──► POST /api/m/login ──► token (localStorage, 30d)
+      │
+      │  taps Call — token goes as an Authorization header, never in the body
+      ▼
+POST /api/voice/session ──► resolveSession() ──► publicAccount()
+      │                                              │
+      │                         mergeCallerContext(leadContext, account)
+      │                                              │
+      │                              accountId is put on the relay TICKET
+      ▼                                        (server-side, not the browser)
+voiceRelay.js  ── every finished turn ──► this.turns[]
+      │
+      └── on teardown ──► recordCall(accountId, { turns, seconds, … })
+                                │
+                  data/voiceAccounts.json ──► GET /api/voice/accounts
+                                │                      │
+                    next call's system prompt      Voice callers tab
+```
+
+Two details in that diagram are load-bearing:
+
+- **The token travels as a header and the `accountId` lives on the ticket, not in the browser.** Same reasoning that keeps the system prompt server-side on this path: a value the page could also put in the request body invites trusting the wrong one, and a client that could name the account a transcript gets filed under is a client that can write into someone else's record.
+- **`sendAgentText()` sends and records in one place.** Those two had already drifted apart once — the spoken acknowledgement was emitted to the page but never entered the conversation history — and a transcript missing the lines the caller actually heard is worse than no transcript at all.
+
+**Persistence is fire-and-forget, on purpose.** `stop()` is synchronous and runs on socket close, where there is nothing left to await into; more importantly a failed disk write must never keep a call from tearing down, because a call that will not end holds an STT socket, a TTS socket and a timer open. An anonymous caller writes nothing at all — that is the intended outcome, not a gap: with no account there is nobody to show it to and no next call to inform.
+
+**No audio is stored anywhere**, on this path or any other. Only the text both sides already receive.
+
+Bounded on purpose: **20 calls per account, 300 turns per call**, oldest dropped first. The file is read whole into memory on every request, so a caller who rings twenty times must not make every later read slower — and no officer has ever needed the twenty-first call.
+
+### The next call starts where the last one ended
+
+`buildVoiceSystemPrompt()` renders whatever the account holds and tells the agent how to treat it:
+
+```
+You have spoken to this person before — 2 times, most recently on Wed Aug 05 2026.
+Greet them as someone you already know, not as a stranger.
+Here is what those earlier calls established about them:
+- applicant:
+  - name: Rohan Verma
+  - age: 24
+  - college: IIM Bangalore
+  - course: MBA
+- loan:
+  - amount discussed: ₹15 lakh
+  - type: unsecured
+- co applicant:
+  - relation: Father
+  - monthly income: ₹95,000
+How to use this: do NOT ask them again for anything already listed above. If something
+matters to your answer, confirm it in passing ("you're doing the MBA at IIM Bangalore,
+right?") rather than asking from scratch — but believe them over this list if they
+correct you, because people's plans change and this is only what they told us last time.
+```
+
+That last clause is the one that matters. The list is **what they said last time, not a verified record**, and an agent that treats a remembered figure as fact will confidently answer the wrong question — the same failure this repo already documents for vision reads. The lead record wins wherever the two disagree, because that one is built from verified documents and the eligibility engine.
+
+The introduction changes too — *"Hi Rohan, this is UPSY again. Where would you like to pick up?"* — because being asked your own name twice is the fastest way to make an agent feel like a phone tree.
+
+**`renderFacts()` walks nested objects generically and is depth-capped at 3.** This is the seam that makes the pending schema cheap: adding a branch or a sub-branch changes nothing in the prompt builder.
+
+### Team dashboard — the Voice callers view
+
+A segmented toggle above the applicant list, because these are two different populations that happen to share a screen:
+
+- **List:** name, mobile, call count, how many details have been captured, last call time.
+- **Detail:** the caller's header (with the not-linked-to-a-borrower-file warning), **what the calls established** rendered branch-by-branch with sub-fields indented under each, and **call history** — every call collapsible, expanding into the full two-sided transcript with duration and turn count.
+- The single search box filters whichever list is on screen; auto-refresh polls only the active one, since refreshing both would re-render a list out from under a click.
+
+⚠️ **`esc()` was added to `team.js` and it is load-bearing, not hygiene.** A call transcript is literally every word a caller said, rendered into `innerHTML` on an officer's screen — that is fully attacker-controlled free text arriving on an **unauthenticated dashboard**. Verified: `<img src=x onerror=alert(1)>` spoken into a call renders as inert text with no element created. **The pre-existing lead-list and detail rendering is still unescaped** and carries applicant names, vision-model reads and officer notes the same way — tracked as its own item in the status list below.
+
+### API surface
+
+| Route | Purpose |
+|---|---|
+| `POST /api/m/signup` | name + mobile + password → token. 201, or 400 invalid / 409 number taken |
+| `POST /api/m/login` | mobile + password → token. 401 on either kind of failure, identical message |
+| `POST /api/m/logout` | drops the session server-side. 204 |
+| `GET /api/m/me` | the page's boot check. 401 when the token is dead |
+| `GET /api/voice/accounts` | officer-facing list |
+| `GET /api/voice/accounts/:id` | one caller with full call history |
+
+`POST /api/voice/session` now reads an optional `Authorization: Bearer` header; everything else about it is unchanged, and a request without one is exactly as anonymous as it was before.
+
+### What was verified, and how
+
+The compositing limitation documented elsewhere in this README applies again — the browser pane does not composite, so `computer` clicks time out and nothing visual could be observed. Everything below was driven through the real handlers and asserted structurally.
+
+- ✅ **36 store-level checks** — signup, duplicate rejection, validation, login, session resolve/expire/logout, profile merge semantics (later call overwrites, absent key never erases, empty string never creates), call recording, the 20-call cap, unknown-id no-ops, and that no `scrypt$` string appears in any listing output.
+- ✅ **29 route-level checks** against the running server — including that `+91 98123 45678` and `09812345678` and `9812345678` all resolve to **one** account, that both login failure modes return an identical message, that a session response contains no system prompt, and that the officer endpoints leak no hash.
+- ✅ **The `/m` flow in a real browser** — sign-up → brief, mode toggle rewrites title/labels/`autocomplete`, wrong password stays on the sign-in screen, sign-out clears the token and returns to sign-in, a dead token bounces, skip works, the callback sheet pre-fills from the account, no horizontal overflow at 375px.
+- ✅ **Returning caller end to end** — signed in as a seeded account and got *"Welcome back, Rohan — I still have everything from last time"*, with `POST /api/voice/session` returning `known: true` and a relay URL pointing at us.
+- ✅ **Team dashboard** — toggle, both lists, nested branch rendering, transcript expansion, search scoped to the active list, and the XSS check above.
+- ⚠️ **Not exercised on a live call.** The relay's `persist()` path is code-verified and the store beneath it is tested, but no real conversation has been filed yet — see the credits note below.
+
+### ⚠️ Cartesia's free tier ran out of credits while testing this
+
+`npm run voice:relay` now fails its last two checks:
+
+```
+Insufficient credits: This request requires approximately 103 credits but you have 42 remaining.
+```
+
+**This is account balance, not a regression** — transport, single-use tickets, *does it actually speak* (468ms to first audio) and streamed sentence-by-sentence thinking all still pass. The failing checks are the synthetic-caller loop, which uses Cartesia TTS to *generate* the fake caller's voice; with no audio produced, Deepgram times out waiting. **Nobody can re-verify the hearing loop until the account is topped up** — Pro is $5/mo and the plan table in "Cartesia's plans" applies.
+
+### 🕳️ The one piece deliberately not built: the extractor
+
+**Nothing yet turns a transcript into structured facts.** `mergeProfile()`, the prompt rendering and the whole dashboard render path are in and exercised against nested test data — what is missing is the step between the transcript and `mergeProfile()`, and it is waiting on the team's branch schema: **5 branches, each with sub-branches** (the example given: *applicant* → name, college, age, …).
+
+When that schema lands, **the only new code is the extractor itself** — storage, prompt grounding and both dashboard views already accept any shape it produces. Two decisions are already made and should not be relitigated without a reason:
+
+1. **It runs off the voice critical path.** The reply latency budget is already the thing this whole stack fights (see the latency section above); an extraction call in the turn loop would spend that budget on something the caller cannot hear.
+2. **It stores what was *said* alongside any parsed value.** The brain is `openai/gpt-4o-mini` today, and this repo has already caught that model reading the same figure as ₹1,39,100 and ₹13,91,000 on separate runs. A loan amount extracted from speech and shown to an officer as fact, with no way to check it against the sentence it came from, is the income-eval bug wearing a different hat.
 
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
@@ -929,6 +1095,7 @@ npm start
 - `backend/voice-relay-check.js` — `npm run voice:relay`: runs the relay in-process on an ephemeral port and drives it with a fake browser — config → transport echo → single-use tickets → *does it actually speak* → does the brain stream sentences. Needs no running server and no real applicant data.
 - `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, and a document checklist generated from `documents.js` so it cannot drift.
 - `backend/voice-check.js` — `npm run voice:check`: walks the same chain a real call walks (env → agent exists → agent deployed → token mints → socket accepts `start` → the agent actually speaks) and stops at the first thing that is wrong. Written because an undeployed agent's `1011 Internal server error` sent a whole session through the audio code before anyone looked at the account.
+- `backend/voiceAccounts.js` — **`/m`'s own accounts**, separate from the lead source on purpose. scrypt password hashing (node crypto, no dependency), server-side sessions, per-account call history and the standing profile earlier calls established. `publicAccount()` is the only shape allowed out of the module; the hash never reaches a route, a prompt or the dashboard. File-backed in `data/voiceAccounts.json`, same ephemeral-storage caveat as the rest of `data/`.
 - `backend/callbacks.js` — the "Schedule call" queue behind `/m`: phone normalization, file-backed storage in `data/callbacks.json`, and the ops message. Deliberately a queue an officer reads, not a system of record.
 - `backend/rateLimit.js` — tiny in-memory per-key limiter. Exists because `POST /api/voice/session` is public and every hit mints a billable credential; `POST /api/voice/callback` uses it too, more generously.
 - `frontend/m.html` / `frontend/m.js` — the mobile surface: the pre-call brief, device pickers, the connecting screen, and the in-call constellation (hub, topic nodes, easing camera, timer, mute, End) plus the schedule-a-callback sheet. Self-contained CSS, no Tailwind CDN. **Its own page, not a route of the applicant SPA.**
@@ -1008,6 +1175,9 @@ npm start
 - [x] **Root-caused the `/m` call failure: the Cartesia agent was never deployed** (2026-08-07). Not our code — an undeployed agent accepts the WebSocket handshake and closes it with `1011 Internal server error`, and bisection showed every payload including a bare `{"event":"start"}` fails identically. Now caught in three places instead of costing a debugging session: `checkAgentReady()` preflights at boot and before every call, the route returns a 503 whose detail names Publish as the fix, and `npm run voice:check` (`backend/voice-check.js`) walks the whole chain. **The Publish button itself has not been pressed — that is the one remaining step**
 - [x] **`/m` rebuilt around Profound's flow** (2026-08-07, team-requested): brief with a "what we'll cover next" card → mic permission → device pickers → connecting → an in-call constellation with an easing camera. Deep-green theme, desktop phone-frame, self-contained CSS. The constellation is honestly framed as a map of what you can ask, since we get audio frames and not a transcript — `matchTopic()` upgrades it automatically if a real transcript event ever turns up
 - [x] **"Schedule call" is a real callback request** (2026-08-07): `POST /api/voice/callback` + `backend/callbacks.js` + `GET /api/voice/callbacks`, with phone normalization, an ops notification and a `callback_requested` timeline entry. Closes the "anonymous caller evaporates" gap — including for callers who cannot get through at all
+- [x] **`/m` accounts + remembered calls** (2026-08-07): `backend/voiceAccounts.js` (scrypt passwords, sessions, call history), a sign-in screen on `/m` that is skippable by design, the relay filing each call's transcript against the account, `buildVoiceSystemPrompt()` grounding the next call in the last one, and a **Voice callers** view on the team dashboard. See "`/m` has its own accounts now" above — including the one part deliberately not built, the extractor that fills the branch structure
+- [ ] **The `/m` branch extractor** — pull the 5 branches and their sub-fields out of the live transcript and into `mergeProfile()`. Storage, prompt grounding and the dashboard already accept any shape; only the extractor is missing, and it is waiting on the team's schema
+- [ ] **Escape the lead list in `team.js`** — `esc()` exists and the voice views use it; the older applicant-list and detail rendering still interpolate names and notes straight into `innerHTML`
 - [ ] **Three more lenders' field guides** — same pattern as `avanse.js`, pending screenshots/walkthroughs of each
 
 ## Next (roadmap) — in likely priority order for a new session
@@ -1176,6 +1346,9 @@ This is the README's old **Step 2 — in-app voice widget** (below), which was a
 
 **Still open, and honest about it:**
 - [ ] **Nobody has actually held a conversation with it.** Every link is verified and the loop closes end to end, but the only "caller" so far has been a synthesised voice speaking one clean sentence into a socket. A real person, on a phone, in a noisy room, interrupting, is a different test.
+- [ ] **Top up Cartesia — the harness cannot complete without it.** `npm run voice:relay` now fails its hearing checks on `Insufficient credits` (42 remaining, ~103 needed). Speaking and thinking still pass; the synthetic *caller* is what cannot be generated. $5 Pro, see "Cartesia's plans".
+- [ ] **Build the branch extractor** — the only missing piece of the `/m` account work, waiting on the team's 5-branch schema. Storage, prompt grounding and the dashboard already take any shape; see "`/m` accounts and remembered calls".
+- [ ] **`data/voiceAccounts.json` is ephemeral on Render's free tier**, so "your last call is remembered" is a promise the deployment cannot currently keep across a respin. Needs a persistent disk or a real database before anyone is told otherwise.
 - [ ] **Re-tune endpointing against real callers.** 800ms was chosen from one synthetic sentence. People who pause mid-thought need more; clipped Q-and-A needs less. `npm run voice:relay` reports how many turns one spoken thought got split into — that is the number to watch.
 - [ ] **Test on a real phone, iOS Safari first.** Unchanged from the Cartesia path and still unobserved: the `AudioContext` resume-inside-the-tap and the 48kHz resample fallback are reasoned, not seen.
 - [ ] **Watch for playback stutter.** One probe had Cartesia deliver 6.13s of audio over 16.9s of wall clock — slower than real time, which would drain `voiceClient.js`'s playback queue and produce gaps. The browser test showed 2.06s continuous with no gaps, so this may have been free-tier throttling on a cold socket. Measure it on a long reply before trusting it.

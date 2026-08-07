@@ -17,7 +17,20 @@
   const $ = (id) => document.getElementById(id);
 
   const el = {
-    views: { brief: $("viewBrief"), connecting: $("viewConnecting"), call: $("viewCall") },
+    views: { auth: $("viewAuth"), brief: $("viewBrief"), connecting: $("viewConnecting"), call: $("viewCall") },
+    authTitle: $("authTitle"),
+    authSub: $("authSub"),
+    tabLogin: $("tabLogin"),
+    tabSignup: $("tabSignup"),
+    authNameField: $("authNameField"),
+    authName: $("authName"),
+    authPhone: $("authPhone"),
+    authPassword: $("authPassword"),
+    authWhy: $("authWhy"),
+    authMsg: $("authMsg"),
+    authSubmit: $("authSubmit"),
+    skipAuth: $("skipAuth"),
+    accountRow: $("accountRow"),
     briefSub: $("briefSub"),
     briefMsg: $("briefMsg"),
     devices: $("devices"),
@@ -56,6 +69,215 @@
 
   function showView(name) {
     Object.keys(el.views).forEach((k) => el.views[k].classList.toggle("on", k === name));
+  }
+
+  // ── The account ───────────────────────────────────────────────────────────
+  // /m's own sign-in, separate from the phone lookup behind /login. It exists
+  // for one reason: a call that is not attached to anything teaches us nothing
+  // and leaves the caller starting from scratch every time.
+  //
+  // localStorage, not sessionStorage — the whole point is the person who calls
+  // again next week, and sessionStorage dies with the tab. The token is a
+  // server-side session id and carries nothing readable on its own.
+  const TOKEN_KEY = "upsy_m_token";
+
+  let account = null;
+  let authMode = "login";
+
+  function storedToken() {
+    try {
+      return localStorage.getItem(TOKEN_KEY);
+    } catch (e) {
+      // Private mode in some browsers throws on access rather than returning
+      // null. That downgrades the caller to anonymous, which is a working path.
+      return null;
+    }
+  }
+
+  function keepToken(token) {
+    try {
+      if (token) localStorage.setItem(TOKEN_KEY, token);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (e) {
+      /* see storedToken */
+    }
+  }
+
+  async function api(path, options) {
+    const opts = options || {};
+    const token = storedToken();
+    const headers = {};
+    if (opts.body) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = "Bearer " + token;
+    const res = await fetch(path, {
+      method: opts.method || "GET",
+      headers: headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    let data = null;
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = {};
+    }
+    return { ok: res.ok, status: res.status, data: data };
+  }
+
+  // What the brief says about who is signed in — and, when nobody is, an
+  // unpushy way back to the sign-in screen for someone who skipped it.
+  function renderAccountRow() {
+    el.accountRow.innerHTML = "";
+    if (account) {
+      const who = document.createElement("span");
+      who.textContent = "Signed in as " + account.name.split(/\s+/)[0];
+      const dot = document.createElement("span");
+      dot.setAttribute("aria-hidden", "true");
+      dot.textContent = "·";
+      const out = document.createElement("button");
+      out.className = "linkish";
+      out.type = "button";
+      out.textContent = "Sign out";
+      out.addEventListener("click", signOut);
+      el.accountRow.append(who, dot, out);
+    } else {
+      const link = document.createElement("button");
+      link.className = "linkish";
+      link.type = "button";
+      link.textContent = "Sign in so UPSY remembers this";
+      link.addEventListener("click", function () {
+        setAuthMode("login");
+        showView("auth");
+      });
+      el.accountRow.appendChild(link);
+    }
+    el.accountRow.hidden = false;
+  }
+
+  function applyAccount(next) {
+    account = next || null;
+    if (account) {
+      const first = account.name.split(/\s+/)[0];
+      el.briefSub.textContent = account.callCount
+        ? "Welcome back, " + first + " — I still have everything from last time."
+        : "Hi " + first + " — ask me anything about funding your studies.";
+    }
+    renderAccountRow();
+  }
+
+  function setAuthMode(mode) {
+    authMode = mode === "signup" ? "signup" : "login";
+    const isSignup = authMode === "signup";
+    el.tabLogin.setAttribute("aria-selected", String(!isSignup));
+    el.tabSignup.setAttribute("aria-selected", String(isSignup));
+    el.authNameField.hidden = !isSignup;
+    el.authSubmit.textContent = isSignup ? "Create account" : "Log in";
+    el.authTitle.innerHTML = isSignup ? "Talk to UPSY,<br/>and be remembered" : "Pick up where<br/>you left off";
+    el.authSub.textContent = isSignup
+      ? "One account, so every call builds on the last one instead of starting over."
+      : "Sign in so UPSY remembers this conversation the next time you call.";
+    // Tell the password manager which kind of field this is, or it offers to
+    // save a login as a new password and vice versa.
+    el.authPassword.setAttribute("autocomplete", isSignup ? "new-password" : "current-password");
+    el.authPassword.setAttribute("placeholder", isSignup ? "At least 8 characters" : "Your password");
+    el.authMsg.textContent = "";
+  }
+
+  async function submitAuth() {
+    const phone = el.authPhone.value.trim();
+    const password = el.authPassword.value;
+    const name = el.authName.value.trim();
+
+    // Checked here as well as on the server so the common mistakes cost no
+    // round trip — the server remains the authority, this is only courtesy.
+    if (authMode === "signup" && name.length < 2) {
+      el.authMsg.textContent = "Please tell us your name.";
+      el.authName.focus();
+      return;
+    }
+    if (!phone) {
+      el.authMsg.textContent = "Enter your mobile number.";
+      el.authPhone.focus();
+      return;
+    }
+    if (!password) {
+      el.authMsg.textContent = "Enter your password.";
+      el.authPassword.focus();
+      return;
+    }
+
+    el.authMsg.textContent = "";
+    el.authSubmit.disabled = true;
+    const label = el.authSubmit.textContent;
+    el.authSubmit.textContent = authMode === "signup" ? "Creating…" : "Signing in…";
+    try {
+      const res = await api(authMode === "signup" ? "/api/m/signup" : "/api/m/login", {
+        method: "POST",
+        body: authMode === "signup" ? { name: name, phone: phone, password: password } : { phone: phone, password: password },
+      });
+      if (!res.ok) {
+        el.authMsg.textContent = res.data.error || "That didn't work. Please try again.";
+        // A number that already has an account is not really a failure — it is
+        // the wrong tab. Move them rather than making them find it.
+        if (res.status === 409) setAuthMode("login");
+        return;
+      }
+      keepToken(res.data.token);
+      // Clear the password from the DOM the moment it is no longer needed. It
+      // is already out of our hands, but a filled password field left behind a
+      // hung-up call is an avoidable thing to leave on a shared phone.
+      el.authPassword.value = "";
+      applyAccount(res.data.account);
+      showView("brief");
+    } catch (e) {
+      el.authMsg.textContent = "Couldn't reach UPSY just now. Check your connection and try again.";
+    } finally {
+      el.authSubmit.disabled = false;
+      el.authSubmit.textContent = label;
+    }
+  }
+
+  async function signOut() {
+    api("/api/m/logout", { method: "POST" }).catch(function () {
+      // The local token is dropped either way — a caller tapping Sign out must
+      // end up signed out even if the network does not cooperate.
+    });
+    keepToken(null);
+    account = null;
+    el.briefSub.textContent = "I'll help you work out what you can borrow and what you'll need to get there.";
+    setAuthMode("login");
+    el.authPhone.value = "";
+    el.authPassword.value = "";
+    showView("auth");
+  }
+
+  // Decide the first screen synchronously from whether a token exists at all,
+  // then confirm with the server in the background. Waiting for /api/m/me
+  // before showing anything would put a blank frame in front of every caller;
+  // showing the sign-in screen first would make a returning caller watch it
+  // flash past. A token that turns out to be dead bounces back here.
+  async function bootAccount() {
+    if (!storedToken()) {
+      setAuthMode("login");
+      showView("auth");
+      return;
+    }
+    showView("brief");
+    renderAccountRow();
+    const res = await api("/api/m/me").catch(function () {
+      return { ok: false, status: 0, data: {} };
+    });
+    if (res.ok) {
+      applyAccount(res.data.account);
+      return;
+    }
+    // 401 means the session really is gone (expired, or signed out elsewhere).
+    // Any other failure is the network, and the caller keeps the brief — being
+    // offline should not lock someone out of a page they were already on.
+    if (res.status === 401) {
+      keepToken(null);
+      setAuthMode("login");
+      showView("auth");
+    }
   }
 
   // ── The constellation ─────────────────────────────────────────────────────
@@ -408,6 +630,10 @@
     try {
       const started = await window.UpsyVoice.start({
         leadId: leadId,
+        // The server reads the caller's account from this and files the call
+        // against it. Absent for someone who skipped sign-in, which is a
+        // supported call, just not a remembered one.
+        authToken: storedToken(),
         deviceId: el.micSelect.value || null,
         sinkId: el.spkWrap.hidden ? null : el.spkSelect.value || null,
         onStatus: function (state, detail) {
@@ -497,7 +723,16 @@
     void el.sheet.offsetHeight;
     el.sheet.classList.add("open");
     el.cbMsg.textContent = "";
-    setTimeout(function () { el.cbName.focus({ preventScroll: true }); }, 260);
+    // A signed-in caller has already told us both of these once. Asking again
+    // is the thing an account is supposed to stop.
+    if (account) {
+      if (!el.cbName.value) el.cbName.value = account.name;
+      if (!el.cbPhone.value) el.cbPhone.value = account.phone;
+    }
+    setTimeout(function () {
+      // Land on the first field they still have to fill.
+      (account ? el.cbWhen : el.cbName).focus({ preventScroll: true });
+    }, 260);
   }
 
   function closeSchedule() {
@@ -552,6 +787,25 @@
   }
 
   // ── Wiring ────────────────────────────────────────────────────────────────
+  el.tabLogin.addEventListener("click", function () { setAuthMode("login"); });
+  el.tabSignup.addEventListener("click", function () { setAuthMode("signup"); });
+  el.authSubmit.addEventListener("click", submitAuth);
+  el.skipAuth.addEventListener("click", function () {
+    // Deliberately does not remember the choice. Someone who skips today and
+    // has a useful call is exactly the person worth inviting again tomorrow,
+    // and the invitation on the brief is where that happens.
+    showView("brief");
+    renderAccountRow();
+  });
+  // Enter anywhere in the form submits it — on a phone keyboard the Go key is
+  // where the thumb already is, and hunting for the button below the fold is
+  // the kind of small friction that ends a sign-up.
+  [el.authName, el.authPhone, el.authPassword].forEach(function (input) {
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); submitAuth(); }
+    });
+  });
+
   el.permBtn.addEventListener("click", requestPermission);
   el.joinBtn.addEventListener("click", beginCall);
   el.hangupBtn.addEventListener("click", endCall);
@@ -589,8 +843,10 @@
     });
   }
 
-  // Greet a signed-in caller by name — one round trip already told app.js who
-  // they are, so there is no reason for this page to be anonymous about it.
+  // Greet a caller who signed in through /login in this tab — one round trip
+  // already told app.js who they are. An /m account, if there is one, overrides
+  // this a moment later in bootAccount(): it is the identity this page owns and
+  // the one the call is actually filed against.
   const knownName = sessionStorage.getItem("upsy_name");
   if (knownName) {
     el.briefSub.textContent =
@@ -599,6 +855,7 @@
 
   buildMap();
   drawMap();
+  bootAccount();
 
   // Stop burning frames while the page is backgrounded, and only resume if a
   // call is actually on screen.

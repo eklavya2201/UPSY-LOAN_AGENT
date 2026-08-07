@@ -209,15 +209,47 @@ async function loadCallerContext(leadId) {
   }
 }
 
+/**
+ * Fold an /m account into the caller context.
+ *
+ * The two identities are independent and both optional — someone can have an
+ * account and no lead, a lead and no account, or both — so this merges rather
+ * than choosing. The lead record wins wherever they disagree: it is built from
+ * verified documents and the eligibility engine, whereas the account's profile
+ * is what a conversation established, which is weaker evidence.
+ *
+ * `priorFacts` is deliberately opaque here. Whatever the call captures gets
+ * stored under it and rendered generically by voicePrompt.js, so adding a field
+ * to what the agent collects needs no change in this file.
+ */
+function mergeCallerContext(leadContext, account) {
+  if (!leadContext && !account) return null;
+  const context = { ...(leadContext || {}) };
+  if (account) {
+    context.accountId = account.accountId;
+    if (!context.name) context.name = account.name;
+    context.callCount = account.callCount || 0;
+    context.lastCallAt = account.lastCallAt || null;
+    if (account.profile && Object.keys(account.profile).length) {
+      context.priorFacts = account.profile;
+    }
+  }
+  return context;
+}
+
 // Our own relay. The prompt is deliberately NOT returned to the browser here —
 // it is stored server-side against the ticket and read back when the socket
 // opens. On the Cartesia path the browser had to forward the prompt because the
 // socket went straight to the vendor; now that the socket terminates on our own
 // server, sending the agent's instructions to the client and trusting them back
 // would be handing an anonymous caller an edit box for the loan rules.
-function createRelaySession({ leadId, context, origin, language }) {
+function createRelaySession({ leadId, accountId, context, origin, language }) {
   const token = mintRelayTicket({
     leadId,
+    // The relay writes the finished call against this. On the ticket rather
+    // than sent by the browser, for the same reason the prompt is: the client
+    // must not be able to name the account a transcript gets filed under.
+    accountId,
     language,
     systemPrompt: buildVoiceSystemPrompt(context),
     introduction: buildIntroduction(context),
@@ -246,19 +278,23 @@ function createRelaySession({ leadId, context, origin, language }) {
  *   for an anonymous caller from the public mobile page. An unknown leadId is
  *   treated as anonymous rather than failing: a stale id in someone's tab
  *   should downgrade the call, never block it.
+ * @param {object|null} opts.account - an /m account in publicAccount() shape,
+ *   already resolved from the request's bearer token, or null. Never the raw
+ *   record — see the note at the call site. Independent of leadId; both, either
+ *   or neither may be present. See mergeCallerContext().
  * @param {string|null} opts.origin - this server's own origin, used to build
  *   the relay URL on the "upsy" path. Ignored by the Cartesia path.
  * @param {string} opts.language - "en" today; the seam for Hindi via Sarvam.
  * @returns {Promise<object>} everything the browser needs to open the socket.
  */
-export async function createVoiceSession({ leadId = null, origin = null, language = "en" } = {}) {
+export async function createVoiceSession({ leadId = null, account = null, origin = null, language = "en" } = {}) {
   const err = voiceConfigError();
   if (err) throw Object.assign(new Error(err), { code: "NOT_CONFIGURED" });
 
-  const context = await loadCallerContext(leadId);
+  const context = mergeCallerContext(await loadCallerContext(leadId), account);
 
   if (PROVIDER === "upsy") {
-    return createRelaySession({ leadId, context, origin, language });
+    return createRelaySession({ leadId, accountId: account?.accountId || null, context, origin, language });
   }
 
   // Cheap after the first success (cached for 10 minutes) and it converts the

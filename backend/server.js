@@ -28,6 +28,7 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
+import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail } from "./voiceAccounts.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -883,6 +884,109 @@ app.post("/api/assist", async (req, res) => {
   }
 });
 
+// ── /m accounts ─────────────────────────────────────────────────────────────
+// The mobile surface has its own sign-in, separate from the phone-number lookup
+// behind /login — see the header of backend/voiceAccounts.js for why. This is
+// the only place in the repo that handles a password, so the rules are narrow
+// and worth stating: the plaintext never leaves the request handler, never
+// reaches a log line, and never gets stored; only publicAccount() shapes ever
+// go back out.
+
+// Deliberately tighter than the voice limiter and shared between signup and
+// login, so a script cannot walk mobile numbers against a password list. Ten
+// attempts is generous for someone genuinely mistyping their own password.
+const accountLimiter = createRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000 });
+
+function bearerToken(req) {
+  const header = String(req.get("authorization") || "");
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1].trim() : null;
+}
+
+// Resolve the caller's account, or null. Never throws — an expired or forged
+// token is an anonymous caller, not an error, because every /m surface has a
+// working anonymous path already.
+async function accountFromRequest(req) {
+  try {
+    return await resolveSession(bearerToken(req));
+  } catch (e) {
+    console.error("[m:auth] session lookup failed:", e.message);
+    return null;
+  }
+}
+
+app.post("/api/m/signup", async (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (accountLimiter.check(ip)) {
+    return res.status(429).json({ error: "Too many attempts. Please wait a few minutes and try again." });
+  }
+  try {
+    const { token, account } = await createAccount({
+      name: req.body?.name,
+      // Normalized here rather than in the store, so signup and login agree on
+      // what "the same number" means and a +91 prefix cannot create a second
+      // account for someone who already has one.
+      phone: normalizePhone(req.body?.phone),
+      password: req.body?.password,
+    });
+    // accountId only. The name and number are on the record already; putting
+    // them in the log too would widen the plaintext-PII gap flagged in Phase 2
+    // for no operational gain.
+    console.log(`[m:auth] account created (${account.accountId})`);
+    res.status(201).json({ token, account });
+  } catch (e) {
+    if (e.code === "INVALID") return res.status(400).json({ error: e.message });
+    if (e.code === "TAKEN") return res.status(409).json({ error: e.message });
+    console.error("[m:auth] signup failed:", e.message);
+    res.status(500).json({ error: "We couldn't create your account just now. Please try again." });
+  }
+});
+
+app.post("/api/m/login", async (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (accountLimiter.check(ip)) {
+    return res.status(429).json({ error: "Too many attempts. Please wait a few minutes and try again." });
+  }
+  try {
+    const { token, account } = await authenticate({
+      phone: normalizePhone(req.body?.phone),
+      password: req.body?.password,
+    });
+    console.log(`[m:auth] signed in (${account.accountId})`);
+    res.json({ token, account });
+  } catch (e) {
+    // 401 for bad credentials, and the message is the store's deliberately
+    // ambiguous one — see authenticate().
+    if (e.code === "BAD_CREDENTIALS") return res.status(401).json({ error: e.message });
+    console.error("[m:auth] login failed:", e.message);
+    res.status(500).json({ error: "We couldn't sign you in just now. Please try again." });
+  }
+});
+
+app.post("/api/m/logout", async (req, res) => {
+  await endSession(bearerToken(req));
+  res.status(204).end();
+});
+
+// Who am I? The page calls this on load with whatever token it kept, so a
+// returning caller lands on the brief rather than on a password prompt.
+app.get("/api/m/me", async (req, res) => {
+  const account = await accountFromRequest(req);
+  if (!account) return res.status(401).json({ error: "Not signed in." });
+  res.json({ account: publicAccount(account) });
+});
+
+// The officer-facing side: every voice caller, and one caller's full history.
+app.get("/api/voice/accounts", async (_req, res) => {
+  res.json({ accounts: await listAccounts() });
+});
+
+app.get("/api/voice/accounts/:accountId", async (req, res) => {
+  const detail = await getAccountDetail(req.params.accountId);
+  if (!detail) return res.status(404).json({ error: "No such account." });
+  res.json({ account: detail });
+});
+
 // ── Browser voice calls (mobile surface) ────────────────────────────────────
 // Mints a short-lived credential so the caller's phone can open a voice socket
 // directly to the provider. Unlike live-assist there is no meeting, no child
@@ -902,16 +1006,31 @@ app.post("/api/voice/session", async (req, res) => {
   }
   try {
     const leadId = req.body?.leadId ? String(req.body.leadId).slice(0, 64) : null;
+    // Two independent ways to be known on this call, and they do not conflict:
+    // an /m account (a token in the Authorization header) and a lead id from a
+    // /login session in the same tab. The account is read from the token rather
+    // than the body on purpose — a caller must not be able to name someone
+    // else's account and be told their facts.
+    const account = await accountFromRequest(req);
     // Our own relay needs to hand the browser a URL back to this server, and
     // only the request knows what this server is reachable as — behind Render's
     // proxy the protocol is in x-forwarded-proto, not req.protocol.
     const proto = req.get("x-forwarded-proto") || req.protocol || "http";
     const session = await createVoiceSession({
       leadId,
+      // Shaped, not raw. The prompt builder and the relay ticket have no use for
+      // a password hash, and the surest way to keep one out of a system prompt
+      // is for it never to be in the object that builds it.
+      account: publicAccount(account),
       origin: `${proto}://${req.get("host")}`,
       language: req.body?.language === "hi" ? "hi" : "en",
     });
-    console.log(`[voice] session started (${session.caller.known ? `lead ${leadId}` : "anonymous"})`);
+    const who = session.caller.known
+      ? `lead ${leadId}`
+      : account
+        ? `account ${account.accountId}`
+        : "anonymous";
+    console.log(`[voice] session started (${who})`);
     // Best-effort timeline entry: a call that isn't recorded on the lead is
     // still a call worth having, so never fail the session over this.
     if (leadId && session.caller.known) {

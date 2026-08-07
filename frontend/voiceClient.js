@@ -523,9 +523,16 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
   // out of the page and reused.
   async function startVoiceCall(options) {
     const opts = options || {};
+    // authToken travels as a header, never in the body: the server reads the
+    // caller's identity from it, and a value the page could also put in the
+    // body would invite exactly the confusion of trusting the wrong one. This
+    // stays inside the file's "knows nothing about loans" rule — it is opaque
+    // transport credential, the same as the signed URL it comes back with.
+    const headers = { "Content-Type": "application/json" };
+    if (opts.authToken) headers.Authorization = "Bearer " + opts.authToken;
     const res = await fetch("/api/voice/session", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify({ leadId: opts.leadId || null }),
     });
     const session = await res.json().catch(() => ({}));
