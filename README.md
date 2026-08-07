@@ -6,7 +6,7 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 ## 🧭 Start here (orientation for a new session)
 
-**Where the project is (2026-08-07):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**, and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
+**Where the project is (2026-08-07):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**  ,https://upsy-loan-agent.onrender.com/m and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
 
 **🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — Deepgram for hearing, Claude Haiku 4.5 for thinking, Cartesia Sonic for speaking, turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` is the default and it is what `/m` uses.**
 
