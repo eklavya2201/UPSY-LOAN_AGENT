@@ -259,8 +259,20 @@ export async function authenticate({ phone, password }) {
  * most recent thing the caller said about themselves is the thing to believe —
  * but a key that is absent or null in `facts` never erases what is already
  * known, so one call that failed to cover a topic cannot wipe it.
+ *
+ * The merge is RECURSIVE, and that is load-bearing now that the profile is a
+ * set of branches rather than a flat bag: a call that establishes only the
+ * co-applicant's name must not replace the whole coApplicant branch and take
+ * their income with it. Arrays replace wholesale — a partial array is not a
+ * fact, and merging two lists element by element means nothing here.
+ *
+ * @param {string[]} [opts.replace] - top-level keys to overwrite instead of
+ *   merging. For values that are computed from the whole profile rather than
+ *   accumulated: a FOIR left over from a call where the income was wrong is
+ *   worse than no FOIR. The caller names them; this module still does not know
+ *   what they mean.
  */
-export async function mergeProfile(accountId, facts) {
+export async function mergeProfile(accountId, facts, { replace = [] } = {}) {
   if (!accountId || !facts || typeof facts !== "object") return null;
   const db = await load();
   const account = db.accounts[accountId];
@@ -269,11 +281,24 @@ export async function mergeProfile(accountId, facts) {
   account.profile = account.profile || {};
   for (const [key, value] of Object.entries(facts)) {
     if (value === null || value === undefined || value === "") continue;
-    account.profile[key] = value;
+    if (replace.includes(key)) account.profile[key] = value;
+    else mergeInto(account.profile, key, value);
   }
   account.updatedAt = new Date().toISOString();
   await save();
   return account.profile;
+}
+
+function mergeInto(target, key, value) {
+  const isPlainObject = (v) => v && typeof v === "object" && !Array.isArray(v);
+  if (!isPlainObject(value) || !isPlainObject(target[key])) {
+    target[key] = value;
+    return;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    if (v === null || v === undefined || v === "") continue;
+    mergeInto(target[key], k, v);
+  }
 }
 
 /**
@@ -305,6 +330,17 @@ export async function recordCall(accountId, call) {
   account.updatedAt = entry.endedAt;
   await save();
   return entry;
+}
+
+/**
+ * Just the standing profile. Its own accessor because the extractor needs to
+ * compute the derived branch against what the profile is about to BE — the
+ * merge of old and new — and pulling the whole account with its call history to
+ * read one key is the kind of thing that becomes a habit.
+ */
+export async function getProfile(accountId) {
+  const db = await load();
+  return db.accounts[accountId]?.profile || {};
 }
 
 /** Newest call first. */
