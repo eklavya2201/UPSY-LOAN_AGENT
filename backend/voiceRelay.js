@@ -32,7 +32,8 @@ import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HIS
 import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
 import { recordCall } from "./voiceAccounts.js";
-import { buildIntroduction } from "./voicePrompt.js";
+import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
+import { fileCall } from "./callExtract.js";
 
 // Register the lines the agent repeats across calls, so each is synthesised once
 // and replayed thereafter. The anonymous opener qualifies because it is a fixed
@@ -103,6 +104,18 @@ const BARGE_IN_MIN_WORDS = Number(process.env.VOICE_BARGE_IN_MIN_WORDS || 2);
 // Pacing that IS on: the between-sentence pause below, which is safe because a
 // sentence boundary is a place we actually know about rather than one we guess.
 const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 0);
+
+// How often the call is read into the caller's file while it is still running.
+//
+// Every finished call is extracted at teardown regardless; this is only about
+// whether an officer watching the dashboard sees the branches fill in during a
+// ten-minute call or all at once when it ends. Six caller turns is roughly two
+// minutes of talking, so a normal enquiry gets one or two mid-call passes.
+//
+// It is safe to run inside a live call for one reason only: nothing awaits it.
+// It is a separate request on a separate socket, started and abandoned — see
+// captureFacts(). Set to 0 to extract at teardown and nowhere else.
+const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 6);
 
 // Silent PCM at the pipeline's one and only sample rate. Int16 zeroes.
 function silence(ms) {
@@ -192,6 +205,11 @@ class RelayCall {
     // text the browser already receives, not a recording: no audio is written
     // anywhere, on this path or any other.
     this.turns = [];
+    // Caller turns only, and only for deciding when to read the call into the
+    // file mid-way. The agent's own lines do not establish facts about anyone.
+    this.callerTurns = 0;
+    this.extracting = false;
+    this.queuedCapture = null;
     // Everything spoken goes through one chain. The TTS socket carries a single
     // context at a time, so two overlapping speak() calls would cut each other
     // off — and the acknowledgement is deliberately spoken WHILE the model is
@@ -441,6 +459,13 @@ class RelayCall {
     // whereas Deepgram's interim fragments are the same words several times
     // over, and a transcript full of half-sentences is not worth keeping.
     this.turns.push({ role: "caller", text, at: new Date().toISOString() });
+    this.callerTurns++;
+    if (EXTRACT_EVERY_TURNS > 0 && this.callerTurns % EXTRACT_EVERY_TURNS === 0) {
+      // Not awaited, and deliberately fired here rather than after the reply:
+      // the model is about to spend 1.5s writing a sentence, which is dead time
+      // this can run inside. See captureFacts() for why it cannot block a turn.
+      this.captureFacts("mid-call");
+    }
 
     // Did we already start thinking about exactly this during the silence?
     const spec = this.spec;
@@ -585,6 +610,86 @@ class RelayCall {
         if (entry) this.log(`saved ${this.turns.length} turns to account ${this.ticket.accountId}`);
       })
       .catch((e) => console.error("[voice:relay] could not save the call:", e.message));
+
+    // Read the conversation into the caller's file. After recordCall rather
+    // than inside it: the transcript is the record, and it must land even if
+    // the extractor is unconfigured, rate-limited or wrong.
+    this.captureFacts("call ended");
+  }
+
+  /**
+   * Rebuild the standing instructions against what is now known.
+   *
+   * Only the system prompt changes; `this.history` is left exactly as it is,
+   * because rewriting what was already said would be rewriting the call. The
+   * next turn is generated against the new prompt and the old conversation,
+   * which is precisely the intended effect: same conversation, better-informed
+   * agent. A rebuild that throws must never take the call down, so the old
+   * prompt simply stays in place.
+   */
+  refreshPrompt(profile) {
+    if (!this.ticket.context || this.closed) return;
+    try {
+      const before = this.ticket.systemPrompt;
+      const rebuilt = buildVoiceSystemPrompt({ ...this.ticket.context, priorFacts: profile });
+      if (rebuilt && rebuilt !== before) {
+        this.ticket.systemPrompt = rebuilt;
+        this.log("re-aimed: the agenda and the document list now match what this call has established");
+      }
+    } catch (e) {
+      console.error("[voice:relay] could not rebuild the prompt mid-call:", e.message);
+    }
+  }
+
+  /**
+   * Turn what has been said so far into branch facts on the caller's account.
+   *
+   * ── Why this can run during a live call ───────────────────────────────────
+   * Nothing awaits it. It is started and abandoned, on its own socket, and the
+   * only thing it touches on the way back is the account file. The relay's
+   * latency budget is spent on hearing → thinking → speaking; this sits beside
+   * that chain, never in it. Only one pass runs at a time, because the model can
+   * take longer than six more caller turns on a slow day and two passes over the
+   * same transcript would race each other into the same record for no benefit.
+   *
+   * A request arriving while one is in flight is QUEUED, not dropped — the
+   * teardown pass is the important one and it is precisely the one that would
+   * collide with a mid-call pass that has not come back yet. Only the latest is
+   * kept: they all read the same growing transcript, so the newest request
+   * covers everything the ones behind it would have.
+   *
+   * Anonymous callers write nothing, same as the transcript: no account, nobody
+   * to show it to, and no next call to inform.
+   */
+  captureFacts(reason) {
+    const accountId = this.ticket.accountId;
+    if (!accountId) return;
+    if (this.extracting) {
+      this.queuedCapture = reason;
+      return;
+    }
+    // Snapshot: the array keeps growing while the model reads it, and an
+    // extraction should describe a fixed transcript rather than a moving one.
+    const turns = this.turns.slice();
+    if (!turns.some((t) => t.role === "caller")) return;
+
+    this.extracting = true;
+    fileCall({ accountId, turns, reason })
+      .then((result) => {
+        if (result?.summary) this.log(result.summary);
+        // Re-aim the agent at what is still missing, and at the shorter
+        // document list the new facts imply. Cheap (a pure rebuild, no
+        // network) and it is what makes the narrowing happen inside the call
+        // rather than only on the next one. The conversation history is
+        // untouched — only the standing instructions change.
+        if (result?.profile) this.refreshPrompt(result.profile);
+      })
+      .finally(() => {
+        this.extracting = false;
+        const queued = this.queuedCapture;
+        this.queuedCapture = null;
+        if (queued) this.captureFacts(queued);
+      });
   }
 
   stop(reason) {

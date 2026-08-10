@@ -253,6 +253,14 @@ function createRelaySession({ leadId, accountId, context, origin, language }) {
     language,
     systemPrompt: buildVoiceSystemPrompt(context),
     introduction: buildIntroduction(context),
+    // Kept so the relay can REBUILD the prompt mid-call once it has read new
+    // facts out of the conversation. Without it the document list and the
+    // agenda would be frozen at whatever was known when the phone rang, and a
+    // caller who says "my father is salaried" in minute two would still be
+    // hearing about three years of ITR in minute five. Server-side only — this
+    // is the same object the prompt is built from, and it never goes to the
+    // browser for the reason stated above.
+    context,
   });
 
   const wsOrigin = String(origin || "").replace(/^http/, "ws");
