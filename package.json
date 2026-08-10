@@ -15,7 +15,8 @@
     "assist:call": "node backend/liveAssist.js",
     "voice:check": "node backend/voice-check.js",
     "voice:relay": "node backend/voice-relay-check.js",
-    "eval:voice": "node backend/eval-voice-latency.js"
+    "eval:voice": "node backend/eval-voice-latency.js",
+    "eval:extract": "node backend/eval-extract.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
