@@ -27,6 +27,8 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 **🎁 And owning the socket gave us something the hosted agent could not.** We have the caller's words as text, so the relay emits `transcript` events. `/m`'s constellation was built to spotlight the topic being discussed and had to settle for a timed rotation because Cartesia only ever sent audio; `matchTopic()` has been waiting for exactly this event and needs no changes.
 
+**🌿 A call now fills in a loan file, branch by branch (2026-08-10).** The team's underwriting flowchart is `backend/callSchema.js`: five branches — **applicant → institute → loan → co-applicant**, plus **underwriting** derived from those four. The agent works through them as an agenda rather than a form (answer their question first, one question at a time, drop anything they will not answer), `backend/callExtract.js` reads the transcript into the branches **off the voice critical path**, and `/team` → Voice callers shows an officer the branches, the flowchart's flags, the FOIR and lender band, **and the caller's own words under every single value**. Second calls only ask for what is still missing. **And it is wired to the doc collection agent the way the team designed it — the params from the conversation narrow the document requests** (a salaried co-applicant is never asked for three years of ITR; a PG course pulls in the UG marksheet; an unsecured loan drops the property papers), with the dropped ones shown *with their reason* so an officer can tell narrowed from missed. `npm run eval:extract` proves it — 100 checks. Full detail in "The extractor is built". This closes the one piece the previous session left open.
+
 **👤 `/m` has accounts now, and a second call knows what the first one said (2026-08-07).** Until today every call started from zero — the transcript existed and was thrown away the moment the socket closed. `backend/voiceAccounts.js` adds a **standalone account** (name + mobile + password, scrypt-hashed) that is deliberately *not* the lead record; the relay files each call's transcript against it, and `buildVoiceSystemPrompt()` reads it back on the next call. The team dashboard grew a **Voice callers** view. Full detail in "`/m` accounts and remembered calls". **The extractor that turns a transcript into structured branch data is the one piece not built** — it is waiting on the team's schema, and everything downstream of it already accepts any shape.
 
 **✅ And it hears you — the loop is closed (2026-08-07).** A `DEEPGRAM_API_KEY` already existed on this machine, in the separate `UPSY AI AGENT` project (`backend/.env`, same team account, `upsytechno@gmail.com`); it is now in this project's `.env` too, along with the `SARVAM_API_KEY` that was sitting beside it. `npm run voice:relay` runs the **whole loop with no microphone and no human**: it synthesises a caller (in a different voice from the agent's, so it is not testing whether Deepgram can hear itself), streams that audio in at real-time pace, and asserts the transcript comes back, the brain answers, and the answer is spoken. **Run this first in any new session** — it is the fastest way to know whether voice is healthy, and it names the broken link rather than making you find it.
@@ -116,7 +118,7 @@ Deliberately **not** a general-purpose cache — only exact strings from a known
 2. **Numbers are still misheard.** "fifteen lakh" sometimes lands as "lakh". `en-IN` and keyterm boosting made it rare, not gone. **This is the most dangerous open bug in the voice path** — the agent quotes loan amounts, and a confident answer to a misheard number is worse than no answer. Nothing is built to mitigate it; the obvious move is having the agent confirm any figure back before reasoning from it.
 3. **Talk to it on a real phone.** Every measurement here comes from a synthesised caller on a clean socket. A real person in a noisy room, interrupting and pausing mid-thought, is the test that has not happened — and it is the only way to exercise **barge-in on speakerphone**, which a synthetic caller structurally cannot trigger because it never echoes.
 4. **Hindi.** `SARVAM_API_KEY` is in `.env`, unimplemented. Neither Deepgram nor Cartesia has an Indian-accented voice worth using, so this is the only path to it. The plumbing (a `language` on the session and the ticket) already exists; asking for a non-English language throws a named error rather than reading Hindi in an English voice.
-5. **The transcript extractor** — the one piece of the accounts work not built, waiting on the team's schema (see the accounts section).
+5. ~~**The transcript extractor**~~ — **done 2026-08-10**, see "The extractor is built". What is left on it is that a small model reading speech is not deterministic: identical transcripts have given 23/28 and 24/28 fields on consecutive runs. Absence is safe by design, but nothing detects a field the model quietly stops finding.
 
 After those, the previous priority (**Avanse precision**) is the next real piece of work; it is still unverified live.
 
@@ -144,6 +146,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 | Understand the Meet voice agent | "Live-call assistance via AgentCall" — includes an end-to-end runtime flow diagram |
 | Understand the phone-browser voice agent | "Browser voice calls (`/m`)" |
 | Work on what a call captures and remembers | "`/m` accounts and remembered calls" |
+| Change what the agent asks for on a call | `backend/callSchema.js`, then "The extractor is built" |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
 | Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
 | Find which file does what | "Code map" |
@@ -178,6 +181,8 @@ npm run eval          # batch-test PAN/Aadhaar card reading on files in data/upl
 npm run eval:income   # batch-test ITR/Form16/salary-slip income reading (scans project root + data/uploads/, or pass file paths)
 npm run voice:relay   # preflight OUR OWN voice stack: transport → tickets → does it actually speak → does the brain stream
 npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
+npm run eval:extract  # the branch schema: FOIR maths + flag rules offline, then a scripted call through the real extractor
+npm run eval:extract -- --seed   # ...and write that call into the store, so /team has a real caller to show
 ```
 
 On boot the server prints its **document-reader priority** so you can see at a glance which AI path is active, e.g. `Document reader priority: Claude (claude-opus-4-8) → OpenRouter (openai/gpt-4o-mini) → OCR (fallback)`.
@@ -787,8 +792,11 @@ The introduction changes too — *"Hi Rohan, this is UPSY again. Where would you
 
 A segmented toggle above the applicant list, because these are two different populations that happen to share a screen:
 
-- **List:** name, mobile, call count, how many details have been captured, last call time.
-- **Detail:** the caller's header (with the not-linked-to-a-borrower-file warning), **what the calls established** rendered branch-by-branch with sub-fields indented under each, and **call history** — every call collapsible, expanding into the full two-sided transcript with duration and turn count.
+- **List:** name, mobile, call count, a coverage bar (`23/28 answered`), flag count, last call time.
+- **Detail:** the caller's header (with the not-linked-to-a-borrower-file warning and the coverage bar), then **flags**, then **underwriting**, then **one card per branch** — each showing what was captured, **the caller's own words underneath every value**, and a "still to ask" row of what the call did not get to. Then **call history** — every call collapsible, expanding into the full two-sided transcript with duration and turn count.
+- **"Documents to request"** — the narrowed list with *why each one applies*, a collapsible "not being asked for, and why", and the open questions that would narrow it further. See "In sync with the doc collection agent".
+- **"Other details on file"** catches anything the schema does not describe. The extractor cannot produce such a key (validation drops unknown fields before storage), but profiles written *before* the schema did — and anything a future rename leaves behind — are still real things a caller said. A dashboard that silently hides data it does not recognise is worse than one that shows it under a raw key.
+- Everything on that screen is labelled **what they said on a call, not verified against a document**. The lead record wins wherever the two disagree; that one is built from verified uploads and the eligibility engine.
 - The single search box filters whichever list is on screen; auto-refresh polls only the active one, since refreshing both would re-render a list out from under a click.
 
 ⚠️ **`esc()` was added to `team.js` and it is load-bearing, not hygiene.** A call transcript is literally every word a caller said, rendered into `innerHTML` on an officer's screen — that is fully attacker-controlled free text arriving on an **unauthenticated dashboard**. Verified: `<img src=x onerror=alert(1)>` spoken into a call renders as inert text with no element created. **The pre-existing lead-list and detail rendering is still unescaped** and carries applicant names, vision-model reads and officer notes the same way — tracked as its own item in the status list below.
@@ -801,8 +809,9 @@ A segmented toggle above the applicant list, because these are two different pop
 | `POST /api/m/login` | mobile + password → token. 401 on either kind of failure, identical message |
 | `POST /api/m/logout` | drops the session server-side. 204 |
 | `GET /api/m/me` | the page's boot check. 401 when the token is dead |
-| `GET /api/voice/accounts` | officer-facing list |
-| `GET /api/voice/accounts/:id` | one caller with full call history |
+| `GET /api/voice/accounts` | officer-facing list, each with its branch coverage |
+| `GET /api/voice/accounts/:id` | one caller with full call history and coverage |
+| `GET /api/voice/schema` | the branch definitions themselves — labels, order, types. Describes the questions, never anybody's answers |
 
 `POST /api/voice/session` now reads an optional `Authorization: Bearer` header; everything else about it is unchanged, and a request without one is exactly as anonymous as it was before.
 
@@ -827,14 +836,77 @@ Insufficient credits: This request requires approximately 103 credits but you ha
 
 **This is account balance, not a regression** — transport, single-use tickets, *does it actually speak* (468ms to first audio) and streamed sentence-by-sentence thinking all still pass. The failing checks are the synthetic-caller loop, which uses Cartesia TTS to *generate* the fake caller's voice; with no audio produced, Deepgram times out waiting. **Nobody can re-verify the hearing loop until the account is topped up** — Pro is $5/mo and the plan table in "Cartesia's plans" applies.
 
-### 🕳️ The one piece deliberately not built: the extractor
+### ✅ The extractor is built — the branch schema landed (2026-08-10)
 
-**Nothing yet turns a transcript into structured facts.** `mergeProfile()`, the prompt rendering and the whole dashboard render path are in and exercised against nested test data — what is missing is the step between the transcript and `mergeProfile()`, and it is waiting on the team's branch schema: **5 branches, each with sub-branches** (the example given: *applicant* → name, college, age, …).
+**The gap this closes: a call was heard, answered and remembered, and then nobody could do anything with it.** The transcript was stored and an officer could read it, but "what did this call actually establish?" was a human reading twenty turns. The schema arrived as the team's underwriting flowchart, and the prediction in the previous version of this section held — **storage, prompt grounding and both dashboard views needed no changes to accept it.** The new code is `backend/callSchema.js` (the definition) and `backend/callExtract.js` (the reading), plus a rebuilt caller view.
 
-When that schema lands, **the only new code is the extractor itself** — storage, prompt grounding and both dashboard views already accept any shape it produces. Two decisions are already made and should not be relitigated without a reason:
+Both decisions recorded before the schema landed were implemented, not revisited:
 
-1. **It runs off the voice critical path.** The reply latency budget is already the thing this whole stack fights (see the latency section above); an extraction call in the turn loop would spend that budget on something the caller cannot hear.
-2. **It stores what was *said* alongside any parsed value.** The brain is `openai/gpt-4o-mini` today, and this repo has already caught that model reading the same figure as ₹1,39,100 and ₹13,91,000 on separate runs. A loan amount extracted from speech and shown to an officer as fact, with no way to check it against the sentence it came from, is the income-eval bug wearing a different hat.
+1. **It runs off the voice critical path.** Never inside a turn. `captureFacts()` in `voiceRelay.js` starts it and abandons it — the relay owns *when*, `fileCall()` owns *what*.
+2. **It stores what was *said* alongside every parsed value**, and now also **checks that quote against the transcript**. A value whose quote cannot be found is kept and marked `unmatched` on the dashboard, because a model that writes a sentence rather than quoting one is the signal an officer needs before acting on the number beside it.
+
+**The five branches, from the flowchart.** Four are collected by talking; the fifth is arithmetic on the other four:
+
+```
+   applicant ──► institute ──► loan ──► coApplicant
+                      │
+                      ▼
+             underwriting (FOIR, lender band, flags — derived, never asked)
+```
+
+The order is the flowchart's and is load-bearing: you cannot size a loan before you know the fee, and a co-applicant's income means nothing until there is an amount to test it against.
+
+**One schema, three consumers, no restating it anywhere.** `voicePrompt.js` renders it into the agent's agenda (and into *what is still missing for this caller*, so a second call picks up where the first stopped); `callExtract.js` renders it into the JSON contract the model fills and validates the reply against it; `team.js` fetches it from `GET /api/voice/schema` and renders a caller's file under the same labels in the same order. Add a field in one place and all three follow.
+
+**The derived branch is computed on the server, never asked of a model.** Straight from the flowchart's lender box: existing EMIs ÷ income is FOIR now; loan ÷ 120 is the new EMI (**principal ÷ 120 with no interest — as drawn, and deliberately optimistic; a real EMI at 11% is ~38% higher**, which is why every surface labels it indicative); the two together give FOIR after the loan, which picks the lender band. ⚠️ The flowchart's own bands read `<50 / <70 / >75 / >80`, which leaves 70–75 belonging to nobody — read here as four ordered bands, and `FOIR_BANDS` in `callSchema.js` is the one line to change if that was not the intent.
+
+**An unknown input produces no verdict rather than a confident zero.** `computeUnderwriting()` returns `ready: false` and names what is missing, because a 0% FOIR on an unknown income is exactly the kind of number an officer would act on.
+
+**What the validation refuses, and why each rule exists.** Every one of these was a real thing the model did on a real run, not a hypothetical:
+
+| Refused | Because |
+|---|---|
+| Unknown branches and fields | A model inventing `applicant.salary` must not write a field no dashboard will ever show |
+| `document`/`api`-sourced fields | A call may not fill in a CIBIL score or a PAN — those come from a bureau or an upload |
+| A CGPA in a percent field | `8.2` stored as 8% trips the "below 60%" flag and puts a false threat on an officer's screen. The floor is 10 |
+| `"father"` as the co-applicant's **name** | Measured: gpt-4o-mini writes this across runs, with a matching quote, because it is genuinely all the caller said. A relationship is not a name, and this one would reach a lender referral draft |
+| A relation outside the permitted list | Normalised to `other` rather than dropped, so the flowchart's "no cousin" flag actually fires |
+| An **ITR year-count on a salaried file** | Observed: "three years of Form 16" lands in *both* year fields. On a salaried co-applicant that raised `itr_years_short` — a threat about a document that file is never asked for. A flag nobody can act on is worse than no flag; it is the one that teaches an officer to skim the list. Gated in three places now: what is stored, what is flagged, and what is counted as missing |
+
+**Verified with `npm run eval:extract` — 100 checks, no key needed for the arithmetic.** Part 1 is the FOIR maths, the lender bands, every flag rule and the coercion guards: deterministic, offline, and a failure there is a bug in this repo. Part 2 runs a scripted call through the real extractor and asserts sixteen fields, including **two self-corrections a naive reader gets wrong** — a fee stated as "25 lakh, sorry, 24 lakh", and an uncle withdrawn in favour of a father after the agent said lenders need immediate family. `npm run eval:extract -- --seed` writes that call into the store through the same two functions the relay calls, so `/team` has something real to show without a phone or a microphone.
+
+**🐛 One bug this work found, worth keeping.** The quote-matcher normalised punctuation but *kept* full stops, so a model quoting `"I am 24."` never matched a transcript reading `"I am 24, I live in Pune"` once the comma became a space. Six of sixteen good quotes were marked unmatched — a warning badge that fires on correct data is a badge officers learn to ignore, which would have quietly disabled the one guard standing between a misheard number and a lending decision. All punctuation goes now; both sides get the same treatment, so `1.5 lakh` still matches itself.
+
+### 🔗 In sync with the doc collection agent — the params narrow the requests
+
+**The team's framing, verbatim in spirit:** *"I have designed this in sync with our doc collection agent — from the conversation we identify certain params, and the loan doc agent then brings only those requests."* `backend/docPlan.js` is that join.
+
+The branches decide which documents are real for this person, and — the part that matters — **which ones are not**. On the scripted eval call (salaried co-applicant, MBA, unsecured): **15 to ask for, 6 ruled out, 2 questions still open.**
+
+| The call established | So the doc agent | Because |
+|---|---|---|
+| Co-applicant is **salaried** | asks Form 16 + 3 months' slips + salary account | the flowchart's salaried branch |
+| | **drops** ITR years, computation of income, current a/c, savings a/c | no business income to document |
+| Co-applicant is **self-employed** | asks ITR 2–3 yrs + computation + current a/c 6m + savings a/c 3m | the flowchart's self-employed branch |
+| | **drops** Form 16, salary slips, salary account | no employer |
+| Course is **postgraduate** | adds the UG degree marksheet | *"if PG course, ask 10,12,UG; if UG then 10th&12th"* |
+| **No** recent job change | drops the joining/offer letter | the older slips already cover the period |
+| Lives **at** the KYC address | drops the electricity/gas bill | the Aadhaar already proves it |
+| Loan is **unsecured** | drops the property papers | nothing to mortgage |
+
+**Three outcomes, not two, and `pending` is the one that earns its place.** A plan reports `asked`, `skipped` *with the reason each was dropped*, and `pending` — the question that would settle the rest, named with what it settles. *"Ask whether the co-applicant is salaried and this list resolves by four documents"* is an instruction; "incomplete" is not.
+
+**The skipped list is shown on the dashboard, not hidden.** An officer who can only see what was asked for cannot tell *correctly narrowed* from *quietly missed*.
+
+**The officer's screen updates itself while the call is still running.** The list already polled; the open caller's file did not, so the coverage bar on the left ticked up while the branches, flags and document plan beside it stayed frozen at whatever was on screen when it was clicked — two numbers on one screen disagreeing about the same call. `refreshVoiceDetail()` re-fetches the open file every 7s and **re-renders only when the payload actually changed**, because a rebuild collapses any call transcript the officer has expanded. Verified by rolling the open pane back to a mid-call state and then not touching it: **12 documents → 15, and the co-applicant branch filled in, on its own.**
+
+**The list narrows during the call, not just on the next one.** Each mid-call extraction pass rebuilds the system prompt against the new facts (`refreshPrompt()` in `voiceRelay.js`), so a caller who says "my father is salaried" in minute two is not still being told about three years of ITR in minute five. The conversation history is untouched — only the standing instructions change.
+
+⚠️ **Six of the flowchart's documents have no row in the `/docs` upload flow yet** (Form 16, salary account statement, joining letter, the multi-year ITR set, computation of income, the current/savings account statements, the utility bill). They are marked **"not in upload flow"** on the dashboard rather than quietly added to `documents.js`: the plan is what a *call* asks for, and letting it diverge from what the upload UI can actually accept would produce a list nobody can act on. Adding rows to `documents.js` is how that closes.
+
+⚠️ **Pensioner and farmer are named on the flowchart but not detailed.** Farmer follows the self-employed path; **pensioner asks for the pension order and raises a `pending` item saying so out loud**, rather than this module inventing a document set — which is the exact thing it exists to prevent.
+
+**Still open, honestly:** extraction is a small model reading speech, and it is not deterministic. Across runs of the identical transcript it captured 23/28 fields once and 24/28 the next, and it missed the Aadhaar-city mismatch on one run while catching it on the others. **Absence is safe** — an unasked field is asked again next call — but nothing yet detects a field the model quietly *stops* finding. `ANTHROPIC_API_KEY` is the same fix as everywhere else in this file.
 
 ## Income extraction from ITR / salary slips (per product spec: "ITR value ÷ 12 = month income")
 
@@ -1145,7 +1217,11 @@ npm start
 - `backend/voiceBrain.js` — thinking: Claude Haiku 4.5 → OpenRouter, **streamed and split into sentences as it arrives** so speech starts before the reply is finished. Abortable mid-generation (the `respondTo()` lesson from `liveAssist.js`), and it logs Anthropic's cache-hit counters so the cost model is checked against evidence.
 - `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Cartesia Sonic** kept behind `TTS_PROVIDER=cartesia`. One socket per call rather than per sentence, since opening one costs ~1s. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
 - `backend/voice-relay-check.js` — `npm run voice:relay`: runs the relay in-process on an ephemeral port and drives it with a fake browser — config → transport echo → single-use tickets → *does it actually speak* → does the brain stream sentences. Needs no running server and no real applicant data.
-- `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, and a document checklist generated from `documents.js` so it cannot drift.
+- `backend/callSchema.js` — **what a call is supposed to establish**: the team's five branches, every field with the question that asks for it, and the derived branch (FOIR, lender bands, every flag rule on the flowchart). Also owns coercion — `parseRupees()`, the CGPA guard, the "a relationship is not a name" rule. **Edit here to change what the agent collects**; the prompt, the extractor and the dashboard all read it rather than restating it.
+- `backend/docPlan.js` — **the join with the doc collection agent.** Branch facts → the documents *this* person actually needs, the ones they do not (with the reason each was dropped), and the question that would settle the rest. Read by the voice prompt, `/api/voice/accounts/:id` and the dashboard. **Edit here to change how a param narrows the list.**
+- `backend/callExtract.js` — **transcript → branch facts.** Claude → OpenRouter, temperature 0, validated against the schema, every value carrying the caller's own words and a check that the quote is really in the transcript. `fileCall()` is the whole write path (extract → merge → recompute derived) and is what both the relay and `eval:extract` call, so there are not two versions of it.
+- `backend/eval-extract.js` — `npm run eval:extract`: the FOIR maths, lender bands, flag rules and coercion guards offline, then a scripted call through the real extractor. `-- --seed` writes that call into the store for the dashboard.
+- `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, a document checklist generated from `documents.js` so it cannot drift, and **the collection agenda generated from `callSchema.js`** — which shrinks to only what is still missing for that particular caller. The derived branch is deliberately withheld from the agent: it must never tell someone they are a "Lender 3 case", and the surest way is for it never to have been told.
 - `backend/voice-check.js` — `npm run voice:check`: walks the same chain a real call walks (env → agent exists → agent deployed → token mints → socket accepts `start` → the agent actually speaks) and stops at the first thing that is wrong. Written because an undeployed agent's `1011 Internal server error` sent a whole session through the audio code before anyone looked at the account.
 - `backend/voiceAccounts.js` — **`/m`'s own accounts**, separate from the lead source on purpose. scrypt password hashing (node crypto, no dependency), server-side sessions, per-account call history and the standing profile earlier calls established. `publicAccount()` is the only shape allowed out of the module; the hash never reaches a route, a prompt or the dashboard. File-backed in `data/voiceAccounts.json`, same ephemeral-storage caveat as the rest of `data/`.
 - `backend/callbacks.js` — the "Schedule call" queue behind `/m`: phone normalization, file-backed storage in `data/callbacks.json`, and the ops message. Deliberately a queue an officer reads, not a system of record.
