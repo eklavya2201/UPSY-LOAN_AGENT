@@ -8,7 +8,18 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 **Where the project is (2026-08-07):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**  ,https://upsy-loan-agent.onrender.com/m and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
 
-**🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — Deepgram for hearing, Claude Haiku 4.5 for thinking, Cartesia Sonic for speaking, turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` is the default and it is what `/m` uses.**
+**🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` must stay set** (it defaults to `cartesia` in code, which cannot be deployed on a free account and fails every call).
+
+**The live chain, and where each piece is configured:**
+
+| | Provider | Notes |
+|---|---|---|
+| Hearing | **Deepgram** nova-3, `en-IN` | `DEEPGRAM_ENDPOINTING_MS=800` — not their default of 300, which splits one thought into two turns |
+| Thinking | **OpenRouter** `gpt-4o-mini` | Claude Haiku 4.5 is preferred and coded, but **`ANTHROPIC_API_KEY` is still unset**. The model is ~65% of reply latency |
+| Speaking | **Deepgram Aura** `aura-2-athena-en` | Moved off Cartesia when its free tier ran out. `TTS_PROVIDER=cartesia` switches back |
+| Repeated lines | **Phrase cache** | Greeting + 10 acknowledgements bought once, pre-warmed at boot: 1593ms → 25ms |
+
+**One API key now does hearing *and* speaking**, so `DEEPGRAM_API_KEY` is the single thing voice cannot run without. Cartesia's credit is spent until **Sep 1, 2026**.
 
 **✅ The audio round trip is closed — the thing that had never worked.** Verified in a real browser against a real Cartesia account: `POST /api/voice/session` → 200 with a URL pointing at *us*, socket opens, and **the agent's spoken introduction arrives 524ms later** — 2.06s of continuous PCM, no gaps, decoded by `voiceClient.js`'s own codec and accepted by an `AudioContext`. `npm run voice:relay` reproduces the whole thing in one command with no server running.
 
@@ -18,7 +29,7 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 **👤 `/m` has accounts now, and a second call knows what the first one said (2026-08-07).** Until today every call started from zero — the transcript existed and was thrown away the moment the socket closed. `backend/voiceAccounts.js` adds a **standalone account** (name + mobile + password, scrypt-hashed) that is deliberately *not* the lead record; the relay files each call's transcript against it, and `buildVoiceSystemPrompt()` reads it back on the next call. The team dashboard grew a **Voice callers** view. Full detail in "`/m` accounts and remembered calls". **The extractor that turns a transcript into structured branch data is the one piece not built** — it is waiting on the team's schema, and everything downstream of it already accepts any shape.
 
-**✅ And it hears you — the loop is closed (2026-08-07).** A `DEEPGRAM_API_KEY` already existed on this machine, in the separate `UPSY AI AGENT` project (`backend/.env`, same team account, `upsytechno@gmail.com`); it is now in this project's `.env` too, along with the `SARVAM_API_KEY` that was sitting beside it. `npm run voice:relay` runs the **whole loop with no microphone and no human**: it synthesises a caller with Cartesia, streams that audio in at real-time pace, and asserts Deepgram transcribes it, the brain answers, and the answer comes back as speech.
+**✅ And it hears you — the loop is closed (2026-08-07).** A `DEEPGRAM_API_KEY` already existed on this machine, in the separate `UPSY AI AGENT` project (`backend/.env`, same team account, `upsytechno@gmail.com`); it is now in this project's `.env` too, along with the `SARVAM_API_KEY` that was sitting beside it. `npm run voice:relay` runs the **whole loop with no microphone and no human**: it synthesises a caller (in a different voice from the agent's, so it is not testing whether Deepgram can hear itself), streams that audio in at real-time pace, and asserts the transcript comes back, the brain answers, and the answer is spoken. **Run this first in any new session** — it is the fastest way to know whether voice is healthy, and it names the broken link rather than making you find it.
 
 ```
 ✅ heard, 765ms after the caller stopped: "I need about 15 lakh rupees for an MBA. Am I eligible?"
@@ -99,7 +110,17 @@ Deliberately **not** a general-purpose cache — only exact strings from a known
 | Turn-taking | AgentCall's | **Ours** (`voiceRelay.js`) |
 | Concurrency | **1 call server-wide** | One socket per caller, capped only by our providers |
 
-**What to work on next (2026-08-07): talk to it on an actual phone.** Every link is built and verified, and the loop closes end to end — but the only "caller" so far has been a synthesised voice speaking one clean sentence into a socket. A real person, in a noisy room, who interrupts and pauses mid-thought, is the test that has not happened. Go to **"▶️ ACTIVE — build our own voice stack"** in the roadmap for what is measured and what is still open. After that, the previous priority (Avanse precision) is the next real piece of work.
+**What to work on next (2026-08-07).** The voice stack is built, deployed and verified end to end. What is left is in this order:
+
+1. **`ANTHROPIC_API_KEY`.** The single highest-value line in this file. The model is **~65% of reply latency** — OpenRouter's `gpt-4o-mini` averages 2086ms to a first sentence against a ~1.2s budget — and the same key also unblocks **PDF document reading, which today has no working reader at all** (see point 2 of the six gotchas). One key, two of the largest open problems. `npm run eval:voice` ranks whatever is configured.
+2. **Numbers are still misheard.** "fifteen lakh" sometimes lands as "lakh". `en-IN` and keyterm boosting made it rare, not gone. **This is the most dangerous open bug in the voice path** — the agent quotes loan amounts, and a confident answer to a misheard number is worse than no answer. Nothing is built to mitigate it; the obvious move is having the agent confirm any figure back before reasoning from it.
+3. **Talk to it on a real phone.** Every measurement here comes from a synthesised caller on a clean socket. A real person in a noisy room, interrupting and pausing mid-thought, is the test that has not happened — and it is the only way to exercise **barge-in on speakerphone**, which a synthetic caller structurally cannot trigger because it never echoes.
+4. **Hindi.** `SARVAM_API_KEY` is in `.env`, unimplemented. Neither Deepgram nor Cartesia has an Indian-accented voice worth using, so this is the only path to it. The plumbing (a `language` on the session and the ticket) already exists; asking for a non-English language throws a named error rather than reading Hindi in an English voice.
+5. **The transcript extractor** — the one piece of the accounts work not built, waiting on the team's schema (see the accounts section).
+
+After those, the previous priority (**Avanse precision**) is the next real piece of work; it is still unverified live.
+
+*Working files for the Deepgram evaluation live in `Desktop/testing-deepgram/` — outside this repo, with the head-to-head numbers, the voice samples the choice was made from, and `FINDINGS.md`. Nothing there is needed to run the product.*
 
 The previous priority — *making the live-assist Meet agent precise on Avanse's form* — is **still real and still unverified live**, and its spec is the failure-mode list in the Avanse section. It is not cancelled, just no longer first: the voice work is blocked-and-unblockable today, and Hindi is a live product gap.
 
@@ -107,7 +128,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 
 1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
 2. **`ANTHROPIC_API_KEY` is still not set.** PDFs therefore have *no working reader at all*, and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading the same file as ₹1,39,100 and ₹13,91,000. This is Phase 0 and it blocks real precision work.
-3. **The voice stack is ours now and it works end to end** — `DEEPGRAM_API_KEY` (hearing), `CARTESIA_API_KEY` (speech only; the agent-deployment pause never applied to their TTS API) and an LLM key are all set. `CARTESIA_AGENT_ID` is now **dead weight** — only the old hosted path reads it. The Cartesia key was pasted directly into chat, so **treat it as compromised and rotate it**, same pattern as every other secret in point 6. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
+3. **The voice stack is ours, and one key runs all of it.** `DEEPGRAM_API_KEY` does BOTH the hearing and the speaking (Aura TTS) — it is the single thing voice cannot run without. `CARTESIA_API_KEY` is now only read when `TTS_PROVIDER=cartesia`, and **its credit is spent until Sep 1, 2026** (20k characters/month is ~21 calls; a day of building drained it). `CARTESIA_AGENT_ID` is dead weight. The Cartesia key was pasted into chat, so **treat it as compromised and rotate it**. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
 4. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
 5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/m` — different vendor, different path.)
 6. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
@@ -1076,7 +1097,8 @@ The relay changes what deployment means for voice: on the old hosted path the br
 **Check the boot log after deploying.** It states the whole chain in one line, and is the fastest way to know a key did not take:
 
 ```
-Voice relay: Deepgram → OpenRouter (openai/gpt-4o-mini) → Cartesia Sonic
+Voice relay: Deepgram → OpenRouter (openai/gpt-4o-mini) → Deepgram Aura (aura-2-athena-en)
+Voice: pre-synthesised 13 repeated phrases (greeting + acknowledgements).
 ```
 
 Anything reading `DEAF (no DEEPGRAM_API_KEY)` or `MUTE` means the dashboard variable did not land.
@@ -1348,9 +1370,9 @@ This is the README's old **Step 2 — in-app voice widget** (below), which was a
 [Applicant on /m]
    mic → AudioWorklet → PCM ──WS──►  voiceRelay.js  (ours, /voice/stream)
                                         │
-                                        ├─► voiceStt.js    Deepgram  ⚠️ no key yet
+                                        ├─► voiceStt.js    Deepgram  ✅ hears
                                         ├─► voiceBrain.js  Claude Haiku 4.5 (voicePrompt.js, unchanged)
-                                        └─► voiceTts.js    Cartesia Sonic  ✅ heard
+                                        └─► voiceTts.js    Deepgram Aura  ✅ heard
    speaker ◄── PCM ◄──WS───────────────┘
                           ▲
                           └── plus `transcript` events, which the hosted agent never gave us
