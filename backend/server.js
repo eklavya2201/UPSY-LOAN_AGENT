@@ -29,6 +29,9 @@ import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine,
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail } from "./voiceAccounts.js";
+import { BRANCHES, DERIVED_BRANCH, coverage } from "./callSchema.js";
+import { extractorStatusLine } from "./callExtract.js";
+import { planDocuments } from "./docPlan.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -977,14 +980,52 @@ app.get("/api/m/me", async (req, res) => {
 });
 
 // The officer-facing side: every voice caller, and one caller's full history.
+//
+// `coverage` is computed here rather than in the browser so that the agenda the
+// agent works from and the gaps the dashboard reports are the same computation
+// over the same schema. A dashboard that invents its own idea of "complete"
+// eventually shows a field as missing that nothing was ever going to ask for.
 app.get("/api/voice/accounts", async (_req, res) => {
-  res.json({ accounts: await listAccounts() });
+  const accounts = (await listAccounts()).map((a) => ({ ...a, coverage: coverage(a.profile || {}) }));
+  res.json({ accounts });
 });
 
 app.get("/api/voice/accounts/:accountId", async (req, res) => {
   const detail = await getAccountDetail(req.params.accountId);
   if (!detail) return res.status(404).json({ error: "No such account." });
-  res.json({ account: detail });
+  res.json({
+    account: {
+      ...detail,
+      coverage: coverage(detail.profile || {}),
+      // The join with the doc collection agent: which requests this
+      // conversation has actually narrowed the catalogue down to, which it has
+      // ruled out, and which question would settle the rest.
+      documentPlan: planDocuments(detail.profile || {}),
+    },
+  });
+});
+
+// The branch schema itself, so the dashboard renders a caller's file under the
+// same field labels, in the same order, that the agent was told to collect in.
+// Static and public: it describes the questions, never anybody's answers.
+app.get("/api/voice/schema", (_req, res) => {
+  res.json({
+    branches: BRANCHES.map((b) => ({
+      id: b.id,
+      title: b.title,
+      blurb: b.blurb,
+      fields: b.fields.map((f) => ({
+        id: f.id,
+        label: f.label,
+        type: f.type,
+        unit: f.unit || null,
+        source: f.source,
+        options: f.options || null,
+        note: f.note || null,
+      })),
+    })),
+    derived: DERIVED_BRANCH,
+  });
 });
 
 // ── Browser voice calls (mobile surface) ────────────────────────────────────
@@ -1167,6 +1208,10 @@ server.listen(PORT, () => {
   console.log(voiceStatusLine());
   if (voiceProvider() === "upsy") {
     console.log(relayStatusLine());
+    // Same reasoning again: a call that is heard, answered and remembered but
+    // never read into the caller's file looks fine from the phone and shows an
+    // officer an empty branch list. Say which reader is doing it, or that none is.
+    console.log(`Call reader: ${extractorStatusLine()} → ${BRANCHES.length} branches + underwriting`);
     // Buy the greeting and the acknowledgements once, now, rather than making
     // the first caller wait ~1.2s for each. On a free instance that sleeps after
     // 15 minutes, "the first caller after a wake-up" is very often the only
