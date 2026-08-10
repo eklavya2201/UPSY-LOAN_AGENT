@@ -12,6 +12,8 @@
 // engine, update both prompts.
 
 import { DOCUMENTS, STAGES } from "./documents.js";
+import { BRANCHES, coverage } from "./callSchema.js";
+import { documentPlanForPrompt } from "./docPlan.js";
 
 // Built from documents.js rather than hardcoded, so the agent can never recite
 // a checklist that has drifted from what /docs actually asks for.
@@ -77,6 +79,21 @@ function humanizeKey(key) {
 // Nested because the profile is a set of branches with sub-branches under them.
 // Depth is capped so a malformed or self-referential object cannot produce an
 // unbounded prompt.
+// Not everything on the profile belongs in the agent's head.
+//
+//   _evidence / _flags — bookkeeping and officer-facing warnings. Underscore is
+//     the convention for "metadata, not a fact about this person".
+//   underwriting — the derived FOIR, lender band and indicative EMI. Deliberately
+//     withheld: HONESTY_RULES and PRIVACY_RULES below forbid promising a rate or
+//     naming an outcome for an individual, and the surest way to keep the agent
+//     from saying "you're a Lender 3 case" is for it never to have been told.
+//     That verdict is for the officer reading the dashboard.
+const PROMPT_EXCLUDED_KEYS = new Set(["underwriting"]);
+
+function isExcludedKey(key) {
+  return String(key).startsWith("_") || PROMPT_EXCLUDED_KEYS.has(key);
+}
+
 function renderFacts(value, depth = 0) {
   const pad = "  ".repeat(depth);
   if (depth > 3) return [];
@@ -87,6 +104,7 @@ function renderFacts(value, depth = 0) {
   if (typeof value === "object") {
     return Object.entries(value).flatMap(([k, v]) => {
       if (v === null || v === undefined || v === "") return [];
+      if (depth === 0 && isExcludedKey(k)) return [];
       if (typeof v === "object" && !Array.isArray(v)) {
         const nested = renderFacts(v, depth + 1);
         return nested.length ? [`${pad}- ${humanizeKey(k)}:`, ...nested] : [];
@@ -140,6 +158,56 @@ function applicantContextBlock(c) {
   return prior ? `${known}\n\n${prior}` : known;
 }
 
+// ── What the call is supposed to establish ──────────────────────────────────
+// The team's underwriting flowchart, turned into an agenda. Built from
+// callSchema.js rather than written out here for the same reason
+// documentChecklist() is built from documents.js: the agent must not be able to
+// ask for something the extractor has no field for, or skip something the
+// dashboard will show as missing.
+//
+// What is deliberately NOT here: any instruction to work through it as a form.
+// The caller rang up with a question, and an agent that answers with an
+// interrogation is one they hang up on — at which point it collects nothing at
+// all. The rules below are mostly about restraint.
+
+const COLLECTION_STYLE = `How to collect it — this part matters more than the list:
+- They called with a question. ANSWER IT FIRST, then ask one thing. Never open with a question of your own, and never ask two in a row.
+- One question at a time, in your own words, as part of the conversation. Never read the list aloud, never say "next question", never announce that you are collecting information. If it starts to feel like a form, stop asking and go back to helping.
+- Ask in the branch order above — the student first, then where they are studying, then what they need, then the co-applicant. Each one only makes sense once you have the one before it, and the amount is meaningless before you know the fee.
+- If they will not answer something, or seem uncomfortable, DROP IT and move on. A refused question is a fine outcome; a caller who hangs up is not. Never ask the same thing twice on one call.
+- If they raise something further down the list themselves, take it — follow them, and come back to the order afterwards.
+- REPEAT EVERY NUMBER BACK before you use it. "So that's fifteen lakh — have I got that right?" Amounts, incomes, EMIs, percentages, ages. Voice recognition mishears digits, and an answer built on a misheard figure is worse than no answer at all. This is the one place where repeating yourself is right.
+- Never ask for a PAN, Aadhaar, account or card NUMBER. Asking which city an address is in is fine and is not the same thing.
+- You are not verifying anything and you cannot approve anything. You are having a conversation that saves them repeating themselves to a person later. Do not tell them a field is required, and never suggest that answering more gets them a better outcome.`;
+
+// Only worth using once the conversation has established something — with an
+// empty profile the plan is the whole catalogue minus the conditionals, which
+// is what documentChecklist() already says, better grouped.
+function documentPlan(priorFacts) {
+  if (!priorFacts || !Object.keys(priorFacts).length) return null;
+  return documentPlanForPrompt(priorFacts);
+}
+
+function agendaBlock(priorFacts) {
+  const cover = coverage(priorFacts || {});
+  const byId = new Map(cover.branches.map((b) => [b.id, b]));
+
+  const lines = BRANCHES.map((branch) => {
+    const c = byId.get(branch.id);
+    if (!c || !c.missing.length) {
+      return `- ${branch.title}: nothing outstanding — you already have this.`;
+    }
+    return `- ${branch.title} (${branch.blurb})\n${c.missing.map((m) => `    · ${m.ask}`).join("\n")}`;
+  });
+
+  const done = cover.total ? `${cover.captured} of ${cover.total} already on file.` : "";
+  return [
+    `What UPSY still needs from this caller. This is your agenda, not a script — it is what a lender will ask for, gathered in conversation so nobody has to ask twice. ${done}`.trim(),
+    lines.join("\n"),
+    COLLECTION_STYLE,
+  ].join("\n\n");
+}
+
 /**
  * Build the full system prompt.
  * @param {object|null} context - the same shape liveAssistManager.buildContext()
@@ -151,8 +219,21 @@ export function buildVoiceSystemPrompt(context) {
     `You are UPSY, an AI loan assistant for Indian education loans, speaking to someone who has just called you from their phone browser. You help students and their parents understand education loan eligibility, what documents are needed, and roughly what an EMI would look like.`,
     VOICE_STYLE,
     ELIGIBILITY_RULES,
-    `The documents UPSY collects, in the order it asks for them. Use this to answer "what will I need?" — but never read the whole list aloud:\n${documentChecklist()}`,
+    // The document list, narrowed by what this caller has already said.
+    //
+    // This is the join with the doc collection agent: the conversation
+    // identifies the params, and only the requests those params imply come
+    // back. A salaried co-applicant is never told to find three years of ITR.
+    // Falls back to the full catalogue for a caller we know nothing about,
+    // because that is the honest answer to "what will I need?" before anything
+    // has been established — and the relay rebuilds this prompt mid-call as the
+    // facts land, so the list narrows during the conversation that narrows it.
+    documentPlan(context?.priorFacts) ||
+      `The documents UPSY collects, in the order it asks for them. Use this to answer "what will I need?" — but never read the whole list aloud:\n${documentChecklist()}`,
     hasContext ? applicantContextBlock(context) : publicContextBlock(),
+    // After the context block, so "still needed" is read against what is
+    // already known rather than contradicting it two paragraphs later.
+    agendaBlock(context?.priorFacts),
     PRIVACY_RULES,
     HONESTY_RULES,
   ].join("\n\n");
