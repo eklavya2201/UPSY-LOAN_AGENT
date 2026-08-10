@@ -641,8 +641,23 @@ async function askReupload(leadId, docId) {
 
 let voiceAccounts = [];
 let selectedVoice = null;
+// The branch definitions, fetched once. Labels, order and types all come from
+// backend/callSchema.js so this file never restates the schema — a field the
+// agent stops asking for disappears from here on its own.
+let voiceSchema = null;
+
+async function loadVoiceSchema() {
+  if (voiceSchema) return voiceSchema;
+  try {
+    voiceSchema = await (await fetch("/api/voice/schema")).json();
+  } catch (e) {
+    voiceSchema = { branches: [] }; // render values under raw keys rather than nothing
+  }
+  return voiceSchema;
+}
 
 async function loadVoiceAccounts() {
+  await loadVoiceSchema();
   const r = await (await fetch("/api/voice/accounts")).json();
   voiceAccounts = r.accounts || [];
   renderVoiceList();
@@ -660,7 +675,10 @@ function renderVoiceList() {
   }
   $("#appList").innerHTML = list.map((a) => {
     const sel = selectedVoice === a.accountId;
-    const facts = Object.keys(a.profile || {}).length;
+    // Coverage comes from the server, computed against the same schema the
+    // agent's agenda is built from — see the note on /api/voice/accounts.
+    const cov = a.coverage || { captured: 0, total: 0, percent: 0 };
+    const threats = (a.profile?._flags || []).filter((f) => f.severity === "threat").length;
     return `
     <div data-voice="${a.accountId}" class="voice-card cursor-pointer bg-white rounded-2xl p-4 border transition card-shadow ${sel ? "border-primary border-l-4" : "border-outline-variant/50 hover:border-primary/50"}">
       <div class="flex justify-between items-start mb-1">
@@ -672,8 +690,11 @@ function renderVoiceList() {
           a.callCount ? `${a.callCount} call${a.callCount === 1 ? "" : "s"}` : "No calls yet"
         }</span>
       </div>
-      <div class="flex items-center justify-between mt-2.5">
-        <span class="text-[11px] text-on-surface-variant">${facts ? `${facts} detail${facts === 1 ? "" : "s"} captured` : "Nothing captured yet"}</span>
+      <div class="mt-2.5 h-1.5 rounded-full bg-surface-container overflow-hidden">
+        <div class="h-full rounded-full ${cov.percent >= 80 ? "bg-success" : "bg-primary"}" style="width:${cov.percent}%"></div>
+      </div>
+      <div class="flex items-center justify-between mt-2">
+        <span class="text-[11px] text-on-surface-variant">${cov.captured}/${cov.total} answered${threats ? ` · <span class="text-danger font-bold">${threats} flag${threats === 1 ? "" : "s"}</span>` : ""}</span>
         <span class="text-[11px] text-on-surface-variant">${a.lastCallAt ? fmtTime(a.lastCallAt) : "signed up " + fmtTime(a.createdAt)}</span>
       </div>
     </div>`;
@@ -686,33 +707,263 @@ async function selectVoice(accountId) {
   renderVoiceList();
   const r = await (await fetch(`/api/voice/accounts/${encodeURIComponent(accountId)}`)).json();
   if (selectedVoice !== accountId) return; // clicked elsewhere while we fetched
+  voiceDetailSignature = detailSignature(r.account);
   renderVoiceDetail(r.account);
 }
 
-// Nested, because what the calls capture is a set of branches with sub-branches
-// under them. Depth-capped for the same reason the prompt side is.
-function factRows(value, depth = 0) {
-  if (depth > 3 || value === null || value === undefined || value === "") return "";
-  return Object.entries(value).map(([k, v]) => {
-    // Same transform as humanizeKey() in backend/voicePrompt.js, so the officer
-    // reads a field under the same name the agent was told it by.
-    const label = esc(String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase().trim());
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      const inner = factRows(v, depth + 1);
-      if (!inner) return "";
-      return `<div class="mt-3"><div class="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">${label}</div><div class="pl-3 border-l-2 border-outline-variant/60">${inner}</div></div>`;
-    }
-    const shown = Array.isArray(v) ? v.join(", ") : String(v);
-    return `<div class="flex justify-between gap-4 py-1.5 border-b border-outline-variant/40 last:border-0">
-      <span class="text-xs text-on-surface-variant capitalize">${label}</span>
+// What an open caller's file looks like right now. Compared tick to tick so the
+// pane is only rebuilt when something actually changed.
+let voiceDetailSignature = null;
+function detailSignature(a) {
+  return JSON.stringify({
+    profile: a.profile,
+    plan: a.documentPlan?.counts,
+    calls: a.callCount,
+    last: a.lastCallAt,
+  });
+}
+
+/**
+ * Keep the OPEN caller's file live while a call is still running.
+ *
+ * The list already polls; without this the detail pane was a snapshot from
+ * whenever it was clicked, so an officer watching a call in progress would see
+ * the coverage bar on the list tick up while the branches, the flags and the
+ * document plan beside it stayed frozen. That is worse than not updating at
+ * all — two numbers on one screen disagreeing about the same call.
+ *
+ * Re-rendered only when the payload changed, and that guard is the whole
+ * design: `renderVoiceDetail()` rebuilds `innerHTML`, which collapses any call
+ * transcript the officer has expanded. Doing that every seven seconds would
+ * make the call history unreadable. On a quiet caller nothing moves; when a
+ * fact lands mid-call the pane updates once, which is exactly when a collapsed
+ * transcript is a fair price.
+ */
+async function refreshVoiceDetail() {
+  if (!selectedVoice) return;
+  const id = selectedVoice;
+  const r = await (await fetch(`/api/voice/accounts/${encodeURIComponent(id)}`)).json();
+  if (!r.account || selectedVoice !== id) return; // they clicked elsewhere mid-flight
+  const sig = detailSignature(r.account);
+  if (sig === voiceDetailSignature) return;
+  voiceDetailSignature = sig;
+  renderVoiceDetail(r.account);
+}
+
+// A value, in the shape the field says it is. The schema carries the type, so
+// ₹ formatting and "Yes/No" happen once here rather than at each call site.
+function fmtFact(field, v) {
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (Array.isArray(v)) return v.join(", ");
+  if (!field) return String(v);
+  // Type formatting only applies to a value of that type. A money field holding
+  // a string ("₹95,000" — how the profile was hand-seeded before the schema
+  // existed) would come back as "₹₹95,000" through rupees().
+  if (field.type === "money" && typeof v === "number") return rupees(v);
+  if (field.type === "percent" && typeof v === "number") return `${v}%`;
+  if (field.unit && typeof v === "number") return `${v} ${field.unit}`;
+  return String(v);
+}
+
+// One captured answer: the value, and underneath it the caller's own words.
+//
+// The quote is not decoration. The README's extractor decision says it plainly:
+// this repo has caught the same model reading one figure as ₹1,39,100 and
+// ₹13,91,000, and a number on an officer's screen with no way back to the
+// sentence it came from is a lending decision made on an unverifiable claim.
+// `verbatim: false` means the model could not be matched to anything in the
+// transcript — the value stands, but it is marked, and an officer who acts on
+// it should open the call first.
+function factRow(field, key, value, evidence) {
+  const ev = evidence?.[key];
+  const quote = ev?.said
+    ? `<p class="text-[11px] text-on-surface-variant italic mt-0.5 leading-snug">“${esc(ev.said)}”${
+        ev.verbatim === false
+          ? ` <span class="not-italic font-bold text-amber" title="This quote could not be matched to anything in the transcript — read the call before acting on this value.">· unmatched</span>`
+          : ""
+      }</p>`
+    : "";
+  return `<div class="py-2 border-b border-outline-variant/40 last:border-0">
+    <div class="flex justify-between gap-4 items-baseline">
+      <span class="text-xs text-on-surface-variant">${esc(field?.label || key)}</span>
+      <span class="text-xs font-bold text-right">${esc(fmtFact(field, value))}</span>
+    </div>
+    ${quote}
+  </div>`;
+}
+
+function branchCard(branch, profile, coverageBranch, evidence) {
+  const values = profile[branch.id] || {};
+  const rows = branch.fields
+    .filter((f) => values[f.id] !== undefined && values[f.id] !== null && values[f.id] !== "")
+    .map((f) => factRow(f, `${branch.id}.${f.id}`, values[f.id], evidence))
+    .join("");
+  const missing = (coverageBranch?.missing || [])
+    .map((m) => `<span class="text-[11px] px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">${esc(m.label)}</span>`)
+    .join(" ");
+  const captured = coverageBranch ? `${coverageBranch.captured}/${coverageBranch.total}` : "";
+
+  return `<div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow mb-4">
+    <div class="flex justify-between items-start mb-2">
+      <div>
+        <h4 class="font-bold text-sm">${esc(branch.title)}</h4>
+        <p class="text-[11px] text-on-surface-variant">${esc(branch.blurb)}</p>
+      </div>
+      <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+        coverageBranch && coverageBranch.captured === coverageBranch.total ? "bg-success-soft text-success" : "bg-surface-container text-on-surface-variant"
+      }">${captured}</span>
+    </div>
+    ${rows || `<p class="text-xs text-on-surface-variant py-1">Nothing established yet.</p>`}
+    ${missing ? `<div class="mt-3 pt-3 border-t border-outline-variant/40"><p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">Still to ask</p><div class="flex flex-wrap gap-1">${missing}</div></div>` : ""}
+  </div>`;
+}
+
+// The flowchart's lender box. Everything in it is arithmetic on the branches
+// above — no model touches these numbers, which is the whole reason they are
+// computed on the server rather than extracted.
+function underwritingCard(uw) {
+  if (!uw) return "";
+  if (!uw.ready) {
+    return `<div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow mb-4">
+      <h4 class="font-bold text-sm mb-1">Underwriting</h4>
+      <p class="text-xs text-on-surface-variant">Cannot be worked out yet — still missing ${esc((uw.missing || []).join(" and "))}.</p>
+    </div>`;
+  }
+  const heavy = uw.foirUpdated >= 80;
+  const cell = (label, value, cls = "") =>
+    `<div><p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">${label}</p><p class="text-sm font-bold ${cls}">${value}</p></div>`;
+  return `<div class="bg-white rounded-2xl p-5 border ${heavy ? "border-danger/40" : "border-outline-variant/50"} card-shadow mb-4">
+    <div class="flex justify-between items-start mb-3">
+      <h4 class="font-bold text-sm">Underwriting</h4>
+      <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${heavy ? "bg-danger-soft text-danger" : "bg-primary-soft text-primary-dark"}">${esc(uw.lender)}</span>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      ${cell("FOIR now", `${uw.foirExisting}%`)}
+      ${cell("FOIR with this loan", `${uw.foirUpdated}%`, heavy ? "text-danger" : "text-primary")}
+      ${cell("New EMI (est.)", rupees(uw.proposedEmi))}
+      ${cell("Rate band", esc(uw.rateBand))}
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4 pt-3 border-t border-outline-variant/40">
+      ${cell("Monthly income", `${rupees(uw.monthlyIncome)}<span class="font-normal text-[10px] text-on-surface-variant"> · ${esc(uw.incomeBasis || "")}</span>`)}
+      ${cell("Existing EMIs", uw.existingEmiKnown ? rupees(uw.existingEmi) : "not asked")}
+      ${cell("Loan", `${rupees(uw.loanAmount)}<span class="font-normal text-[10px] text-on-surface-variant"> · ${esc(uw.amountBasis || "")}</span>`)}
+    </div>
+    <p class="text-[11px] text-on-surface-variant mt-3">${esc(uw.lenderNote)} ${esc(uw.basis)}</p>
+  </div>`;
+}
+
+// Anything on the profile the schema does not describe.
+//
+// The extractor cannot produce these — validate() drops unknown branches and
+// fields before they reach storage. They exist because profiles written before
+// the schema did (and anything a future field rename leaves behind) are still
+// real things a caller said, and a dashboard that silently hides data it does
+// not recognise is worse than one that shows it plainly under a raw key.
+function otherFactsCard(profile) {
+  const known = new Map((voiceSchema?.branches || []).map((b) => [b.id, new Set(b.fields.map((f) => f.id))]));
+  const rows = [];
+  const push = (label, v) => {
+    const shown = v && typeof v === "object" ? JSON.stringify(v) : String(v);
+    rows.push(`<div class="flex justify-between gap-4 py-1.5 border-b border-outline-variant/40 last:border-0">
+      <span class="text-xs text-on-surface-variant">${esc(label)}</span>
       <span class="text-xs font-bold text-right">${esc(shown)}</span>
+    </div>`);
+  };
+
+  for (const [key, value] of Object.entries(profile)) {
+    if (key.startsWith("_") || key === "underwriting") continue; // metadata and the derived branch
+    if (!known.has(key)) {
+      push(key, value);
+      continue;
+    }
+    const fields = known.get(key);
+    for (const [k, v] of Object.entries(value || {})) {
+      if (!fields.has(k)) push(`${key} · ${k}`, v);
+    }
+  }
+  if (!rows.length) return "";
+  return `<div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow mb-4">
+    <h4 class="font-bold text-sm mb-1">Other details on file <span class="font-normal text-[11px] text-on-surface-variant">— captured before the current branch schema, or under a name it no longer uses</span></h4>
+    ${rows.join("")}
+  </div>`;
+}
+
+// The join with the doc collection agent: what this conversation narrowed the
+// catalogue down to.
+//
+// The skipped list is shown, not hidden, and that is the point of the card. An
+// officer who can only see what was asked for cannot tell "correctly narrowed"
+// from "quietly missed" — and "we are NOT asking your father for three years of
+// ITR because he is salaried" is the sentence that makes the two agents worth
+// joining at all.
+function documentPlanCard(plan) {
+  if (!plan) return "";
+  const asked = plan.asked.map((d) => `<div class="py-2 border-b border-outline-variant/40 last:border-0">
+      <div class="flex justify-between gap-3 items-baseline">
+        <span class="text-xs font-bold">${esc(d.label)}</span>
+        ${d.inCollectionFlow ? "" : `<span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-soft text-amber flex-none" title="The flowchart asks for this, but the /docs upload flow has no row for it yet.">not in upload flow</span>`}
+      </div>
+      <p class="text-[11px] text-on-surface-variant mt-0.5 leading-snug">${esc(d.because)}</p>
+    </div>`).join("");
+
+  const skipped = plan.skipped.map((d) => `<div class="py-1.5 border-b border-outline-variant/40 last:border-0">
+      <span class="text-xs line-through text-on-surface-variant">${esc(d.label)}</span>
+      <p class="text-[11px] text-on-surface-variant leading-snug">${esc(d.because)}</p>
+    </div>`).join("");
+
+  const pending = plan.pending.map((p) => `<div class="py-1.5 border-b border-outline-variant/40 last:border-0">
+      <p class="text-xs">Ask: ${esc(p.question)}</p>
+      <p class="text-[11px] text-on-surface-variant leading-snug">Settles ${esc(p.settles)}.</p>
+    </div>`).join("");
+
+  return `<div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow mb-4">
+    <div class="flex justify-between items-start mb-1">
+      <div>
+        <h4 class="font-bold text-sm">Documents to request</h4>
+        <p class="text-[11px] text-on-surface-variant">Narrowed from the ${plan.counts.catalogue}-document catalogue by what this caller said.</p>
+      </div>
+      <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary-soft text-primary-dark flex-none">${plan.counts.asked} to ask</span>
+    </div>
+    ${asked}
+    ${skipped ? `<details class="mt-3 pt-3 border-t border-outline-variant/40">
+      <summary class="cursor-pointer text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Not being asked for (${plan.counts.skipped}) — and why</summary>
+      <div class="mt-2">${skipped}</div>
+    </details>` : ""}
+    ${pending ? `<div class="mt-3 pt-3 border-t border-outline-variant/40">
+      <p class="text-[10px] font-bold uppercase tracking-wider text-amber mb-1.5">${plan.counts.pending} question${plan.counts.pending === 1 ? "" : "s"} would narrow this further</p>
+      ${pending}
+    </div>` : ""}
+  </div>`;
+}
+
+function flagsCard(flags) {
+  if (!flags || !flags.length) return "";
+  const rows = flags.map((f) => {
+    const threat = f.severity === "threat";
+    return `<div class="flex gap-2.5 py-2 border-b border-outline-variant/40 last:border-0">
+      <span class="material-symbols-outlined text-base flex-none ${threat ? "text-danger" : "text-amber"}">${threat ? "error" : "info"}</span>
+      <div>
+        <p class="text-xs leading-snug">${esc(f.message)}</p>
+        <p class="text-[10px] text-on-surface-variant uppercase tracking-wider mt-0.5">${esc(f.branch)} · ${esc(f.code)}</p>
+      </div>
     </div>`;
   }).join("");
+  const threats = flags.filter((f) => f.severity === "threat").length;
+  return `<div class="bg-white rounded-2xl p-5 border ${threats ? "border-danger/40" : "border-outline-variant/50"} card-shadow mb-4">
+    <h4 class="font-bold text-sm mb-1">Flags <span class="font-normal text-[11px] text-on-surface-variant">— raised by the rules on the flowchart, not by the model</span></h4>
+    ${rows}
+  </div>`;
 }
 
 function renderVoiceDetail(a) {
   if (!a) { $("#detail").innerHTML = EMPTY_DETAIL; return; }
-  const facts = factRows(a.profile || {});
+  const profile = a.profile || {};
+  const evidence = profile._evidence || {};
+  const cov = a.coverage || { branches: [], captured: 0, total: 0, percent: 0 };
+  const byId = new Map(cov.branches.map((b) => [b.id, b]));
+  const branches = (voiceSchema?.branches || [])
+    .map((b) => branchCard(b, profile, byId.get(b.id), evidence))
+    .join("");
   const calls = (a.calls || []).map((c) => {
     const mins = Math.floor(c.seconds / 60);
     const secs = c.seconds % 60;
@@ -740,17 +991,28 @@ function renderVoiceDetail(a) {
         </div>
         <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-primary-soft text-primary-dark">${a.callCount} call${a.callCount === 1 ? "" : "s"}</span>
       </div>
+      <div class="mt-4">
+        <div class="flex justify-between text-[11px] text-on-surface-variant mb-1">
+          <span>What the calls have established</span>
+          <span class="font-bold">${cov.captured} of ${cov.total} · ${cov.percent}%</span>
+        </div>
+        <div class="h-2 rounded-full bg-surface-container overflow-hidden">
+          <div class="h-full rounded-full ${cov.percent >= 80 ? "bg-success" : "bg-primary"}" style="width:${cov.percent}%"></div>
+        </div>
+      </div>
       <p class="text-[11px] text-on-surface-variant mt-4 pt-3 border-t border-outline-variant/40">
         This person signed up on the phone line. They are not linked to a borrower file — if that is the same human as one of the applications, link them by hand.
+        Everything below is <strong>what they said on a call</strong>, not verified against a document.
       </p>
     </div>
 
-    <div class="bg-white rounded-2xl p-6 border border-outline-variant/50 card-shadow mb-6">
-      <h3 class="font-bold mb-3">What the calls established</h3>
-      ${facts || `<p class="text-sm text-on-surface-variant">Nothing captured yet. Details appear here as the agent picks them up during a call.</p>`}
-    </div>
+    ${flagsCard(profile._flags)}
+    ${underwritingCard(profile.underwriting)}
+    ${documentPlanCard(a.documentPlan)}
+    ${branches || `<div class="bg-white rounded-2xl p-6 border border-outline-variant/50 card-shadow mb-4"><p class="text-sm text-on-surface-variant">Nothing captured yet. The branches fill in as the agent works through them on a call.</p></div>`}
+    ${otherFactsCard(profile)}
 
-    <h3 class="font-bold mb-3">Call history</h3>
+    <h3 class="font-bold mb-3 mt-6">Call history</h3>
     ${calls || `<div class="p-6 text-sm text-on-surface-variant bg-white rounded-2xl border border-outline-variant/50">No calls yet — the account exists but nobody has talked to UPSY on it.</div>`}`;
 }
 
@@ -796,6 +1058,17 @@ loadList().then(() => {
 // both would re-render the voice list out from under a click, and re-rendering
 // the lead list while the voice view is open puts the wrong cards on screen.
 setInterval(async () => {
-  if (listMode === "voice") await loadVoiceAccounts();
-  else await loadList();
+  // Swallowed on purpose. This runs forever, so any blip — a restart, a sleeping
+  // laptop, a dropped wifi — becomes an uncaught rejection in the console every
+  // seven seconds, which buries the errors that actually mean something. The
+  // next tick re-renders from live data anyway, so there is nothing to recover.
+  try {
+    if (listMode === "voice") {
+      await loadVoiceAccounts();
+      // ...and the file that is open beside it, or the two disagree.
+      await refreshVoiceDetail();
+    } else await loadList();
+  } catch (e) {
+    /* transient — the next tick will pick it up */
+  }
 }, 7000);
