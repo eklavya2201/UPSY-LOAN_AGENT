@@ -41,3 +41,9 @@ services:
       # still persist and print to the server log.
       - key: OPS_PHONE
         sync: false
+      # The false-info check (backend/instituteVerify.js) searches the web for
+      # the course a caller names. With this set it uses Serper; without it,
+      # DuckDuckGo's keyless endpoint — which has already answered with a
+      # bot-check (HTTP 202) from a dev machine. Treat Serper as the real path.
+      - key: SERPER_API_KEY
+        sync: false
