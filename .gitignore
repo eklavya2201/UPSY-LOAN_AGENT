@@ -13,5 +13,10 @@ eng.traineddata
 # Windows folder metadata
 desktop.ini
 
+# Throwaway latency probes written while measuring a provider (_dgs.mjs was the
+# Deepgram Aura one). Keep them local — the numbers they produced belong in the
+# README, the scripts themselves do not.
+_*.mjs
+
 # Local dev-tooling config (Claude Code launch config), not app source
 .claude/
