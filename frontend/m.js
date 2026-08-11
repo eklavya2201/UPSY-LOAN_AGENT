@@ -67,8 +67,23 @@
   // prompt handles as its own case rather than as an error.
   const leadId = sessionStorage.getItem("upsy_lead");
 
+  // Point the way back at the document they left, not the top of the flow.
+  // Same-origin sessionStorage, written by app.js when they tapped through.
+  // Guarded to a /docs path so a stale or tampered value cannot aim this link
+  // somewhere else.
+  (() => {
+    const back = sessionStorage.getItem("upsy_return");
+    const cta = document.getElementById("docCta");
+    if (cta && /^\/docs(\/|$)/.test(back || "")) cta.href = back;
+  })();
+
   function showView(name) {
     Object.keys(el.views).forEach((k) => el.views[k].classList.toggle("on", k === name));
+    // The way back to /docs belongs to the screens where the caller is still
+    // deciding. Once they are connecting or on a call it disappears: a live
+    // call is not a place to offer someone a link out of the page, and the
+    // call view's own controls own that corner of the screen.
+    document.getElementById("docCta")?.classList.toggle("on", name === "brief" || name === "auth");
   }
 
   // ── The account ───────────────────────────────────────────────────────────

@@ -686,6 +686,22 @@ function wireMobilePanels() {
   // holding the lock is about to be replaced wholesale by page().
   checklist?.querySelectorAll("[data-jump]").forEach((b) =>
     b.addEventListener("click", () => document.body.classList.remove("upsy-locked")));
+
+  // Leaving for /m throws away a file that is attached but not yet uploaded —
+  // on a phone that is usually a photo they just took of the document in their
+  // hand. Cheap to re-take, but losing it without being asked is the kind of
+  // thing that makes someone abandon the flow.
+  document.getElementById("voiceCta")?.addEventListener("click", (e) => {
+    const picked = document.getElementById("fileInput")?.files?.length;
+    if (picked && !confirm("You've attached a file but haven't uploaded it yet. Leave and talk to UPSY? Your file won't be saved.")) {
+      e.preventDefault();
+      return;
+    }
+    // Remember the exact document, so /m's way back returns them to it rather
+    // than to the top of the flow. Without this the round trip quietly costs
+    // them their place, which is the thing that makes people not use the door.
+    sessionStorage.setItem("upsy_return", location.pathname);
+  });
 }
 
 // ---- 3. Document upload ----
@@ -788,12 +804,25 @@ function renderCurrent() {
     ${checklistHtml()}
     ${assistPanelHtml(doc)}
     <div id="panelScrim" class="upsy-scrim"></div>
-    <!-- Below xl the Ask UPSY panel is a closed sheet, so it needs a way in.
-         Sits under the scrim's z-index so it dims with the rest of the page. -->
-    <button id="assistOpen" aria-label="Ask UPSY about this document" aria-expanded="false"
-      class="xl:hidden fixed right-4 bottom-5 z-30 h-13 pl-4 pr-5 py-3 flex items-center gap-2 bg-primary text-white font-semibold text-sm rounded-full shadow-lg shadow-primary/25 hover:bg-primary-dark active:scale-95 transition">
-      <span class="material-symbols-outlined text-[20px]">support_agent</span>Ask UPSY
-    </button>
+    <!-- Both float under the scrim's z-index, so they dim with the page when a
+         panel opens. At xl the stack shifts left of the 320px Ask UPSY sidebar
+         rather than floating on top of it. -->
+    <div class="fixed right-4 bottom-5 z-30 flex flex-col items-end gap-3 xl:right-[336px]">
+      <!-- A real link, not a router call: /m is its own page, not a route of
+           this SPA. Same tab and same origin on purpose — m.js reads the
+           sessionStorage key app.js writes ("upsy_lead"), so the caller lands
+           grounded in their own file instead of anonymous, and Back returns
+           them to the document they were on. -->
+      <a href="/m" id="voiceCta"
+        class="pl-4 pr-5 py-3 min-h-11 flex items-center gap-2 bg-white text-primary font-semibold text-sm rounded-full border border-primary-line shadow-lg shadow-primary/10 hover:bg-primary-soft active:scale-95 transition">
+        <span class="material-symbols-outlined text-[20px]">graphic_eq</span>Talk to agent
+      </a>
+      <!-- Below xl the Ask UPSY panel is a closed sheet, so it needs a way in. -->
+      <button id="assistOpen" aria-label="Ask UPSY about this document" aria-expanded="false"
+        class="xl:hidden pl-4 pr-5 py-3 min-h-11 flex items-center gap-2 bg-primary text-white font-semibold text-sm rounded-full shadow-lg shadow-primary/25 hover:bg-primary-dark active:scale-95 transition">
+        <span class="material-symbols-outlined text-[20px]">support_agent</span>Ask UPSY
+      </button>
+    </div>
     <main class="pt-20 md:pt-24 pb-28 lg:pl-72 xl:pr-80 fade-in">
       <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-12">
         <section>

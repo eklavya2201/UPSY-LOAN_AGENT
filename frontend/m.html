@@ -641,9 +641,51 @@
   }
   .ok-note .tick svg { width: 26px; height: 26px; fill: #eaf8ff; }
 
+  /* ── The way back to the document flow ────────────────────────────────
+     The mirror of "Talk to agent" on /docs. Deliberately a floating pill
+     rather than another button in the action stack: that stack was cut to
+     one primary action on purpose (see the comment beside #permBtn), and a
+     fourth full-width button would undo exactly that lesson.
+
+     Hidden during connecting and in-call — m.js only shows it on the brief
+     and sign-in screens. Somebody mid-call does not need a door out of the
+     page, and the call view's own controls own that corner. */
+  .doc-cta {
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + var(--safe-bottom));
+    z-index: 40;
+    display: none;
+    align-items: center;
+    gap: .45rem;
+    padding: .7rem 1.05rem;
+    border-radius: 999px;
+    background: rgba(18, 49, 69, .92);
+    border: 1px solid var(--line-bright);
+    color: var(--text);
+    font: 600 .85rem/1 Hind, sans-serif;
+    text-decoration: none;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .38);
+    -webkit-tap-highlight-color: transparent;
+    transition: transform .12s ease, background .2s ease;
+  }
+  .doc-cta.on { display: flex; }
+  .doc-cta:active { transform: scale(.97); }
+  .doc-cta svg { width: 17px; height: 17px; fill: currentColor; flex: none; }
+  /* Follow the phone frame in, once there is one. The breakpoint and the 400px
+     must match the .frame rule above (min-width: 640px) — keyed to 520px this
+     pushed the button 110px into the middle of a still-full-width frame.
+     50% - 200px is the frame's right edge; the extra 16px matches the inset
+     used everywhere else. */
+  @media (min-width: 640px) {
+    .doc-cta { right: calc(50% - 184px); }
+  }
+
   /* Everything decorative stops; the page stays fully usable. */
   @media (prefers-reduced-motion: reduce) {
     .sheet, .sheet-card, .focus, .btn, .key { transition: none; }
+    .doc-cta { transition: none; }
     .dots::after { animation: none; content: "…"; }
     /* The rim still shows state — it just holds steady instead of breathing,
        so the information survives even though the motion doesn't. */
@@ -670,6 +712,15 @@
     </span>
     <span class="bar-spacer" aria-hidden="true"></span>
   </div>
+
+  <!-- The mirror of "Talk to agent" on a document page. Same tab and same
+       origin, so the session the applicant already has survives the hop back;
+       /docs restores their place from sessionStorage. Shown by m.js on the
+       brief and sign-in screens only. -->
+  <a class="doc-cta" id="docCta" href="/docs">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+    Upload documents
+  </a>
 
   <!-- ── 0. Sign in ─────────────────────────────────────────────────────────
        /m has its own account, separate from the phone-number lookup behind
