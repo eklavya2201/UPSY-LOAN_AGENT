@@ -85,6 +85,66 @@
     .ua-dot-pulse, .ua-bars i, .ua-ripple::before, .ua-ripple::after { animation: none; }
     .ua-phase, .ua-toast, .ua-step-active { animation-duration: .01ms; }
   }
+
+  /* ── The two panels on a phone ────────────────────────────────────────
+     The document checklist and Ask UPSY used to be `hidden lg:flex` and
+     `hidden xl:flex`: on a phone they did not exist, taking the jump-to-any-
+     document nav, the whole doc Q&A and the "Talk to UPSY live" control with
+     them.
+
+     Each is ONE element restyled by breakpoint, never a second mobile copy.
+     Both carry ids that wireAssist() and loadLiveAssistApplicant() look up
+     with getElementById — a duplicate would wire only whichever came first
+     in the DOM and leave the visible one dead. So the same node is a static
+     sidebar at wide widths and a drawer/sheet below them. */
+  .upsy-panel { transition: transform .3s cubic-bezier(.16, 1, .3, 1); }
+
+  /* Checklist → a left drawer below lg (unchanged sidebar at lg and up).
+     Selectors here are `aside.x` rather than `.x` on purpose: Tailwind's CDN
+     build injects its utilities AFTER this block, so at equal specificity
+     w-72 / top-16 / bottom-0 would win and the panel would sit half on-screen
+     instead of parked off it. One element selector settles it without
+     !important. */
+  @media (max-width: 1023.98px) {
+    aside.upsy-checklist {
+      width: min(19rem, 84vw);
+      transform: translateX(-101%);
+      box-shadow: 0 12px 40px rgba(11, 28, 48, .18);
+    }
+    aside.upsy-checklist.is-open { transform: none; }
+  }
+
+  /* Ask UPSY → a bottom sheet below xl (unchanged right sidebar at xl and up).
+     A sheet rather than a drawer because the thing it contains is a
+     conversation, and a keyboard opening under it should push the input up. */
+  @media (max-width: 1279.98px) {
+    aside.upsy-assist {
+      top: auto; left: 0; right: 0; bottom: 0; width: auto;
+      height: min(86vh, 620px);
+      border-left: 0;
+      border-top: 1px solid rgba(195, 198, 215, .6);
+      border-radius: 20px 20px 0 0;
+      transform: translateY(101%);
+      box-shadow: 0 -12px 40px rgba(11, 28, 48, .18);
+    }
+    aside.upsy-assist.is-open { transform: none; }
+    /* Keep the toast clear of the Ask UPSY button. */
+    .ua-toast { bottom: 92px; }
+  }
+
+  .upsy-scrim {
+    position: fixed; inset: 0; z-index: 35;
+    background: rgba(11, 28, 48, .42);
+    opacity: 0; pointer-events: none;
+    transition: opacity .25s ease;
+  }
+  .upsy-scrim.is-open { opacity: 1; pointer-events: auto; }
+  /* Stops the page behind a sheet from scrolling under your finger. */
+  body.upsy-locked { overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .upsy-panel, .upsy-scrim { transition: none; }
+  }
 </style>
 </head>
 <body class="text-on-surface min-h-screen">

@@ -30,12 +30,22 @@ const rupees = (n) => {
 };
 
 // ---- shared chrome ----
-function topbar(progressLabel) {
+// `withChecklist` is only true on a document page, where a checklist exists to
+// open. On a phone that button is also the only progress indicator there is —
+// the bar beside it is md-and-up, so before this the applicant had none.
+function topbar(progressLabel, withChecklist) {
   const pct = total ? Math.round((progressDone() / total) * 100) : 0;
   return `
     <header class="fixed top-0 inset-x-0 z-50 h-16 bg-surface/80 backdrop-blur-md shadow-sm">
-      <div class="h-16 px-6 flex items-center justify-between">
-        <span class="text-2xl font-bold text-primary">UPSY</span>
+      <div class="h-16 px-4 md:px-6 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0">
+          ${withChecklist ? `
+          <button id="checklistOpen" aria-label="Open your document list" aria-expanded="false" class="lg:hidden -ml-1 h-10 pl-2 pr-3 flex items-center gap-1.5 rounded-full hover:bg-surface-container active:scale-95 transition">
+            <span class="material-symbols-outlined text-on-surface-variant">checklist</span>
+            <span class="text-xs font-bold text-primary bg-primary-soft px-2 py-0.5 rounded-full">${progressDone()}/${total}</span>
+          </button>` : ""}
+          <span class="text-2xl font-bold text-primary">UPSY</span>
+        </div>
         <div class="flex items-center gap-4">
           ${progressLabel ? `
           <div class="hidden md:flex flex-col items-end">
@@ -364,8 +374,10 @@ function emiCardHtml() {
           <label class="block"><span class="text-sm font-medium">Interest rate (% p.a.)</span>
             <input id="emiRate" type="number" step="0.1" value="${rate}" class="mt-1.5 w-full h-11 px-3 bg-surface border border-outline-variant rounded-xl focus:border-primary outline-none"/></label>
           <label class="block"><span class="text-sm font-medium">Repayment tenure — <span id="emiTenureLabel">${tenure} years</span></span>
-            <input id="emiTenure" type="range" min="1" max="15" step="1" value="${tenure}" class="mt-2 w-full accent-primary"/></label>
-          <label class="flex items-center gap-2 text-sm cursor-pointer"><input id="emiPayDuring" type="checkbox" class="accent-primary w-4 h-4"/> Pay interest during study <span class="text-on-surface-variant">(lowers total cost)</span></label>
+            <input id="emiTenure" type="range" min="1" max="15" step="1" value="${tenure}" class="mt-2 w-full accent-primary h-6 sm:h-auto"/></label>
+          <!-- py-1 gives the checkbox a 44px-tall hit area via its label
+               without drawing a bigger box. -->
+          <label class="flex items-center gap-2.5 text-sm cursor-pointer py-1"><input id="emiPayDuring" type="checkbox" class="accent-primary w-5 h-5 sm:w-4 sm:h-4 shrink-0"/> Pay interest during study <span class="text-on-surface-variant">(lowers total cost)</span></label>
         </div>
         <div id="emiOut"></div>
       </div>
@@ -385,7 +397,7 @@ function computeEmi() {
   document.getElementById("emiOut").innerHTML = `
     <div class="bg-primary-soft rounded-xl p-5 text-center mb-3">
       <div class="text-xs uppercase tracking-wide text-primary/70 mb-1">Monthly EMI (after study)</div>
-      <div class="text-4xl font-extrabold text-primary">${inr(res.emi)}</div>
+      <div class="text-3xl sm:text-4xl font-extrabold text-primary">${inr(res.emi)}</div>
       <div class="text-xs text-on-surface-variant mt-1">for ${res.n} months</div>
     </div>
     ${payDuringStudy && res.duringStudyMonthly > 0 ? `<div class="flex justify-between text-sm py-2 border-b border-surface-container"><span class="text-on-surface-variant">During study (interest only)</span><span class="font-semibold">${inr(res.duringStudyMonthly)}/mo</span></div>` : ""}
@@ -429,7 +441,7 @@ function renderEligibility() {
   page(`
     ${topbar(`${progressDone()} of ${total} verified`)}
     <main class="pt-32 pb-20 max-w-container mx-auto px-6 md:px-16 fade-in">
-      <h1 class="text-4xl font-bold mb-2">Hi ${LEAD.name || "there"} 👋</h1>
+      <h1 class="text-3xl sm:text-4xl font-bold mb-2">Hi ${LEAD.name || "there"} 👋</h1>
       <p class="text-lg text-on-surface-variant mb-4">${LEAD.course || ""}${LEAD.institute ? " at " + LEAD.institute : ""}${LEAD.source ? " · via " + LEAD.source : ""}</p>
       ${partnerInstitute ? `<div class="inline-flex items-start gap-2 text-sm bg-success-soft border border-success/30 rounded-2xl px-4 py-2.5 text-on-surface mb-4"><span class="material-symbols-outlined text-success text-[20px]">school</span><span><b class="text-success">${partnerInstitute.name} is a UPSY partner institute.</b> ${partnerInstitute.perk}</span></div>` : ""}
       ${CONTEXT && contextSummaryLine() ? `<div class="inline-flex items-center gap-2 text-sm bg-primary-soft border border-primary-line rounded-full px-4 py-2 text-primary mb-10"><span class="material-symbols-outlined text-[18px]">bolt</span> Your request: ${contextSummaryLine()}</div>` : `<div class="mb-10"></div>`}
@@ -534,8 +546,13 @@ function liveAssistIdleCompactHtml(failure) {
   ${UpsyPhases.failureHtml(failure)}
   <div class="flex items-center gap-1.5 mb-1"><span class="material-symbols-outlined text-primary text-[16px]">podcasts</span><div class="text-xs font-bold">Talk to UPSY live</div></div>
   <p class="text-[11px] text-on-surface-variant mb-2">Prefer voice while filling this in? Paste a Meet link and UPSY joins to help.</p>
-  <input id="liveAssistUrl" type="text" placeholder="Meet link" class="w-full border border-outline-variant rounded-lg px-2.5 py-1.5 text-xs mb-2" />
-  <button id="liveAssistStartBtn" class="w-full py-1.5 bg-primary text-white rounded-lg text-xs font-semibold hover:bg-primary-dark transition flex items-center justify-center gap-1"><span class="material-symbols-outlined text-[14px]">call</span>Start call</button>`;
+  <!-- "Compact" was written for a 320px-wide desktop sidebar. The same markup
+       is now the phone sheet, where a 28px button is not reachable — so the
+       controls grow below xl and keep the tight desktop sizing above it.
+       text-base on the input: iOS zooms the whole page in on focus for
+       anything under 16px. -->
+  <input id="liveAssistUrl" type="text" placeholder="Meet link" class="w-full border border-outline-variant rounded-lg px-3 py-2.5 xl:py-1.5 text-base xl:text-xs mb-2" />
+  <button id="liveAssistStartBtn" class="w-full py-3 xl:py-1.5 min-h-11 xl:min-h-0 bg-primary text-white rounded-lg text-sm xl:text-xs font-semibold hover:bg-primary-dark transition flex items-center justify-center gap-1"><span class="material-symbols-outlined text-[14px]">call</span>Start call</button>`;
 }
 
 function liveAssistRunningCompactHtml(status) {
@@ -594,20 +611,81 @@ function checklistHtml() {
         const current = i === idx;
         const icon = done ? "check_circle" : current ? "radio_button_checked" : "radio_button_unchecked";
         const iconColor = done ? "text-success" : current ? "text-primary" : "text-outline-variant";
-        return `<button data-jump="${i}" class="w-full text-left flex items-center gap-2 px-2 py-2 rounded-lg text-sm transition ${current ? "bg-primary-soft font-semibold text-primary" : "hover:bg-surface-container text-on-surface"}">
+        // min-h-11 (44px) below lg: these rows are now the whole document
+        // navigation on a phone, and at their old 35px they were under every
+        // platform's minimum touch target. Unchanged on desktop, where the
+        // pointer is precise and a denser list is easier to scan.
+        return `<button data-jump="${i}" class="w-full text-left flex items-center gap-2 px-2 py-2.5 lg:py-2 min-h-11 lg:min-h-0 rounded-lg text-sm transition ${current ? "bg-primary-soft font-semibold text-primary" : "hover:bg-surface-container text-on-surface"}">
           <span class="material-symbols-outlined text-[18px] ${iconColor}" ${done ? `style="font-variation-settings:'FILL' 1"` : ""}>${icon}</span>
           <span class="flex-1 leading-snug">${d.label}${d.required ? "" : ` <span class="text-on-surface-variant font-normal">(optional)</span>`}</span>
         </button>`;
       }).join("")}
     </div>`).join("");
   return `
-    <aside class="hidden lg:flex flex-col fixed left-0 top-16 bottom-0 w-72 bg-white border-r border-outline-variant/50 overflow-y-auto p-4 z-30">
+    <aside id="checklistPanel" class="upsy-panel upsy-checklist flex flex-col fixed left-0 top-16 bottom-0 w-72 bg-white border-r border-outline-variant/50 overflow-y-auto p-4 z-40">
       <div class="flex items-center justify-between px-2 mb-3">
         <span class="text-sm font-bold">Your documents</span>
-        <span class="text-xs font-semibold text-primary bg-primary-soft px-2 py-0.5 rounded-full">${progressDone()}/${total}</span>
+        <div class="flex items-center gap-1">
+          <span class="text-xs font-semibold text-primary bg-primary-soft px-2 py-0.5 rounded-full">${progressDone()}/${total}</span>
+          <button id="checklistClose" aria-label="Close document list" class="lg:hidden w-11 h-11 -mr-2 grid place-items-center rounded-full text-on-surface-variant hover:bg-surface-container transition">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
       </div>
       ${body}
     </aside>`;
+}
+
+// ---- Opening and closing the two panels on a phone ----
+// At lg/xl these panels are always-visible sidebars and none of this runs:
+// the triggers are `lg:hidden` / `xl:hidden`, and the scrim is only ever shown
+// by a trigger. Resizing a desktop window narrow therefore lands on a closed
+// drawer, which is the correct state rather than a stuck-open one.
+function wireMobilePanels() {
+  const scrim = document.getElementById("panelScrim");
+  const checklist = document.getElementById("checklistPanel");
+  const assist = document.getElementById("assistPanel");
+  if (!scrim) return;
+
+  const openers = { checklistOpen: checklist, assistOpen: assist };
+  let open = null;
+
+  function close() {
+    if (!open) return;
+    open.panel.classList.remove("is-open");
+    open.trigger?.setAttribute("aria-expanded", "false");
+    scrim.classList.remove("is-open");
+    document.body.classList.remove("upsy-locked");
+    open.trigger?.focus();
+    open = null;
+  }
+
+  function show(panel, trigger) {
+    if (!panel) return;
+    panel.classList.add("is-open");
+    trigger?.setAttribute("aria-expanded", "true");
+    scrim.classList.add("is-open");
+    document.body.classList.add("upsy-locked");
+    open = { panel, trigger };
+    // Send focus into the panel so a keyboard or screen reader follows it in.
+    panel.querySelector("button, input")?.focus({ preventScroll: true });
+  }
+
+  Object.entries(openers).forEach(([id, panel]) => {
+    const trigger = document.getElementById(id);
+    trigger?.addEventListener("click", () => show(panel, trigger));
+  });
+
+  document.getElementById("checklistClose")?.addEventListener("click", close);
+  document.getElementById("assistClose")?.addEventListener("click", close);
+  scrim.addEventListener("click", close);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+
+  // Picking a document navigates and re-renders. Releasing the scroll lock has
+  // to happen here rather than in the drawer's own teardown, because the node
+  // holding the lock is about to be replaced wholesale by page().
+  checklist?.querySelectorAll("[data-jump]").forEach((b) =>
+    b.addEventListener("click", () => document.body.classList.remove("upsy-locked")));
 }
 
 // ---- 3. Document upload ----
@@ -619,14 +697,19 @@ function assistPanelHtml(doc) {
     ["chipRejected", `Why wasn't mine accepted?`],
   ];
   return `
-    <aside class="hidden xl:flex flex-col fixed right-0 top-16 bottom-0 w-80 bg-white border-l border-outline-variant/50 z-30">
+    <aside id="assistPanel" class="upsy-panel upsy-assist flex flex-col fixed right-0 top-16 bottom-0 w-80 bg-white border-l border-outline-variant/50 z-40">
       <div class="p-4 border-b border-outline-variant/40">
+        <!-- Grab handle: the affordance that says "this sheet pulls down". -->
+        <div class="xl:hidden w-10 h-1 rounded-full bg-outline-variant/60 mx-auto mb-3"></div>
         <div class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-full bg-primary-soft grid place-items-center"><span class="material-symbols-outlined text-primary text-[18px]">support_agent</span></div>
-          <div>
+          <div class="w-8 h-8 rounded-full bg-primary-soft grid place-items-center shrink-0"><span class="material-symbols-outlined text-primary text-[18px]">support_agent</span></div>
+          <div class="min-w-0 flex-1">
             <div class="text-sm font-bold">Ask UPSY</div>
-            <div class="text-[11px] text-on-surface-variant">Questions about your ${doc.label}</div>
+            <div class="text-[11px] text-on-surface-variant truncate">Questions about your ${doc.label}</div>
           </div>
+          <button id="assistClose" aria-label="Close Ask UPSY" class="xl:hidden w-11 h-11 -mr-2 grid place-items-center rounded-full text-on-surface-variant hover:bg-surface-container transition shrink-0">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
         </div>
       </div>
       <div id="liveAssist" class="p-4 border-b border-outline-variant/40"></div>
@@ -635,11 +718,11 @@ function assistPanelHtml(doc) {
       </div>
       <div class="p-3 border-t border-outline-variant/40">
         <div class="flex flex-wrap gap-1.5 mb-2">
-          ${chips.map(([id, label]) => `<button id="${id}" class="assist-chip text-[11px] text-primary bg-primary-soft border border-primary-line hover:bg-primary-line/50 rounded-full px-2.5 py-1 transition ${id === "chipRejected" && !lastFailedChecks.length ? "hidden" : ""}">${label}</button>`).join("")}
+          ${chips.map(([id, label]) => `<button id="${id}" class="assist-chip text-xs xl:text-[11px] text-primary bg-primary-soft border border-primary-line hover:bg-primary-line/50 rounded-full px-3 xl:px-2.5 py-2 xl:py-1 min-h-10 xl:min-h-0 transition ${id === "chipRejected" && !lastFailedChecks.length ? "hidden" : ""}">${label}</button>`).join("")}
         </div>
-        <div class="flex gap-2">
-          <input id="assistInput" placeholder="Type a question…" class="flex-1 h-10 px-3 bg-surface border border-outline-variant rounded-xl text-sm focus:border-primary focus:ring-2 focus:ring-primary/10 outline-none transition"/>
-          <button id="assistSend" class="w-10 h-10 grid place-items-center bg-primary text-white rounded-xl hover:bg-primary-dark active:scale-95 transition disabled:opacity-50"><span class="material-symbols-outlined text-[18px]">send</span></button>
+        <div class="flex gap-2 pb-[env(safe-area-inset-bottom)]">
+          <input id="assistInput" placeholder="Type a question…" class="flex-1 h-12 xl:h-10 px-3 bg-surface border border-outline-variant rounded-xl text-base xl:text-sm focus:border-primary focus:ring-2 focus:ring-primary/10 outline-none transition"/>
+          <button id="assistSend" aria-label="Send question" class="w-12 h-12 xl:w-10 xl:h-10 shrink-0 grid place-items-center bg-primary text-white rounded-xl hover:bg-primary-dark active:scale-95 transition disabled:opacity-50"><span class="material-symbols-outlined text-[18px]">send</span></button>
         </div>
       </div>
     </aside>`;
@@ -701,18 +784,25 @@ function renderCurrent() {
   const isDone = doneSet.has(doc.id);
   lastFailedChecks = []; // fresh document, fresh context
   page(`
-    ${topbar(`${progressDone()} of ${total} verified`)}
+    ${topbar(`${progressDone()} of ${total} verified`, true)}
     ${checklistHtml()}
     ${assistPanelHtml(doc)}
-    <main class="pt-24 pb-24 lg:pl-72 xl:pr-80 fade-in">
-      <div class="max-w-3xl mx-auto px-6 lg:px-12">
+    <div id="panelScrim" class="upsy-scrim"></div>
+    <!-- Below xl the Ask UPSY panel is a closed sheet, so it needs a way in.
+         Sits under the scrim's z-index so it dims with the rest of the page. -->
+    <button id="assistOpen" aria-label="Ask UPSY about this document" aria-expanded="false"
+      class="xl:hidden fixed right-4 bottom-5 z-30 h-13 pl-4 pr-5 py-3 flex items-center gap-2 bg-primary text-white font-semibold text-sm rounded-full shadow-lg shadow-primary/25 hover:bg-primary-dark active:scale-95 transition">
+      <span class="material-symbols-outlined text-[20px]">support_agent</span>Ask UPSY
+    </button>
+    <main class="pt-20 md:pt-24 pb-28 lg:pl-72 xl:pr-80 fade-in">
+      <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-12">
         <section>
           <div class="flex items-center gap-3 mb-4">
             <span class="text-xs font-bold px-3 py-1 rounded-full ${required ? "bg-primary-soft text-primary-dark" : "bg-surface-container text-on-surface-variant"}">${required ? "Required" : "Optional"}</span>
             <span class="text-xs text-on-surface-variant">Document ${idx + 1} of ${queue.length}</span>
           </div>
-          <h1 class="text-4xl font-bold mb-4">${doc.label}</h1>
-          <p class="text-lg text-on-surface-variant mb-6"><span class="font-semibold text-on-surface">Why we need this:</span> ${doc.why}</p>
+          <h1 class="text-3xl sm:text-4xl font-bold mb-3 sm:mb-4">${doc.label}</h1>
+          <p class="text-base sm:text-lg text-on-surface-variant mb-6"><span class="font-semibold text-on-surface">Why we need this:</span> ${doc.why}</p>
           ${isDone ? `<div class="bg-success-soft border border-success/30 rounded-xl p-4 text-success flex items-center gap-2 mb-6"><span class="material-symbols-outlined">check_circle</span> You've already uploaded this one. Upload a new file to replace it, or continue.</div>` : ""}
 
           <div class="space-y-8">
@@ -723,12 +813,13 @@ function renderCurrent() {
                 class="w-full h-14 px-6 bg-white border border-outline-variant rounded-xl text-xl font-semibold focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition"/>
             </div>` : ""}
 
-            <div id="dropzone" class="bg-primary-soft border-2 border-dashed border-outline-variant rounded-2xl p-12 md:p-16 text-center cursor-pointer hover:border-primary transition">
-              <div class="w-16 h-16 bg-white rounded-full grid place-items-center card-shadow mb-6 mx-auto">
+            <div id="dropzone" class="bg-primary-soft border-2 border-dashed border-outline-variant rounded-2xl p-6 sm:p-10 md:p-16 text-center cursor-pointer hover:border-primary transition">
+              <div class="w-14 h-14 sm:w-16 sm:h-16 bg-white rounded-full grid place-items-center card-shadow mb-4 sm:mb-6 mx-auto">
                 <span class="material-symbols-outlined text-primary text-[32px]">cloud_upload</span>
               </div>
-              <h3 id="dropTitle" class="text-xl font-semibold mb-4">Drop your ${doc.label} here, or click to browse</h3>
-              <div class="flex items-center justify-center gap-2 mb-4">
+              <!-- "Drop" is a desktop verb; a phone has no drag-and-drop. -->
+              <h3 id="dropTitle" class="text-lg sm:text-xl font-semibold mb-4"><span class="hidden sm:inline">Drop your ${doc.label} here, or click to browse</span><span class="sm:hidden">Tap to add your ${doc.label}</span></h3>
+              <div class="flex flex-wrap items-center justify-center gap-2 mb-4">
                 ${doc.accept.map((x) => `<span class="px-3 py-1 bg-white border border-outline-variant rounded-full text-xs text-on-surface-variant uppercase">${x}</span>`).join("")}
               </div>
               <p class="text-sm text-on-surface-variant">Maximum ${doc.maxSizeMB} MB. Make sure it's clear and all corners are visible.</p>
@@ -739,13 +830,16 @@ function renderCurrent() {
 
             <div id="report"></div>
 
-            <div class="flex flex-wrap gap-4 items-center pt-2">
-              <button id="submit" disabled class="px-10 h-14 bg-primary text-white font-semibold rounded-full disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-dark active:scale-[0.98] transition inline-flex items-center gap-2">
+            <!-- Full-width primary action on a phone, inline row from sm up:
+                 a 40%-width button floating in a narrow column reads as
+                 secondary, and this is the only thing to do on the page. -->
+            <div class="flex flex-col sm:flex-row sm:flex-wrap gap-3 sm:gap-4 sm:items-center pt-2">
+              <button id="submit" disabled class="w-full sm:w-auto px-10 h-14 bg-primary text-white font-semibold rounded-full disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-dark active:scale-[0.98] transition inline-flex items-center justify-center gap-2">
                 ${isDone ? "Replace document" : "Upload &amp; verify"} <span class="material-symbols-outlined">arrow_forward</span>
               </button>
-              ${isDone ? `<button id="next" class="px-8 h-14 bg-white border border-primary text-primary font-semibold rounded-full hover:bg-primary-soft transition inline-flex items-center gap-2">Continue <span class="material-symbols-outlined">arrow_forward</span></button>` : ""}
-              ${required || isDone ? "" : `<button id="skip" class="px-6 h-14 text-on-surface-variant font-semibold rounded-full hover:bg-surface-container transition">Skip</button>`}
-              <span class="text-sm text-on-surface-variant flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">lock</span> Encrypted &amp; handled securely.</span>
+              ${isDone ? `<button id="next" class="w-full sm:w-auto px-8 h-14 bg-white border border-primary text-primary font-semibold rounded-full hover:bg-primary-soft transition inline-flex items-center justify-center gap-2">Continue <span class="material-symbols-outlined">arrow_forward</span></button>` : ""}
+              ${required || isDone ? "" : `<button id="skip" class="w-full sm:w-auto px-6 h-14 text-on-surface-variant font-semibold rounded-full hover:bg-surface-container transition">Skip</button>`}
+              <span class="text-sm text-on-surface-variant flex items-center justify-center sm:justify-start gap-1"><span class="material-symbols-outlined text-[16px]">lock</span> Encrypted &amp; handled securely.</span>
             </div>
           </div>
         </section>
@@ -753,6 +847,7 @@ function renderCurrent() {
     </main>`);
   wireUpload(doc);
   wireAssist(doc);
+  wireMobilePanels();
   loadLiveAssistApplicant(true);
   if (isDone) showStoredPreview(doc);
 }
@@ -962,7 +1057,7 @@ function renderResult(report, doc) {
       <div class="w-20 h-20 bg-success-soft rounded-full grid place-items-center mx-auto mb-6">
         <span class="material-symbols-outlined text-success text-[40px]" style="font-variation-settings:'FILL' 1">check_circle</span>
       </div>
-      <h1 class="text-4xl font-extrabold text-success mb-4">${doc.label} — verified ✓</h1>
+      <h1 class="text-3xl sm:text-4xl font-extrabold text-success mb-4">${doc.label} — verified ✓</h1>
       <p class="text-on-surface-variant mb-10">Your document passed every check.</p>
       <div class="bg-white rounded-2xl p-8 card-shadow border border-outline-variant/40 text-left mb-10">
         <div class="text-xs uppercase tracking-widest text-on-surface-variant mb-6">Verification checklist</div>
@@ -996,7 +1091,7 @@ async function renderDone() {
       <div class="w-20 h-20 bg-primary-soft rounded-full grid place-items-center mx-auto mb-8">
         <span class="material-symbols-outlined text-primary text-[40px]" style="font-variation-settings:'FILL' 1">task_alt</span>
       </div>
-      <h1 class="text-4xl font-bold mb-4">All documents received 🎉</h1>
+      <h1 class="text-3xl sm:text-4xl font-bold mb-4">All documents received 🎉</h1>
       <p class="text-lg text-on-surface-variant mb-10">Our team will review your application within 24 hours. You'll hear from us by SMS, WhatsApp and email.</p>
       <div class="text-left">
         ${eligible ? emiCardHtml() : ""}
