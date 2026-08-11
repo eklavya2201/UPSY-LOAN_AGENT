@@ -32,7 +32,7 @@
 
 import { getApplication } from "./store.js";
 import { buildContextPayload } from "./liveAssistManager.js";
-import { DOCUMENTS, STAGES } from "./documents.js";
+import { STAGES, applicableDocuments } from "./documents.js";
 import { buildVoiceSystemPrompt, buildIntroduction } from "./voicePrompt.js";
 import { accountIdentityFacts } from "./callSchema.js";
 import { mintRelayTicket, relayConfigError, RELAY_PATH, SAMPLE_RATE as RELAY_SAMPLE_RATE } from "./voiceRelay.js";
@@ -183,8 +183,10 @@ function cartesiaSignedUrl(token) {
 // pending?" with one item instead of reciting the checklist. Mirrors the
 // done/applicable logic in server.js's buildAgenda().
 function nextPendingDocument(app) {
-  const loanType = app.profile?.loanType;
-  const applicable = DOCUMENTS.filter((d) => !(loanType === "unsecured" && d.stage === "collateral"));
+  const applicable = applicableDocuments({
+    loanType: app.profile?.loanType,
+    coApplicantType: app.profile?.coApplicantType,
+  });
   const have = new Set([...(app.onFile || []), ...Object.keys(app.verifiedDocs || {})]);
   const next = applicable.find((d) => !have.has(d.id));
   if (!next) return null;

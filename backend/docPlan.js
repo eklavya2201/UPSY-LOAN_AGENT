@@ -40,64 +40,27 @@
 
 import { DOCUMENTS, getDocument } from "./documents.js";
 
-// Documents the flowchart names that the /docs collection flow does not have a
-// row for yet. Kept separate and marked `inCollectionFlow: false` rather than
-// quietly added to documents.js: this list is what a call ASKS for, and letting
-// it silently diverge from what the upload UI can actually accept would produce
-// a plan nobody can act on. Adding one to documents.js is the way to close it.
-const EXTRA = {
-  co_form16: {
-    label: "Co-applicant Form 16",
-    stage: "coapplicant",
-    why: "Form 16 is the employer's own statement of what was paid and taxed — the cleanest confirmation of a salaried income, and lenders want three years of it where possible.",
-  },
-  co_salary_bank_statement: {
-    label: "Co-applicant salary account statement (3 months)",
-    stage: "coapplicant",
-    why: "The account the salary actually lands in. It confirms the slips are real money arriving, and shows existing EMIs debiting.",
-  },
-  co_joining_letter: {
-    label: "Co-applicant joining / offer letter",
-    stage: "coapplicant",
-    why: "Only needed because they have changed jobs recently — it bridges the gap the older salary slips and Form 16 do not cover.",
-  },
-  co_itr_multi: {
-    label: "Co-applicant ITR (3 years, 2 minimum)",
-    stage: "coapplicant",
-    why: "For a self-employed co-applicant the ITR is the income. Three years shows the trend; two is the floor most lenders accept.",
-  },
-  co_income_computation: {
-    label: "Computation of income for those ITR years",
-    stage: "coapplicant",
-    why: "The working behind the ITR — it separates real business income from one-off entries, which is what the lender underwrites on.",
-  },
-  co_current_account_statement: {
-    label: "Co-applicant current account statement (6 months)",
-    stage: "coapplicant",
-    why: "The business account. Six months of it shows whether the income in the ITR is still arriving now.",
-  },
-  co_savings_account_statement: {
-    label: "Co-applicant savings account statement (3 months)",
-    stage: "coapplicant",
-    why: "The personal account alongside the business one — where drawings land and where the EMI would be paid from.",
-  },
-  co_address_proof: {
-    label: "Co-applicant electricity / gas bill",
-    stage: "coapplicant",
-    why: "Proof they live where they say they live, when that is not the address on their KYC. A recent utility bill in their name is what lenders accept.",
-  },
+// Plan ids that are not catalogue rows of their own but upload through an
+// existing slot. This used to be a nine-document list marked "NOT IN UPLOAD
+// FLOW"; the co-applicant income set now lives in documents.js proper (with
+// `coApplicantCategory` gating which files see it), which was always the
+// stated way to close that gap — a tester duly asked why a call was requesting
+// documents the upload UI could not take.
+const ALIASES = {
   student_marksheet_ug: {
     label: "Undergraduate degree marksheet",
     stage: "student",
     why: "The postgraduate course makes the UG result the relevant academic record, on top of 10th and 12th.",
+    // The catalogue's "Latest degree marksheet" slot is where this lands.
+    uploadsAs: "student_marksheet_degree",
   },
 };
 
 function describe(id) {
   const known = getDocument(id);
   if (known) return { id, label: known.label, why: known.why, stage: known.stage, inCollectionFlow: true };
-  const extra = EXTRA[id];
-  if (extra) return { id, ...extra, inCollectionFlow: false };
+  const alias = ALIASES[id];
+  if (alias) return { id, ...alias, inCollectionFlow: Boolean(getDocument(alias.uploadsAs)) };
   return null;
 }
 

@@ -29,7 +29,12 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 // of a short document, not reasoning. Overridable if a call needs more.
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_EXTRACT_MODEL || "claude-haiku-4-5";
 
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// The OpenAI-compatible side of the chain: OpenRouter, or OpenAI's own API
+// when only OPENAI_API_KEY is set. Resolved once in llmProviders.js.
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 const OR_MODEL =
   process.env.OPENROUTER_EXTRACT_MODEL || process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
 
@@ -47,7 +52,7 @@ export function extractorConfigured() {
 
 export function extractorStatusLine() {
   if (ANTHROPIC_KEY) return `Claude (${ANTHROPIC_MODEL})`;
-  if (OR_KEY) return `OpenRouter (${OR_MODEL})`;
+  if (OR_KEY) return `${OA.name} (${OR_MODEL})`;
   return "not configured";
 }
 
@@ -98,6 +103,13 @@ const RULES = `Rules, in order of importance:
    says nothing at all about whether anyone holds a credit card.
 9. Do not use what you know about the world. If they named an institute you
    recognise, that still does not tell you which country it is in — only they can.
+10. If UPSY asked about a field and the caller said they DO NOT KNOW, cannot
+   remember, or would rather not say, record {"declined": true, "said": "<their
+   words>"} for that field instead of a value. This matters: without it the
+   question looks unasked and gets asked again on the next call. "said" must be
+   the caller's refusal ITSELF ("I don't know about his bonus"), copied exactly.
+   Never guess a value for it, and never mark a field declined because it was
+   simply not discussed — declined means asked AND turned down, nothing else.
 
 Return JSON only. No commentary, no markdown fence. Shape:
 
@@ -105,6 +117,7 @@ Return JSON only. No commentary, no markdown fence. Shape:
   "<branch>": { "<field>": { "value": <value>, "said": "<their exact words>" } }
 }
 
+A field they were asked but could not answer: { "declined": true, "said": "<their words>" }.
 An empty object is a valid, correct answer for a call where nothing was established.`;
 
 function buildPrompt(turns) {
@@ -159,12 +172,12 @@ async function callClaude(prompt, signal) {
 }
 
 async function callOpenRouter(prompt, signal) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(OA.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
     signal,
     body: JSON.stringify({
-      model: OR_MODEL,
+      model: OA.model(OR_MODEL),
       max_tokens: MAX_TOKENS,
       // Zero, not the 0.3 the conversational path uses. Reading a figure off a
       // transcript should give the same answer twice.
@@ -214,6 +227,25 @@ function normalize(text) {
   return String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+// Does this (normalized) quote actually contain a refusal? A declined marker's
+// quote must BE the "I don't know", not merely be words the caller said —
+// observed: the model citing "I need a loan for an MBA" as proof that a name
+// was declined. Refusals have narrow shapes, so a substring list works, and it
+// errs the safe way: an unrecognised refusal phrasing is dropped and the
+// question simply gets asked once more. (Phrases are written post-normalize,
+// which is why "don t know" has no apostrophe.)
+const REFUSAL_MARKS = [
+  "don t know", "do not know", "not sure", "no idea", "can t say", "cannot say",
+  "can t tell", "won t say", "not aware", "can t remember", "don t remember",
+  "do not remember", "rather not", "not comfortable", "have to ask", "ask him",
+  "ask her", "ask them", "tell you later", "not with me", "nahi pata",
+  "pata nahi", "maloom nahi", "nahi maloom", "malum nahi",
+];
+
+function soundsLikeRefusal(normalizedQuote) {
+  return REFUSAL_MARKS.some((m) => normalizedQuote.includes(m));
+}
+
 /**
  * Shape the model's answer into something safe to store.
  *
@@ -230,7 +262,12 @@ export function validate(raw, turns) {
   const facts = {};
   const evidence = {};
   const dropped = [];
+  const declined = [];
   const haystack = normalize((turns || []).map((t) => t.text).join(" "));
+  // Declined markers are checked against the caller's words alone: a refusal
+  // is by definition something the caller said, and the full-transcript check
+  // let the agent's own "Hi Aarav" greeting vouch for a name-decline once.
+  const callerHaystack = normalize((turns || []).filter((t) => t.role === "caller").map((t) => t.text).join(" "));
 
   for (const [branchId, branchValue] of Object.entries(raw || {})) {
     if (!BRANCHES.some((b) => b.id === branchId) || !branchValue || typeof branchValue !== "object") {
@@ -241,6 +278,32 @@ export function validate(raw, turns) {
       const field = getField(branchId, fieldId);
       if (!field || field.source !== "call") {
         dropped.push(`${branchId}.${fieldId} (not a field a call may fill)`);
+        continue;
+      }
+      // "Asked, and they did not know." Not a value, but not nothing either:
+      // coverage() takes the field off the agenda so it is not asked a third
+      // time, and the dashboard shows "asked — no answer" instead of the lie
+      // that it was never asked. A later real answer simply overwrites this.
+      //
+      // Verbatim or nothing, stricter than for values: a declined marker
+      // silences a question on every future call, and the very first test run
+      // showed the model marking a field declined that nobody had asked about.
+      // A dropped genuine decline just gets asked once more — the status quo —
+      // while an invented one would bury a question forever.
+      if (entry && typeof entry === "object" && entry.declined === true) {
+        const saidDecl = String(entry.said || "").slice(0, 300);
+        const normalized = normalize(saidDecl);
+        if (!normalized || !callerHaystack.includes(normalized) || !soundsLikeRefusal(normalized)) {
+          dropped.push(`${branchId}.${fieldId} (declined without the caller's own refusal to show for it)`);
+          continue;
+        }
+        declined.push(`${branchId}.${fieldId}`);
+        evidence[`${branchId}.${fieldId}`] = {
+          said: saidDecl,
+          declined: true,
+          verbatim: true,
+          at: new Date().toISOString(),
+        };
         continue;
       }
       // Tolerate a bare value as well as {value, said}: models drop the wrapper
@@ -296,7 +359,7 @@ export function validate(raw, turns) {
     }
   }
 
-  return { facts, evidence, dropped };
+  return { facts, evidence, dropped, declined };
 }
 
 // ── The entry point ─────────────────────────────────────────────────────────
@@ -316,7 +379,7 @@ export async function extractCallFacts({ turns, signal } = {}) {
   const callerSaidSomething = (turns || []).some((t) => t.role === "caller" && t.text);
   if (!callerSaidSomething) return null;
   if (!extractorConfigured()) {
-    console.warn("[voice:extract] no ANTHROPIC_API_KEY or OPENROUTER_API_KEY — the call cannot be read into the file.");
+    console.warn("[voice:extract] no language-model key (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY) — the call cannot be read into the file.");
     return null;
   }
 
@@ -355,8 +418,8 @@ export async function extractCallFacts({ turns, signal } = {}) {
     return null;
   }
 
-  const { facts, evidence, dropped } = validate(parsed, turns);
-  return { facts, evidence, dropped, model, ms: Date.now() - started };
+  const { facts, evidence, dropped, declined } = validate(parsed, turns);
+  return { facts, evidence, dropped, declined, model, ms: Date.now() - started };
 }
 
 /**
@@ -376,11 +439,20 @@ export async function extractCallFacts({ turns, signal } = {}) {
 export function profilePatch(existing, extraction) {
   const merged = deepMerge(structuredClone(existing || {}), extraction?.facts || {});
   const { underwriting, flags } = deriveAll(merged);
+  // Declined markers accumulate across calls, but a marker whose field now
+  // holds a real answer is stale — the caller remembered — and is dropped so
+  // it cannot shadow the value.
+  const declined = [...new Set([...(existing?._declined || []), ...(extraction?.declined || [])])].filter((key) => {
+    const [b, f] = key.split(".");
+    const v = merged?.[b]?.[f];
+    return v === null || v === undefined || v === "";
+  });
   return {
     ...(extraction?.facts || {}),
     underwriting,
     _flags: flags,
     _evidence: extraction?.evidence || {},
+    ...(declined.length ? { _declined: declined } : {}),
   };
 }
 

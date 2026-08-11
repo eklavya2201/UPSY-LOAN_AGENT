@@ -801,6 +801,12 @@ function branchCard(branch, profile, coverageBranch, evidence) {
   const missing = (coverageBranch?.missing || [])
     .map((m) => `<span class="text-[11px] px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">${esc(m.label)}</span>`)
     .join(" ");
+  // Asked on a call and met "I don't know" — resolved without data, which is a
+  // different fact from "never asked", and mislabelling it as the latter is
+  // what made the agent re-ask a caller three times.
+  const declined = (coverageBranch?.declined || [])
+    .map((m) => `<span class="text-[11px] px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant italic" title="Asked on a call — the caller did not know or preferred not to say">${esc(m.label)} · didn't know</span>`)
+    .join(" ");
   const captured = coverageBranch ? `${coverageBranch.captured}/${coverageBranch.total}` : "";
 
   return `<div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow mb-4">
@@ -815,6 +821,7 @@ function branchCard(branch, profile, coverageBranch, evidence) {
     </div>
     ${rows || `<p class="text-xs text-on-surface-variant py-1">Nothing established yet.</p>`}
     ${missing ? `<div class="mt-3 pt-3 border-t border-outline-variant/40"><p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">Still to ask</p><div class="flex flex-wrap gap-1">${missing}</div></div>` : ""}
+    ${declined ? `<div class="mt-3 pt-3 border-t border-outline-variant/40"><p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">Asked — no answer</p><div class="flex flex-wrap gap-1">${declined}</div></div>` : ""}
   </div>`;
 }
 

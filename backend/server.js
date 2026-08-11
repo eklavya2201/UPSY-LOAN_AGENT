@@ -5,7 +5,8 @@ import express from "express";
 import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
-import { DOCUMENTS, STAGES, getDocument } from "./documents.js";
+import { DOCUMENTS, STAGES, getDocument, applicableDocuments } from "./documents.js";
+import { openaiSide } from "./llmProviders.js";
 import { validateUpload } from "./validators.js";
 import { getActiveSource } from "./leadSources/index.js";
 import { getApplication, markVerified, setStatus, saveProfile, listApplications, requestReupload, recordNudge, recordPacketEmailed, saveLenderDraft, recordLenderShared, saveExtractedIncome, removeVerified, saveCoApplicantContact } from "./store.js";
@@ -131,10 +132,12 @@ function adjustForLead(doc, lead) {
 
 // Build this applicant's personalized to-do list from the lead + saved progress.
 function buildAgenda(lead, application) {
-  // Drop collateral docs for an unsecured loan.
-  const applicable = DOCUMENTS.filter(
-    (d) => !(lead.loanType === "unsecured" && d.stage === "collateral")
-  );
+  // Drop collateral docs for an unsecured loan, and the wrong income set for a
+  // known co-applicant category — one rule with the voice agent's doc plan.
+  const applicable = applicableDocuments({
+    loanType: lead.loanType,
+    coApplicantType: lead.coApplicantType,
+  });
   // A doc counts as "done" if the lead platform already has it OR we verified it before.
   const onFile = new Set([
     ...(lead.documentsOnFile || []),
@@ -159,8 +162,10 @@ function buildAgenda(lead, application) {
 // Has every *required* document been received (verified by us OR already on
 // record at the lead source)? This is the "only when all docs are received" gate.
 function applicationComplete(app) {
-  const loanType = app.profile?.loanType;
-  const applicable = DOCUMENTS.filter((d) => !(loanType === "unsecured" && d.stage === "collateral"));
+  const applicable = applicableDocuments({
+    loanType: app.profile?.loanType,
+    coApplicantType: app.profile?.coApplicantType,
+  });
   const have = new Set([...(app.onFile || []), ...Object.keys(app.verifiedDocs || {})]);
   return applicable.filter((d) => d.required).every((d) => have.has(d.id));
 }
@@ -294,7 +299,7 @@ app.post("/api/intake", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   const leadId = req.body?.leadId;
   if (!text) return res.status(400).json({ error: "Please describe what you need." });
-  if (!intakeConfigured()) return res.status(503).json({ error: "No language model is configured (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY)." });
+  if (!intakeConfigured()) return res.status(503).json({ error: "No language model is configured (set ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY)." });
   try {
     const result = await structureIntent(text);
     if (!result) return res.status(502).json({ error: "Couldn't understand that just now — please try rephrasing." });
@@ -870,7 +875,7 @@ app.post("/api/assist", async (req, res) => {
   const question = (req.body?.question || "").toString().trim().slice(0, 500);
   if (!doc) return res.status(400).json({ error: "Unknown document id." });
   if (!question) return res.status(400).json({ error: "Ask a question first." });
-  if (!assistConfigured()) return res.status(503).json({ error: "The helper isn't configured yet (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY)." });
+  if (!assistConfigured()) return res.status(503).json({ error: "The helper isn't configured yet (set ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY)." });
   try {
     const result = await answerDocQuestion({
       doc,
@@ -1194,7 +1199,7 @@ server.listen(PORT, () => {
   // Show which document reader is active so it's obvious the moment Claude is wired in.
   const readers = [];
   if (process.env.ANTHROPIC_API_KEY) readers.push(`Claude (${process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8"})`);
-  if (process.env.OPENROUTER_API_KEY) readers.push(`OpenRouter (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
+  if (openaiSide()) readers.push(`${openaiSide().name} (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   readers.push("OCR (fallback)");
   console.log(`Document reader priority: ${readers.join(" → ")}`);
   // The agent can be configured (keys present) and still refuse every call

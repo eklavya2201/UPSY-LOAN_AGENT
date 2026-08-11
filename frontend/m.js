@@ -332,7 +332,9 @@
     (a.branches || []).forEach(function (b, bi) {
       const seat = seats[b.id] || [Math.cos(bi * 1.7), Math.sin(bi * 1.7)];
       const parentIdx = nodes.length;
-      const counted = b.fields.filter(function (f) { return f.status !== "skipped"; });
+      // Counts cover live questions only: answered + still-to-ask. Ruled-out
+      // and asked-but-didn't-know dots are visible but not part of "3 of 8".
+      const counted = b.fields.filter(function (f) { return f.status === "done" || f.status === "pending"; });
       nodes.push({
         key: b.id,
         label: b.title,
@@ -543,7 +545,7 @@
         ctx.lineTo(p[0], p[1]);
         ctx.strokeStyle = focused
           ? "rgba(134, 196, 232, 0.5)"
-          : node.status === "skipped"
+          : node.status === "skipped" || node.status === "declined"
             ? "rgba(114, 170, 208, 0.05)"
             : node.field
               ? "rgba(114, 170, 208, 0.12)"
@@ -560,12 +562,14 @@
         const dim = map.focusIdx >= 0 && !focused && !node.hub;
 
         const pulse = animate && !node.hub ? 0.85 + 0.15 * Math.sin(map.t * 1.1 + (node.phase || 0)) : 1;
-        const size = node.hub ? 4.5 : node.field ? (node.status === "skipped" ? 1.5 : 2.3) : 3.4;
+        const size = node.hub ? 4.5 : node.field ? (node.status === "skipped" || node.status === "declined" ? 1.5 : 2.3) : 3.4;
         const r = size * (focused ? 1.9 : 1) * pulse;
 
         // An answered question is a warm star; everything else stays cool.
+        // "declined" (asked — they didn't know) fades like a ruled-out one:
+        // both are resolved without data, and neither should look like a gap.
         const done = node.status === "done";
-        const skipped = node.status === "skipped";
+        const skipped = node.status === "skipped" || node.status === "declined";
         const glowRgb = done ? "255, 214, 150" : "150, 208, 246";
 
         // A fact that just landed announces itself once: an expanding ring.

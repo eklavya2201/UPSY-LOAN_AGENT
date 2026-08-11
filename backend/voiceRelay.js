@@ -716,8 +716,15 @@ class RelayCall {
         // mid-call narrowing still work. Nothing is stored — same rule as the
         // transcript: no account, no record.
         extractCallFacts({ turns }).then((extraction) => {
-          if (!extraction || !Object.keys(extraction.facts || {}).length) return null;
-          return mergedProfile(this.profile, extraction.facts);
+          if (!extraction) return null;
+          const gotFacts = Object.keys(extraction.facts || {}).length > 0;
+          const gotDeclined = (extraction.declined || []).length > 0;
+          if (!gotFacts && !gotDeclined) return null;
+          const merged = mergedProfile(this.profile, extraction.facts);
+          if (gotDeclined) {
+            merged._declined = [...new Set([...(this.profile._declined || []), ...extraction.declined])];
+          }
+          return merged;
         });
 
     read

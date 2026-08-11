@@ -188,6 +188,107 @@ export const DOCUMENTS = [
     identifier: null,
   },
 
+  // The flowchart's income-category documents. `coApplicantCategory` gates each
+  // to the co-applicant type it belongs to — a salaried file never shows the
+  // ITR set, a self-employed file never shows Form 16. An unknown category
+  // shows both sets, because the full catalogue is this repo's honest fallback
+  // everywhere else too. These existed only in the voice agent's document plan
+  // before, which is how /team ended up showing "NOT IN UPLOAD FLOW" on
+  // documents a call had genuinely asked for.
+  {
+    id: "co_form16",
+    stage: "coapplicant",
+    label: "Co-applicant Form 16 (3 years, 2 minimum)",
+    required: true,
+    coApplicantCategory: ["salaried"],
+    why:
+      "Form 16 is the employer's own statement of what was paid and taxed — the cleanest confirmation of a salaried income. Lenders want three years where possible; two is the minimum most accept.",
+    accept: IMAGE_OR_PDF,
+    maxSizeMB: 10,
+    identifier: null,
+  },
+  {
+    id: "co_salary_bank_statement",
+    stage: "coapplicant",
+    label: "Co-applicant salary account statement (3 months)",
+    required: true,
+    coApplicantCategory: ["salaried"],
+    why:
+      "The account the salary actually lands in. It confirms the slips are real money arriving, and shows existing EMIs debiting.",
+    accept: ["pdf"],
+    maxSizeMB: 15,
+    identifier: null,
+  },
+  {
+    id: "co_joining_letter",
+    stage: "coapplicant",
+    label: "Co-applicant joining / offer letter",
+    required: false,
+    coApplicantCategory: ["salaried"],
+    why:
+      "Only needed if the co-applicant changed jobs recently — it bridges the gap the older salary slips and Form 16 do not cover. Skip if they have been with the same employer throughout.",
+    accept: IMAGE_OR_PDF,
+    maxSizeMB: 10,
+    identifier: null,
+  },
+  {
+    id: "co_itr_multi",
+    stage: "coapplicant",
+    label: "Co-applicant ITR (3 years, 2 minimum)",
+    required: true,
+    coApplicantCategory: ["self-employed", "farmer"],
+    why:
+      "For a self-employed co-applicant the ITR is the income. Three years shows the trend; two is the floor most lenders accept.",
+    accept: IMAGE_OR_PDF,
+    maxSizeMB: 15,
+    identifier: null,
+  },
+  {
+    id: "co_income_computation",
+    stage: "coapplicant",
+    label: "Computation of income for those ITR years",
+    required: true,
+    coApplicantCategory: ["self-employed", "farmer"],
+    why:
+      "The working behind the ITR — it separates real business income from one-off entries, which is what the lender underwrites on.",
+    accept: IMAGE_OR_PDF,
+    maxSizeMB: 10,
+    identifier: null,
+  },
+  {
+    id: "co_current_account_statement",
+    stage: "coapplicant",
+    label: "Co-applicant current account statement (6 months)",
+    required: true,
+    coApplicantCategory: ["self-employed", "farmer"],
+    why: "The business account. Six months of it shows whether the income in the ITR is still arriving now.",
+    accept: ["pdf"],
+    maxSizeMB: 15,
+    identifier: null,
+  },
+  {
+    id: "co_savings_account_statement",
+    stage: "coapplicant",
+    label: "Co-applicant savings account statement (3 months)",
+    required: true,
+    coApplicantCategory: ["self-employed", "farmer"],
+    why: "The personal account alongside the business one — where drawings land and where the EMI would be paid from.",
+    accept: ["pdf"],
+    maxSizeMB: 15,
+    identifier: null,
+  },
+  {
+    id: "co_address_proof",
+    stage: "coapplicant",
+    label: "Co-applicant electricity / gas bill",
+    required: false,
+    why:
+      "Only needed when the co-applicant does not live at the address on their KYC — a recent utility bill in their name proves the current residence. Skip if their Aadhaar address is where they live.",
+    accept: IMAGE_OR_PDF,
+    maxSizeMB: 5,
+    identifier: null,
+  },
+
   // ---------------- COLLATERAL (conditional) ----------------
   {
     id: "collateral_property_papers",
@@ -204,4 +305,20 @@ export const DOCUMENTS = [
 
 export function getDocument(id) {
   return DOCUMENTS.find((d) => d.id === id);
+}
+
+/**
+ * The catalogue narrowed to one applicant, from what the lead record knows.
+ *
+ * One function so the upload flow, the completeness gate and the voice agent's
+ * "what's pending" answer can never disagree about which documents a file
+ * needs. Unknowns widen rather than narrow: no loan type keeps the collateral
+ * stage, no co-applicant category keeps both income sets.
+ */
+export function applicableDocuments({ loanType, coApplicantType } = {}) {
+  return DOCUMENTS.filter((d) => {
+    if (loanType === "unsecured" && d.stage === "collateral") return false;
+    if (d.coApplicantCategory && coApplicantType && !d.coApplicantCategory.includes(coApplicantType)) return false;
+    return true;
+  });
 }

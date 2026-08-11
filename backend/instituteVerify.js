@@ -40,7 +40,12 @@ const SERPER_KEY = process.env.SERPER_API_KEY;
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_EXTRACT_MODEL || "claude-haiku-4-5";
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// The OpenAI-compatible side of the chain: OpenRouter, or OpenAI's own API
+// when only OPENAI_API_KEY is set. Resolved once in llmProviders.js.
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 const OR_MODEL =
   process.env.OPENROUTER_EXTRACT_MODEL || process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
 
@@ -57,7 +62,7 @@ export function verifierConfigured() {
 
 export function verifierStatusLine() {
   const search = SERPER_KEY ? "Serper" : "DuckDuckGo (keyless)";
-  const judge = ANTHROPIC_KEY ? `Claude (${ANTHROPIC_MODEL})` : OR_KEY ? `OpenRouter (${OR_MODEL})` : "not configured";
+  const judge = ANTHROPIC_KEY ? `Claude (${ANTHROPIC_MODEL})` : OR_KEY ? `${OA.name} (${OR_MODEL})` : "not configured";
   return `${search} → ${judge}`;
 }
 
@@ -138,9 +143,11 @@ function judgePrompt({ name, course, totalFee }, results) {
     `Search results:\n${listing || "(no results came back)"}`,
     `Rules:
 - Judge ONLY from the snippets above. Do not use anything you know about institutes from training.
-- "found" needs the institute to clearly exist AND the course (or something a reasonable person would call the same course) to appear offered there.
-- "not_found" means the results point away from the claim — the institute does not appear, or it clearly does not offer anything like this course.
-- Anything in between is "unclear".
+- THE CLAIM CAME THROUGH SPEECH RECOGNITION. The institute and course names are what a machine heard down a phone line, so spelling is evidence of nothing: "BTEC" is how a recogniser writes "B.Tech", "MSC" is "M.S.", and a name one or two syllables off is the same name. Match on what was plausibly SAID, never on how it was spelled.
+- The verdict is about the INSTITUTE, and only the institute:
+  - "found" — the institute clearly exists, and this course, a spelling/mishearing of it, or a closely related programme appears offered there.
+  - "unclear" — the institute exists but these snippets do not show this course. That is the CEILING for a course-level mismatch: snippets are not a full course catalogue, and a missing listing is not evidence of a false claim.
+  - "not_found" — reserved for the institute itself: it does not appear in the results, or the results actively contradict its existence.
 - published_total_fee: ONLY if a snippet states a total programme fee in INR for this course, as plain digits (₹24,00,000 → 2400000). A per-semester, per-year or hostel figure does not count. When in doubt, null.
 
 Return JSON only, no commentary:
@@ -169,12 +176,12 @@ async function askClaude(prompt) {
 }
 
 async function askOpenRouter(prompt) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(OA.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),
     body: JSON.stringify({
-      model: OR_MODEL,
+      model: OA.model(OR_MODEL),
       max_tokens: 300,
       temperature: 0,
       response_format: { type: "json_object" },

@@ -415,20 +415,30 @@ export function coerce(field, raw) {
  * the agent was never going to ask for.
  */
 export function coverage(profile = {}) {
+  // Fields the caller was asked and could not answer. Off the agenda — asking
+  // a third time is the failure a real call already demonstrated — and out of
+  // the denominator, because "8 of 9, one they didn't know" reads as a
+  // finished branch, which it is.
+  const declinedSet = new Set(Array.isArray(profile._declined) ? profile._declined : []);
+
   const branches = BRANCHES.map((branch) => {
     const values = profile[branch.id] || {};
     const applicable = callFields(branch, values);
-    const missing = applicable.filter((f) => {
+    const isEmpty = (f) => {
       const v = values[f.id];
       return v === null || v === undefined || v === "";
-    });
+    };
+    const declined = applicable.filter((f) => isEmpty(f) && declinedSet.has(`${branch.id}.${f.id}`));
+    const askable = applicable.filter((f) => !declined.includes(f));
+    const missing = askable.filter(isEmpty);
     return {
       id: branch.id,
       title: branch.title,
       blurb: branch.blurb,
-      total: applicable.length,
-      captured: applicable.length - missing.length,
+      total: askable.length,
+      captured: askable.length - missing.length,
       missing: missing.map((f) => ({ id: f.id, label: f.label, ask: f.ask })),
+      declined: declined.map((f) => ({ id: f.id, label: f.label })),
     };
   });
   const total = branches.reduce((s, b) => s + b.total, 0);
@@ -454,6 +464,7 @@ export function coverage(profile = {}) {
  * ask next by construction: COLLECTION_STYLE tells it to ask in branch order.
  */
 export function agendaSnapshot(profile = {}) {
+  const declinedSet = new Set(Array.isArray(profile._declined) ? profile._declined : []);
   const branches = BRANCHES.map((branch) => {
     const values = profile[branch.id] || {};
     const fields = branch.fields
@@ -461,7 +472,13 @@ export function agendaSnapshot(profile = {}) {
       .map((f) => {
         const v = values[f.id];
         const filled = !(v === null || v === undefined || v === "");
-        const status = !fieldApplies(f, values) ? "skipped" : filled ? "done" : "pending";
+        const status = !fieldApplies(f, values)
+          ? "skipped"
+          : filled
+            ? "done"
+            : declinedSet.has(`${branch.id}.${f.id}`)
+              ? "declined" // asked — they did not know. Off the agenda, out of the counts.
+              : "pending";
         return { id: f.id, label: f.label, status };
       });
     return { id: branch.id, title: branch.title, blurb: branch.blurb, fields };
@@ -478,7 +495,7 @@ export function agendaSnapshot(profile = {}) {
 
   const all = branches.flatMap((b) => b.fields);
   const done = all.filter((f) => f.status === "done").length;
-  const total = all.filter((f) => f.status !== "skipped").length;
+  const total = all.filter((f) => f.status === "done" || f.status === "pending").length;
   const uw = computeUnderwriting(profile);
   return { branches, next, done, total, underwriting: { ready: Boolean(uw.ready) } };
 }

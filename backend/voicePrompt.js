@@ -203,11 +203,22 @@ function agendaBlock(priorFacts) {
   });
 
   const done = cover.total ? `${cover.captured} of ${cover.total} already on file.` : "";
+
+  // Questions that were asked and met "I don't know" or a refusal. Named so the
+  // agent can never re-ask them: a caller who has already said they do not know
+  // their father's bonus hears the third ask as the machine not listening —
+  // which is exactly the complaint a real tester raised.
+  const declined = cover.branches.flatMap((b) => (b.declined || []).map((d) => d.label.toLowerCase()));
+  const declinedBlock = declined.length
+    ? `Already asked, and they did not know or preferred not to say: ${declined.join("; ")}. Do NOT ask for these again on any call — if they bring one up themselves, take the answer, otherwise the officer picks these up later.`
+    : null;
+
   return [
     `What UPSY still needs from this caller. This is your agenda, not a script — it is what a lender will ask for, gathered in conversation so nobody has to ask twice. ${done}`.trim(),
     lines.join("\n"),
+    declinedBlock,
     COLLECTION_STYLE,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 }
 
 /**
