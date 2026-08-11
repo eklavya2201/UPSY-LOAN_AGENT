@@ -258,6 +258,25 @@ const MIN_INCOME_PROOF_YEARS = 2; // "if not then 2 years are needed minimum"
 
 // ── Lookups ─────────────────────────────────────────────────────────────────
 
+/**
+ * What we already know about a caller before they say a word.
+ *
+ * An /m account holds the name they typed at signup. Without this the branch
+ * profile starts empty, the agenda lists "their full name" as missing, and the
+ * agent asks for something it just used in the greeting — which is exactly what
+ * happened on the first real call: *"Hi eklavya, this is UPSY again"* followed
+ * by *"Can you tell me your full name?"*, then three failed attempts to hear a
+ * name that was already on file.
+ *
+ * A name is also the single worst thing to put through speech recognition —
+ * arbitrary proper nouns, no language model to fall back on — so the best
+ * version of this question is the one never asked.
+ */
+export function accountIdentityFacts(account) {
+  if (!account?.name) return {};
+  return { applicant: { name: String(account.name).trim().slice(0, 200) } };
+}
+
 export function getBranch(branchId) {
   return BRANCHES.find((b) => b.id === branchId) || null;
 }
@@ -415,6 +434,101 @@ export function coverage(profile = {}) {
   const total = branches.reduce((s, b) => s + b.total, 0);
   const captured = branches.reduce((s, b) => s + b.captured, 0);
   return { branches, total, captured, percent: total ? Math.round((captured / total) * 100) : 0 };
+}
+
+// ── The live agenda, for the /m call screen ─────────────────────────────────
+
+/**
+ * The same information as coverage(), shaped for the constellation on /m:
+ * every call-askable field with a status, so the page can draw the loan file
+ * filling in while the call happens instead of a hardcoded topic ring.
+ *
+ *   done    — answered (on this call or an earlier one)
+ *   pending — still to ask
+ *   skipped — ruled out by an answer (a salaried co-applicant's ITR fields)
+ *
+ * Labels and statuses only — no values. The caller knows what they said, and
+ * the page does not need a second copy of the profile to light a dot.
+ *
+ * `next` is the first pending field in flow order, which is what the agent will
+ * ask next by construction: COLLECTION_STYLE tells it to ask in branch order.
+ */
+export function agendaSnapshot(profile = {}) {
+  const branches = BRANCHES.map((branch) => {
+    const values = profile[branch.id] || {};
+    const fields = branch.fields
+      .filter((f) => f.source === "call")
+      .map((f) => {
+        const v = values[f.id];
+        const filled = !(v === null || v === undefined || v === "");
+        const status = !fieldApplies(f, values) ? "skipped" : filled ? "done" : "pending";
+        return { id: f.id, label: f.label, status };
+      });
+    return { id: branch.id, title: branch.title, blurb: branch.blurb, fields };
+  });
+
+  let next = null;
+  for (const b of branches) {
+    const f = b.fields.find((x) => x.status === "pending");
+    if (f) {
+      next = { branch: b.id, field: f.id };
+      break;
+    }
+  }
+
+  const all = branches.flatMap((b) => b.fields);
+  const done = all.filter((f) => f.status === "done").length;
+  const total = all.filter((f) => f.status !== "skipped").length;
+  const uw = computeUnderwriting(profile);
+  return { branches, next, done, total, underwriting: { ready: Boolean(uw.ready) } };
+}
+
+// Words too common to identify a field. Everything else in a field's label and
+// ask phrasing is fair game for the spotlight matcher below.
+const MATCH_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "at", "from",
+  "that", "this", "is", "are", "was", "be", "been", "it", "its", "they", "their",
+  "them", "you", "your", "we", "our", "his", "her", "she", "he", "what", "which",
+  "who", "whether", "how", "do", "does", "did", "have", "has", "had", "not", "no",
+  "yes", "if", "else", "than", "then", "as", "by", "any", "one", "two", "three",
+  "some", "roughly", "about", "already", "still", "would", "will", "can", "could",
+  "should", "just", "also", "etc", "most", "there", "out", "per", "all", "who",
+]);
+
+function matchTokens(text) {
+  const out = new Set();
+  for (const w of String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/)) {
+    if (w.length > 2 && !MATCH_STOPWORDS.has(w)) out.add(w);
+  }
+  return out;
+}
+
+/**
+ * Which field is this spoken sentence about? Word overlap against each field's
+ * label + ask phrasing, preferring fields still pending. Purely cosmetic — it
+ * drives the spotlight on /m, never a lending decision — so a miss returns null
+ * and a near-tie landing on the neighbouring dot is acceptable.
+ */
+export function matchAgendaField(text, profile = {}) {
+  const said = matchTokens(text);
+  if (!said.size) return null;
+
+  let best = null;
+  for (const branch of BRANCHES) {
+    const values = profile[branch.id] || {};
+    for (const field of callFields(branch, values)) {
+      let score = 0;
+      for (const w of matchTokens(`${field.label} ${field.ask || ""}`)) {
+        if (said.has(w)) score++;
+      }
+      if (!score) continue;
+      const v = values[field.id];
+      const pending = v === null || v === undefined || v === "";
+      const rank = score + (pending ? 0.5 : 0);
+      if (!best || rank > best.rank) best = { branch: branch.id, field: field.id, rank };
+    }
+  }
+  return best ? { branch: best.branch, field: best.field } : null;
 }
 
 // ── The derived branch ──────────────────────────────────────────────────────

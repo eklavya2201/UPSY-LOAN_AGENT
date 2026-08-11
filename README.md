@@ -15,7 +15,7 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 | | Provider | Notes |
 |---|---|---|
 | Hearing | **Deepgram** nova-3, `en-IN` | `DEEPGRAM_ENDPOINTING_MS=800` — not their default of 300, which splits one thought into two turns |
-| Thinking | **OpenRouter** `gpt-4o-mini` | Claude Haiku 4.5 is preferred and coded, but **`ANTHROPIC_API_KEY` is still unset**. The model is ~65% of reply latency |
+| Thinking | **Claude Haiku 4.5** | ⚠️ On a **borrowed key, temporary** — see "Claude, measured" below. OpenRouter `gpt-4o-mini` is the fallback and what runs the moment that key goes. The model is ~65% of reply latency |
 | Speaking | **Deepgram Aura** `aura-2-athena-en` | Moved off Cartesia when its free tier ran out. `TTS_PROVIDER=cartesia` switches back |
 | Repeated lines | **Phrase cache** | Greeting + 10 acknowledgements bought once, pre-warmed at boot: 1593ms → 25ms |
 
@@ -60,6 +60,74 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
   **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude.
 
 **On the voice itself, four picks in one day, and only the ones made by listening were any good.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → Jacqueline, "empathic customer support" → **`aura-2-athena-en` on Deepgram**, "calm, smooth, professional". The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good; Deepgram has none at all. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from a catalogue's prose was wrong twice.
+
+### 📞 The first real calls, and the four bugs only a human found (2026-08-10)
+
+Every measurement before this came from a synthetic caller on a clean socket. A person picked up the phone and found four things in two calls, none of which any harness had caught. **This is the section to read before tuning anything in the voice path.**
+
+**1. ⛔ The agent's voice broke up mid-word — and it was one sentence's audio spliced into another's.** Reported as *"immm u...p..syyy"*. Not pacing (`VOICE_PACE_EXTRA_MS` is 0), not bandwidth, not the microphone.
+
+**Aura's audio frames carry no request id.** Cartesia tags every chunk with a `context_id`; Deepgram sends bare binary. `handleMessage()` handed each frame to whatever request was currently pending, so the moment one request was abandoned — a barge-in, a stall — its remaining audio was delivered **into the next sentence**, and its late `Flushed` then resolved that sentence early. The socket stayed one request out of step for the rest of the call.
+
+A comment in the file claimed late audio "is dropped because `pending` has already moved on". **It never was.** The code did the opposite of what its own comment promised, which is why this survived so long.
+
+Reproduced by speaking a real call's sentence pattern down one socket, and the give-away is that the durations swap places:
+
+| sentence | before | after |
+|---|---|---|
+| `"Right."` | **3.60s** of audio, 90 chunks | 0.56s, 14 chunks |
+| `"Your father's income is the main thing…"` | **0.52s**, 13 chunks | 2.68s, 67 chunks |
+| worst gap between chunks | **5,907 ms** | 52 ms |
+| timeouts across 7 sentences | 2 | 0 |
+
+Fixed two ways. **Nothing may be in flight when a new request starts**: an abnormal end marks the socket `dirty`, and the next `speak()` sends `Clear`, waits for Deepgram's `Cleared`, and **replaces the socket** if that confirmation does not arrive. And the stall detector is now **idle-based** — a sentence still delivering audio is alive however long it takes. The old flat 10s ceiling was killing sentences that were streaming perfectly well: a four-second greeting delivered 3.16s of audio in 79 chunks and was then declared timed out, which is what triggered the desync in the first place.
+
+**2. It greeted the caller by name, then asked them their name — three times.** The whole call, verbatim:
+
+```
+UPSY  : Hi eklavya, this is UPSY again. Where would you like to pick up?
+UPSY  : Can you tell me your full name as it appears on your ID?   ← it just used it
+CALLER: Will my full full name be                                   ← Deepgram mangling
+UPSY  : Okay, let me think about that for a second.
+UPSY  : Yes, please share your full name as it appears on your ID.
+CALLER: Is that q?
+UPSY  : I didn't catch that. Could you please repeat your full name?
+```
+
+62 seconds, 12 turns, and the extractor logged **"nothing new established"**. Three separate defects stacked:
+
+- **The name was already on file** and the branch profile did not know it. `accountIdentityFacts()` now seeds `applicant.name` from what they typed at signup, at signup and again when a session starts, so accounts created earlier benefit too. A name is also the worst thing to put through speech recognition — arbitrary proper nouns, no language model behind them — so **the best version of that question is the one never asked.**
+- **Nothing limited retries.** One retry now, then say you will pick it up later and move on. Asking a third time tells the caller the machine is broken and they are right. Names get *zero* retries.
+- **The caller's own name is now a Deepgram keyterm.** We know it, so the recogniser may as well be told to expect it. Per-call keyterms sit on top of the standing lending vocabulary.
+
+**3. "It keeps saying wait a moment / let me think about that."** The user compared it to a competitor and was exactly right about why theirs felt smoother: **their fillers are receipts, ours were stalls.** "Let me think about that for a second" announces a wait. "Got it." buys the identical two seconds and reads as the front of the answer.
+
+Worse, every acknowledgement bucket had been written for a caller *asking a question* — back when that was all this agent did. It asks questions of its own now, so most turns are **answers**, and "okay, so you want to know how much you could borrow" is nonsense in reply to "my father earns ninety-five thousand". Every answer therefore fell through to a generic stall. And utterances under three words got **nothing at all**, so the turns with least to think about had the longest silence.
+
+Now: a question gets its topic restated; **an answer gets a receipt** ("Got it." / "Right." / "Sure."), including two-word answers; a bare "yes" still gets nothing. Receipts may repeat on consecutive turns, because people do that — only the identical word is blocked.
+
+**4. Numbers are read back before they are used.** Not a bug report, but the mitigation for the one open defect this file has always flagged. Claude produces it naturally: *"Okay, so your father earns ninety thousand a month — have I got that right?"*
+
+### 🧪 Claude, measured (2026-08-10)
+
+A borrowed key, one testing session, ~3 calls of spend. `npm run eval:voice` **can now rank Anthropic** — it previously spoke only the OpenAI dialect, so it could not measure the one provider `voiceBrain.js` prefers, which made "Claude is faster" a claim nobody here had ever tested.
+
+| | avg to first spoken sentence | best | worst |
+|---|---|---|---|
+| **Claude Haiku 4.5** | **1780 ms** | 1373 | 2186 |
+| OpenRouter `gpt-4o-mini` | 2418 ms | 2400 | 2436 |
+
+Real, ~640ms, and audible — but **still above the ~1200ms budget**, so the honest verdict is "noticeable pause", not "smooth". Extraction quality is the bigger win: 16/16 assertions, **21/21 values carrying a transcript-matched quote**. It still tried to write "father" into the co-applicant's *name* field, so that guard earns its place on any model.
+
+**❌ Prompt caching is NOT working, and this corrects an earlier guess in this file.** The brain logs it every turn:
+
+```
+[voice:brain] claude usage in=2416 cache_read=0 cache_write=0
+```
+
+Zero writes, zero reads — the 2,416-token system prompt is **below Haiku 4.5's minimum cacheable size**, so `cache_control` is silently ignored. An earlier reading of the latency spread as "caching kicking in" was wrong; it was variance.
+
+**▶️ So the next lever is trimming the prompt, and it pays twice.** Every turn buys 2,416 tokens of input — latency *and* money. The agenda currently spells out a full sentence for each of ~30 fields where short labels would do, and the document plan lists the skipped documents in full. Halving it is realistic without changing behaviour, and it should be measured with `npm run eval:voice` before and after rather than assumed.
 
 ### 🔁 TTS moved to Deepgram Aura (2026-08-07)
 
@@ -114,9 +182,9 @@ Deliberately **not** a general-purpose cache — only exact strings from a known
 
 **What to work on next (2026-08-07).** The voice stack is built, deployed and verified end to end. What is left is in this order:
 
-1. **`ANTHROPIC_API_KEY`.** The single highest-value line in this file. The model is **~65% of reply latency** — OpenRouter's `gpt-4o-mini` averages 2086ms to a first sentence against a ~1.2s budget — and the same key also unblocks **PDF document reading, which today has no working reader at all** (see point 2 of the six gotchas). One key, two of the largest open problems. `npm run eval:voice` ranks whatever is configured.
+1. **Get a Claude key of our own.** There is one in `.env` today and **it is borrowed from a friend of the user, added 2026-08-10 for a single testing session** — assume it is gone or rotated. Everything falls back to `gpt-4o-mini` automatically when it is, and the call gets slower rather than broken. What it bought is measured in "Claude, measured" below; the short version is 1780ms vs 2418ms to a first spoken sentence, and visibly better extraction. It also unblocks **PDF document reading** (see point 2 of the six gotchas).
 2. **Numbers are still misheard.** "fifteen lakh" sometimes lands as "lakh". `en-IN` and keyterm boosting made it rare, not gone. **This is the most dangerous open bug in the voice path** — the agent quotes loan amounts, and a confident answer to a misheard number is worse than no answer. Nothing is built to mitigate it; the obvious move is having the agent confirm any figure back before reasoning from it.
-3. **Talk to it on a real phone.** Every measurement here comes from a synthesised caller on a clean socket. A real person in a noisy room, interrupting and pausing mid-thought, is the test that has not happened — and it is the only way to exercise **barge-in on speakerphone**, which a synthetic caller structurally cannot trigger because it never echoes.
+3. ~~**Talk to it on a real phone.**~~ **Done 2026-08-10, and it found four bugs no harness had** — see "The first real calls". Keep doing it: every remaining measurement in this file still comes from a synthesised caller on a clean socket, and **barge-in on speakerphone** is still unexercised, because a synthetic caller structurally cannot trigger it — it never echoes.
 4. **Hindi.** `SARVAM_API_KEY` is in `.env`, unimplemented. Neither Deepgram nor Cartesia has an Indian-accented voice worth using, so this is the only path to it. The plumbing (a `language` on the session and the ticket) already exists; asking for a non-English language throws a named error rather than reading Hindi in an English voice.
 5. ~~**The transcript extractor**~~ — **done 2026-08-10**, see "The extractor is built". What is left on it is that a small model reading speech is not deterministic: identical transcripts have given 23/28 and 24/28 fields on consecutive runs. Absence is safe by design, but nothing detects a field the model quietly stops finding.
 
@@ -129,7 +197,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 **The six things that will bite you if you don't know them:**
 
 1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
-2. **`ANTHROPIC_API_KEY` is still not set.** PDFs therefore have *no working reader at all*, and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading the same file as ₹1,39,100 and ₹13,91,000. This is Phase 0 and it blocks real precision work.
+2. **The `ANTHROPIC_API_KEY` in `.env` is borrowed and temporary** (added 2026-08-10, a friend of the user's, pasted into chat — **treat it as compromised**). `ANTHROPIC_VISION_MODEL=claude-haiku-4-5` sits beside it purely to stop document reads defaulting to `claude-opus-4-8` and burning someone else's credit; **remove that line when testing document accuracy for real**, because Opus is the whole point there. Without a key, PDFs have *no working reader at all* and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading one file as ₹1,39,100 and ₹13,91,000.
 3. **The voice stack is ours, and one key runs all of it.** `DEEPGRAM_API_KEY` does BOTH the hearing and the speaking (Aura TTS) — it is the single thing voice cannot run without. `CARTESIA_API_KEY` is now only read when `TTS_PROVIDER=cartesia`, and **its credit is spent until Sep 1, 2026** (20k characters/month is ~21 calls; a day of building drained it). `CARTESIA_AGENT_ID` is dead weight. The Cartesia key was pasted into chat, so **treat it as compromised and rotate it**. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
 4. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
 5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/m` — different vendor, different path.)
@@ -147,6 +215,8 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 | Understand the phone-browser voice agent | "Browser voice calls (`/m`)" |
 | Work on what a call captures and remembers | "`/m` accounts and remembered calls" |
 | Change what the agent asks for on a call | `backend/callSchema.js`, then "The extractor is built" |
+| Debug how a call *sounds* | "The first real calls, and the four bugs only a human found" |
+| Make the agent faster | "Claude, measured" — the prompt is 2,416 tokens and caching is not engaging |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
 | Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
 | Find which file does what | "Code map" |
@@ -517,6 +587,17 @@ Note the ★ line is the *only* part that is ours at runtime. Everything above a
 ## Browser voice calls (`/m`) — tap a button on your phone and talk to UPSY (built 2026-08-06)
 
 **The ask:** the team used [`profound.me`](https://profound.me)'s onboarding on a phone, had a ten-minute voice conversation with it, and wanted that — *"the response was insane, it was taking input like a live customer care is on the other end"* — as UPSY's mobile experience, with a call button at the top of the page.
+
+### 🌿 The constellation is now the live loan file (2026-08-10)
+
+Until today the star map behind a call was **hardcoded** — six fixed topics and a spotlight on a 7-second timer, pretending to follow a conversation it could not see. It now draws `callSchema.js` itself: **You → the four branches → a dot per question**, plus a fifth "Your number" node that lights when the FOIR becomes computable. Answered questions are warm/bright, pending ones dim, **ruled-out ones barely-there** (a salaried co-applicant's ITR dots fade rather than vanish — "not needed for you" is information), each branch shows "3 of 8", and a fact landing mid-call flashes an expanding ring.
+
+Three server events feed it, all riding the socket the relay already owns:
+- **`agenda`** — the branch/field map with a status per question (`agendaSnapshot()` in callSchema.js; labels and statuses only, no values). Sent at call start and after every extraction pass. `next` marks the first pending field in flow order — which is what the agent asks next by construction, since the prompt's COLLECTION_STYLE asks in branch order.
+- **`focus`** — the relay word-matches each spoken agent sentence against field labels/asks (`matchAgendaField()`) and the page spotlights that dot. Cosmetic by design: a miss leaves the spotlight where it was.
+- The existing extraction loop now runs every **3** caller turns (was 6 — fine for a dashboard nobody watches live, frozen-feeling for a caller looking at their own map), and **runs for anonymous callers too**: no account still means nothing is *stored* (same rule as the transcript), but the extraction feeds the live map and the mid-call prompt narrowing that used to be account-only.
+
+The old topic ring survives as the fallback for any call where no `agenda` event arrives (echo mode, a future provider), and `matchTopic()`/the timed rotation are guarded off in agenda mode. `/m?debug` exposes `window.__upsyM.{showCall, applyAgenda, focusField}` so the map can be driven and screenshotted without a microphone.
 
 ### What Profound actually does (researched from their shipped bundles, 2026-08-06)
 
@@ -1215,7 +1296,7 @@ npm start
 - `backend/voiceRelay.js` — **our own voice agent.** A WebSocket server on this process's own port (`/voice/stream`) that terminates the caller's audio socket and orchestrates the call: turn-taking, barge-in, conversation history, per-call teardown. Speaks `voiceClient.js`'s existing vocabulary exactly (`start`/`ack`/`media_input`/`media_output`/`clear`) so the browser never changed. `VOICE_RELAY_MODE=echo` bounces the caller's audio straight back — the transport test, with no AI in the path.
 - `backend/voiceStt.js` — hearing: Deepgram streaming + endpointing. Emits *speech started* (barge-in), interim transcripts (the constellation), and *turn finished*. Falls back to a deliberately deaf engine when no key is set, so the agent still speaks and says plainly that it cannot hear.
 - `backend/voiceBrain.js` — thinking: Claude Haiku 4.5 → OpenRouter, **streamed and split into sentences as it arrives** so speech starts before the reply is finished. Abortable mid-generation (the `respondTo()` lesson from `liveAssist.js`), and it logs Anthropic's cache-hit counters so the cost model is checked against evidence.
-- `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Cartesia Sonic** kept behind `TTS_PROVIDER=cartesia`. One socket per call rather than per sentence, since opening one costs ~1s. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
+- `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Cartesia Sonic** kept behind `TTS_PROVIDER=cartesia`. One socket per call rather than per sentence, since opening one costs ~1s. **⚠️ Aura's audio frames carry no request id**, so a request that ends any way other than its own `Flushed` marks the socket dirty and the next sentence drains it (`Clear` → `Cleared`, or a fresh socket) — without that, one abandoned sentence's audio plays inside the next one for the rest of the call. Read the header comment before touching `speak()`. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
 - `backend/voice-relay-check.js` — `npm run voice:relay`: runs the relay in-process on an ephemeral port and drives it with a fake browser — config → transport echo → single-use tickets → *does it actually speak* → does the brain stream sentences. Needs no running server and no real applicant data.
 - `backend/callSchema.js` — **what a call is supposed to establish**: the team's five branches, every field with the question that asks for it, and the derived branch (FOIR, lender bands, every flag rule on the flowchart). Also owns coercion — `parseRupees()`, the CGPA guard, the "a relationship is not a name" rule. **Edit here to change what the agent collects**; the prompt, the extractor and the dashboard all read it rather than restating it.
 - `backend/docPlan.js` — **the join with the doc collection agent.** Branch facts → the documents *this* person actually needs, the ones they do not (with the reason each was dropped), and the question that would settle the rest. Read by the voice prompt, `/api/voice/accounts/:id` and the dashboard. **Edit here to change how a param narrows the list.**

@@ -33,7 +33,8 @@ import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
 import { recordCall } from "./voiceAccounts.js";
 import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
-import { fileCall } from "./callExtract.js";
+import { fileCall, extractCallFacts, mergedProfile } from "./callExtract.js";
+import { agendaSnapshot, matchAgendaField } from "./callSchema.js";
 
 // Register the lines the agent repeats across calls, so each is synthesised once
 // and replayed thereafter. The anonymous opener qualifies because it is a fixed
@@ -107,15 +108,16 @@ const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 0);
 
 // How often the call is read into the caller's file while it is still running.
 //
-// Every finished call is extracted at teardown regardless; this is only about
-// whether an officer watching the dashboard sees the branches fill in during a
-// ten-minute call or all at once when it ends. Six caller turns is roughly two
-// minutes of talking, so a normal enquiry gets one or two mid-call passes.
+// Every finished call is extracted at teardown regardless; this is about how
+// often the dashboard AND the caller's own /m screen see the branches fill in.
+// Three caller turns is roughly a minute of talking — since the agenda event
+// made the map visible to the caller, updates a person is watching for, the
+// old six-turn cadence read as a frozen screen.
 //
 // It is safe to run inside a live call for one reason only: nothing awaits it.
 // It is a separate request on a separate socket, started and abandoned — see
 // captureFacts(). Set to 0 to extract at teardown and nowhere else.
-const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 6);
+const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 3);
 
 // Silent PCM at the pipeline's one and only sample rate. Int16 zeroes.
 function silence(ms) {
@@ -200,6 +202,11 @@ class RelayCall {
     this.spec = null;
     this.state = null;
     this.lastAck = null;
+    // What is known about this caller so far, growing as extraction reads the
+    // call. Starts from earlier calls (or empty for a stranger) and is what the
+    // live agenda on /m is drawn from — for an account holder it tracks the
+    // stored profile, for an anonymous caller it lives and dies with the call.
+    this.profile = structuredClone(ticket.context?.priorFacts || {});
     // The call's transcript, kept so it can be filed against the caller's
     // account when they hang up. Only what was actually said — this is the same
     // text the browser already receives, not a recording: no audio is written
@@ -281,6 +288,9 @@ class RelayCall {
     this.stt = makeStt({
       sampleRate: SAMPLE_RATE,
       language: this.ticket.language || "en",
+      // Names and institutes this particular caller is likely to say. Cheap, and
+      // proper nouns are where the recogniser is weakest.
+      keyterms: this.ticket.keyterms || [],
       onSpeechStarted: () => this.handleSpeechStarted(),
       onTranscript: (text) => {
         // Barge-in is decided HERE, on real recognised words — not on the raw
@@ -312,6 +322,11 @@ class RelayCall {
       onTurn: (text) => this.handleTurn(text),
       onError: (m) => console.error(`[voice:relay] ${m}`),
     });
+
+    // Tell the page what this call is here to establish, before a word is
+    // spoken: the branch map with what is already on file lit up. This is what
+    // turns /m's constellation from a hardcoded topic ring into the loan file.
+    this.sendAgenda();
 
     // Speak first. Beyond being the right conversational move, this is what
     // proves the audio round trip: voiceClient.js treats a socket that closes
@@ -377,6 +392,19 @@ class RelayCall {
     if (!text) return;
     send(this.ws, { event: "transcript", role: "agent", text, final: true });
     this.turns.push({ role: "agent", text, at: new Date().toISOString() });
+
+    // Spotlight the field this sentence is about, so the page lights the dot
+    // for the question actually being asked. Cosmetic — a miss just leaves the
+    // spotlight where it was, which is why a cheap word match is enough.
+    const hit = matchAgendaField(text, this.profile);
+    if (hit) send(this.ws, { event: "focus", branch: hit.branch, field: hit.field });
+  }
+
+  // The branch map with statuses — what is answered, pending, or ruled out —
+  // plus the next question in flow order. Sent at call start and again after
+  // every extraction pass, so the page draws the file filling in live.
+  sendAgenda() {
+    send(this.ws, { event: "agenda", agenda: agendaSnapshot(this.profile) });
   }
 
   // ── Speculative thinking ──────────────────────────────────────────────────
@@ -628,10 +656,12 @@ class RelayCall {
    * prompt simply stays in place.
    */
   refreshPrompt(profile) {
-    if (!this.ticket.context || this.closed) return;
+    if (this.closed) return;
     try {
       const before = this.ticket.systemPrompt;
-      const rebuilt = buildVoiceSystemPrompt({ ...this.ticket.context, priorFacts: profile });
+      // An anonymous caller has no context object, but what this call has
+      // established still narrows the agenda and the document list mid-call.
+      const rebuilt = buildVoiceSystemPrompt({ ...(this.ticket.context || {}), priorFacts: profile });
       if (rebuilt && rebuilt !== before) {
         this.ticket.systemPrompt = rebuilt;
         this.log("re-aimed: the agenda and the document list now match what this call has established");
@@ -663,7 +693,9 @@ class RelayCall {
    */
   captureFacts(reason) {
     const accountId = this.ticket.accountId;
-    if (!accountId) return;
+    // For an anonymous caller a teardown pass has no store to write to and no
+    // page left to light up — mid-call passes are the only ones worth running.
+    if (!accountId && this.closed) return;
     if (this.extracting) {
       this.queuedCapture = reason;
       return;
@@ -674,16 +706,32 @@ class RelayCall {
     if (!turns.some((t) => t.role === "caller")) return;
 
     this.extracting = true;
-    fileCall({ accountId, turns, reason })
-      .then((result) => {
-        if (result?.summary) this.log(result.summary);
+    const read = accountId
+      ? fileCall({ accountId, turns, reason }).then((result) => {
+          if (result?.summary) this.log(result.summary);
+          return result?.profile || null;
+        })
+      : // No account: extract without persisting, so the live agenda and the
+        // mid-call narrowing still work. Nothing is stored — same rule as the
+        // transcript: no account, no record.
+        extractCallFacts({ turns }).then((extraction) => {
+          if (!extraction || !Object.keys(extraction.facts || {}).length) return null;
+          return mergedProfile(this.profile, extraction.facts);
+        });
+
+    read
+      .then((profile) => {
+        if (!profile) return;
+        this.profile = mergedProfile(this.profile, profile);
         // Re-aim the agent at what is still missing, and at the shorter
         // document list the new facts imply. Cheap (a pure rebuild, no
         // network) and it is what makes the narrowing happen inside the call
         // rather than only on the next one. The conversation history is
         // untouched — only the standing instructions change.
-        if (result?.profile) this.refreshPrompt(result.profile);
+        this.refreshPrompt(this.profile);
+        if (!this.closed) this.sendAgenda();
       })
+      .catch((e) => console.error("[voice:relay] extraction pass failed:", e.message))
       .finally(() => {
         this.extracting = false;
         const queued = this.queuedCapture;

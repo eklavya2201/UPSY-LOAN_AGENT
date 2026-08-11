@@ -435,6 +435,17 @@ export async function fileCall({ accountId, turns, reason = "call ended" }) {
   }
 }
 
+/**
+ * Fold new facts into a profile without touching storage.
+ *
+ * The relay uses this for callers with no account: their call still fills the
+ * live agenda on /m and narrows the prompt mid-call, it just is not written
+ * anywhere — same rule as the transcript.
+ */
+export function mergedProfile(existing, facts) {
+  return deepMerge(structuredClone(existing || {}), facts || {});
+}
+
 // Local to this module: the same shape-preserving merge mergeProfile() applies
 // to storage, used here only to compute the derived branch against what the
 // profile is ABOUT to be rather than what it currently is.

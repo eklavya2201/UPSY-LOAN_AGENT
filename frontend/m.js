@@ -307,7 +307,119 @@
     stars: [],
     raf: null,
     t: 0,
+    // True once the relay has sent its `agenda` event — the constellation is
+    // then the live loan file (branches → questions) instead of the fixed
+    // topic ring, and the spotlight follows the call instead of a timer.
+    agendaMode: false,
   };
+
+  // ── The live agenda ───────────────────────────────────────────────────────
+  // The relay sends the branch schema with a status per question: done (a
+  // bright dot — answered on this call or an earlier one), pending (dim — still
+  // to ask), skipped (barely there — an answer ruled it out, e.g. a salaried
+  // co-applicant's ITR questions). Rebuilt on every extraction pass, so the
+  // file visibly fills in while the caller talks.
+  function buildAgendaMap(a) {
+    const seats = {
+      applicant: [0, -0.8],
+      institute: [0.8, -0.18],
+      loan: [0.52, 0.72],
+      coApplicant: [-0.52, 0.72],
+      underwriting: [-0.8, -0.18],
+    };
+    const nodes = [{ key: "you", label: "You", desc: "", x: 0, y: 0, hub: true }];
+
+    (a.branches || []).forEach(function (b, bi) {
+      const seat = seats[b.id] || [Math.cos(bi * 1.7), Math.sin(bi * 1.7)];
+      const parentIdx = nodes.length;
+      const counted = b.fields.filter(function (f) { return f.status !== "skipped"; });
+      nodes.push({
+        key: b.id,
+        label: b.title,
+        desc: b.blurb,
+        x: seat[0],
+        y: seat[1],
+        branch: true,
+        done: counted.filter(function (f) { return f.status === "done"; }).length,
+        total: counted.length,
+        phase: Math.random() * Math.PI * 2,
+      });
+      // Every question gets a dot, ruled-out ones included: "not needed for
+      // you" is information, and a vanished dot looks like a missed one.
+      const n = b.fields.length;
+      const base = Math.atan2(seat[1], seat[0]);
+      const spread = Math.PI * (n > 8 ? 1.05 : 0.85);
+      b.fields.forEach(function (f, fi) {
+        const ang = n === 1 ? base : base - spread / 2 + (spread * fi) / (n - 1);
+        nodes.push({
+          key: b.id + "." + f.id,
+          label: f.label,
+          desc: b.title,
+          x: seat[0] + Math.cos(ang) * 0.36,
+          y: seat[1] + Math.sin(ang) * 0.36,
+          field: true,
+          parent: parentIdx,
+          status: f.status,
+          phase: Math.random() * Math.PI * 2,
+        });
+      });
+    });
+
+    const uwReady = Boolean(a.underwriting && a.underwriting.ready);
+    nodes.push({
+      key: "underwriting",
+      label: "Your number",
+      desc: uwReady
+        ? "Worked out — the amount and the income are both in."
+        : "Comes together once the amount and the co-applicant's income are in.",
+      x: seats.underwriting[0],
+      y: seats.underwriting[1],
+      branch: true,
+      status: uwReady ? "done" : "pending",
+      phase: Math.random() * Math.PI * 2,
+    });
+    return nodes;
+  }
+
+  function applyAgenda(a) {
+    // Remember statuses so a question answered since the last snapshot can
+    // announce itself with a flash instead of silently changing colour.
+    const prevStatus = {};
+    if (map.agendaMode) {
+      map.nodes.forEach(function (n) { if (n.status !== undefined) prevStatus[n.key] = n.status; });
+    }
+    const focusKey = map.focusIdx >= 0 && map.nodes[map.focusIdx] ? map.nodes[map.focusIdx].key : null;
+
+    map.nodes = buildAgendaMap(a);
+    map.agendaMode = true;
+    stopRotation();
+
+    map.nodes.forEach(function (n) {
+      if (n.status === "done" && prevStatus[n.key] && prevStatus[n.key] !== "done") n.flashT = map.t;
+    });
+
+    const kept = focusKey ? map.nodes.findIndex(function (n) { return n.key === focusKey; }) : -1;
+    if (kept >= 0) {
+      map.focusIdx = kept;
+    } else if (a.next) {
+      // Nothing spotlit yet: light the next question in flow order, which is
+      // what the agent is about to ask.
+      focusField(a.next.branch + "." + a.next.field);
+    } else {
+      focusTopic(-1);
+    }
+  }
+
+  // Spotlight one question's dot, then drift back to the overview if the
+  // conversation moves on and nothing else claims the light.
+  let focusIdle = null;
+  function focusField(key) {
+    const idx = map.nodes.findIndex(function (n) { return n.key === key; });
+    if (idx < 0) return;
+    focusTopic(idx);
+    clearTimeout(focusIdle);
+    focusIdle = setTimeout(function () { focusTopic(-1); }, 16000);
+  }
 
   function buildMap() {
     // Hand-placed rather than an even ring: a perfect circle reads as a chart,
@@ -420,14 +532,22 @@
 
       const hub = project(map.nodes[0].x, map.nodes[0].y);
 
-      // Links from the hub outward.
+      // Links: branches hang off the hub, questions hang off their branch.
       for (let i = 1; i < map.nodes.length; i++) {
-        const p = project(map.nodes[i].x, map.nodes[i].y);
+        const node = map.nodes[i];
+        const from = node.parent ? project(map.nodes[node.parent].x, map.nodes[node.parent].y) : hub;
+        const p = project(node.x, node.y);
         const focused = map.focusIdx === i;
         ctx.beginPath();
-        ctx.moveTo(hub[0], hub[1]);
+        ctx.moveTo(from[0], from[1]);
         ctx.lineTo(p[0], p[1]);
-        ctx.strokeStyle = focused ? "rgba(134, 196, 232, 0.5)" : "rgba(114, 170, 208, 0.16)";
+        ctx.strokeStyle = focused
+          ? "rgba(134, 196, 232, 0.5)"
+          : node.status === "skipped"
+            ? "rgba(114, 170, 208, 0.05)"
+            : node.field
+              ? "rgba(114, 170, 208, 0.12)"
+              : "rgba(114, 170, 208, 0.16)";
         ctx.lineWidth = focused ? 1.3 : 0.8;
         ctx.stroke();
       }
@@ -440,14 +560,30 @@
         const dim = map.focusIdx >= 0 && !focused && !node.hub;
 
         const pulse = animate && !node.hub ? 0.85 + 0.15 * Math.sin(map.t * 1.1 + (node.phase || 0)) : 1;
-        const r = (node.hub ? 4.5 : 3.4) * (focused ? 1.9 : 1) * pulse;
+        const size = node.hub ? 4.5 : node.field ? (node.status === "skipped" ? 1.5 : 2.3) : 3.4;
+        const r = size * (focused ? 1.9 : 1) * pulse;
+
+        // An answered question is a warm star; everything else stays cool.
+        const done = node.status === "done";
+        const skipped = node.status === "skipped";
+        const glowRgb = done ? "255, 214, 150" : "150, 208, 246";
+
+        // A fact that just landed announces itself once: an expanding ring.
+        if (node.flashT !== undefined && map.t - node.flashT < 1.4) {
+          const age = (map.t - node.flashT) / 1.4;
+          ctx.beginPath();
+          ctx.arc(p[0], p[1], r + age * 26, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(255, 214, 150," + (0.6 * (1 - age)).toFixed(3) + ")";
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+        }
 
         // Glow first, dot on top — a flat dot reads as a bullet point, the
         // glow is what makes it a star.
         const glow = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], r * 6);
-        const strength = focused ? 0.55 : dim ? 0.08 : 0.25;
-        glow.addColorStop(0, "rgba(150, 208, 246," + strength + ")");
-        glow.addColorStop(1, "rgba(150, 208, 246, 0)");
+        const strength = focused ? 0.55 : skipped ? 0.04 : dim ? 0.08 : done ? 0.4 : 0.25;
+        glow.addColorStop(0, "rgba(" + glowRgb + "," + strength + ")");
+        glow.addColorStop(1, "rgba(" + glowRgb + ", 0)");
         ctx.fillStyle = glow;
         ctx.beginPath();
         ctx.arc(p[0], p[1], r * 6, 0, Math.PI * 2);
@@ -457,12 +593,17 @@
         ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
         ctx.fillStyle = focused
           ? "rgba(244, 251, 255, 0.98)"
-          : dim ? "rgba(226, 240, 250, 0.32)" : "rgba(232, 242, 250, 0.85)";
+          : done
+            ? "rgba(255, 228, 180, " + (dim ? 0.5 : 0.95) + ")"
+            : skipped
+              ? "rgba(226, 240, 250, 0.15)"
+              : dim ? "rgba(226, 240, 250, 0.32)" : "rgba(232, 242, 250, 0.85)";
         ctx.fill();
 
         // The focused node's caption is DOM (see .focus), so skip it here and
-        // never draw the same words twice.
-        if (focused) continue;
+        // never draw the same words twice. Question dots carry no label at all
+        // — thirty captions is a diagram, colour is what they speak through.
+        if (focused || node.field) continue;
 
         const alpha = dim ? 0.28 : node.hub ? 0.9 : 0.66;
         ctx.font = (node.hub ? "600 13px " : "500 12px ") + "Hind, system-ui, sans-serif";
@@ -470,6 +611,13 @@
         ctx.textBaseline = "top";
         ctx.fillStyle = "rgba(226, 240, 250," + alpha + ")";
         ctx.fillText(node.label, p[0], p[1] + r + 9);
+
+        // "3 of 8" under a branch — the file filling in, at a glance.
+        if (node.branch && node.total) {
+          ctx.font = "500 10px Hind, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(226, 240, 250," + (dim ? 0.18 : 0.42) + ")";
+          ctx.fillText(node.done + " of " + node.total, p[0], p[1] + r + 25);
+        }
       }
 
       map.raf = requestAnimationFrame(frame);
@@ -496,6 +644,9 @@
   // caller mid-sentence should not feel the screen hurrying them.
   let rotateId = null;
   function startRotation() {
+    // The rotation is the fallback for when the page knows nothing about the
+    // call. Once the agenda is live, the spotlight belongs to the relay.
+    if (map.agendaMode) return;
     let i = 0;
     focusTopic(-1);
     clearInterval(rotateId);
@@ -526,6 +677,9 @@
   }
 
   function matchTopic(text) {
+    // In agenda mode the topic indices no longer line up with the nodes, and
+    // the relay's `focus` events do this job with real knowledge of the schema.
+    if (map.agendaMode) return;
     if (!text) return;
     for (let i = 0; i < TOPICS.length; i++) {
       if (TOPICS[i].match.test(text)) {
@@ -660,6 +814,18 @@
           el.callStatus.textContent = STATUS_TEXT.error;
         },
         onEvent: function (msg) {
+          // The live loan file: the branch map with a status per question,
+          // sent at call start and again after every extraction pass. This is
+          // what replaces the hardcoded topic ring.
+          if (msg && msg.event === "agenda" && msg.agenda) {
+            applyAgenda(msg.agenda);
+            return;
+          }
+          // The relay matched the agent's sentence to a question — light it.
+          if (msg && msg.event === "focus" && typeof msg.branch === "string") {
+            focusField(msg.branch + (msg.field ? "." + msg.field : ""));
+            return;
+          }
           // The relay tells us what it is doing — listening / thinking /
           // speaking — and the frame's rim light shows it. This is the one
           // thing the hosted agent could never give us: it sent audio and
@@ -692,8 +858,15 @@
 
   async function endCall() {
     stopRotation();
+    clearTimeout(focusIdle);
     focusTopic(-1);
     stopMap();
+    // The next call starts from its own agenda event; until one arrives the
+    // fallback topic ring is the honest thing to show.
+    if (map.agendaMode) {
+      map.agendaMode = false;
+      buildMap();
+    }
     setVoiceState(null); // the rim must not keep breathing over a dead call
     clearInterval(timerId);
     timerId = null;
@@ -856,6 +1029,20 @@
   buildMap();
   drawMap();
   bootAccount();
+
+  // /m?debug — drive the call screen without a call, so the agenda map can be
+  // looked at (and screenshotted) without a microphone or a provider. Not
+  // reachable from the normal page.
+  if (new URLSearchParams(location.search).has("debug")) {
+    window.__upsyM = {
+      applyAgenda: applyAgenda,
+      focusField: focusField,
+      showCall: function () {
+        showView("call");
+        if (map.start) map.start();
+      },
+    };
+  }
 
   // Stop burning frames while the page is backgrounded, and only resume if a
   // call is actually on screen.
