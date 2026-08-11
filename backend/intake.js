@@ -11,7 +11,12 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 // Structuring is a light task; default to Opus for quality, override for speed/cost
 // (ANTHROPIC_INTAKE_MODEL=claude-haiku-4-5 is a good fast/cheap choice here).
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_INTAKE_MODEL || "claude-opus-4-8";
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// The OpenAI-compatible side of the chain: OpenRouter, or OpenAI's own API
+// when only OPENAI_API_KEY is set. Resolved once in llmProviders.js.
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 const OR_MODEL = process.env.OPENROUTER_INTAKE_MODEL || "openai/gpt-4o-mini";
 
 export function intakeConfigured() {
@@ -76,11 +81,11 @@ async function callClaude(userText) {
 }
 
 async function callOpenRouter(userText) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(OA.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: OR_MODEL,
+      model: OA.model(OR_MODEL),
       temperature: 0,
       max_tokens: 600,
       messages: [

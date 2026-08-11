@@ -7,7 +7,12 @@
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_ASSIST_MODEL || "claude-opus-4-8";
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// The OpenAI-compatible side of the chain: OpenRouter, or OpenAI's own API
+// when only OPENAI_API_KEY is set. Resolved once in llmProviders.js.
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 const OR_MODEL = process.env.OPENROUTER_ASSIST_MODEL || "openai/gpt-4o-mini";
 
 export function assistConfigured() {
@@ -48,11 +53,11 @@ async function callClaude(system, question) {
 }
 
 async function callOpenRouter(system, question) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(OA.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: OR_MODEL,
+      model: OA.model(OR_MODEL),
       temperature: 0.3,
       max_tokens: 350,
       messages: [

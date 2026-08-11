@@ -22,7 +22,19 @@ import { takeCompleteSentences } from "./sentences.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PATH = path.join(__dirname, "agentcall", "bridge.js");
 
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// Same provider rule as every other chain in this repo: Claude first when
+// ANTHROPIC_API_KEY is set, the OpenAI-compatible side otherwise. This was the
+// last module that spoke only one dialect, which made "switch providers by
+// editing .env" true everywhere except on a Meet call.
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+// Haiku by default for the same reason voiceBrain.js picks it: a live call is
+// latency-bound, and it reads the screenshot fine. Not the vision-model
+// variable, which capture.js shares — see the note below.
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_LIVE_ASSIST_MODEL || "claude-haiku-4-5";
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 // Live-assist can be pointed at a different (stronger) vision model than the
 // document readers, because OPENROUTER_VISION_MODEL is shared by capture.js,
 // income.js and bankStatement.js — swapping that one to improve form guidance
@@ -65,8 +77,8 @@ if (!meetUrl) {
   console.error("Usage: node backend/liveAssist.js <meet-url> [--name Nova] [--voice af_heart] [--context <base64-json>]");
   process.exit(1);
 }
-if (!OR_KEY) {
-  console.error("OPENROUTER_API_KEY is not set — liveAssist needs it to answer questions.");
+if (!ANTHROPIC_KEY && !OR_KEY) {
+  console.error("No language-model key is set (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY) — liveAssist needs one to answer questions.");
   process.exit(1);
 }
 
@@ -391,6 +403,80 @@ async function handleEvent(event) {
 // backend/sentences.js so they can be unit-tested — this file spawns the
 // AgentCall bridge on import and cannot be loaded from a test.
 
+// OpenAI-format messages → Anthropic's shape: system pulled out, image_url
+// data-URL parts converted to base64 image blocks (the format capture.js
+// already uses against the same API).
+function toClaudeMessages(messages) {
+  const system = messages.find((m) => m.role === "system")?.content || "";
+  const rest = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => {
+      if (typeof m.content === "string") return { role: m.role, content: m.content };
+      const parts = m.content
+        .map((part) => {
+          if (part.type === "image_url") {
+            const match = /^data:([^;]+);base64,(.*)$/.exec(part.image_url?.url || "");
+            return match ? { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } } : null;
+          }
+          return { type: "text", text: part.text || "" };
+        })
+        .filter(Boolean);
+      return { role: m.role, content: parts };
+    });
+  return { system, messages: rest };
+}
+
+/**
+ * Open the reply stream on whichever brain the keys select: Claude when
+ * ANTHROPIC_API_KEY is set, the OpenAI-compatible side otherwise — and as the
+ * mid-call fallback when Claude's endpoint refuses, so a dead key degrades the
+ * call instead of ending it. Returns null when every configured side failed.
+ *
+ * Both providers stream SSE with `data:` lines; only the payload shape inside
+ * differs, so the caller keeps one read loop and this hands it the right
+ * delta extractor alongside the body.
+ */
+async function openBrainStream(messages, signal) {
+  if (ANTHROPIC_KEY) {
+    const { system, messages: converted } = toClaudeMessages(messages);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      // Low temperature on purpose: explaining what a form field wants should
+      // be near-deterministic. Creative variation is not a feature here.
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 220, temperature: 0.1, stream: true, system, messages: converted }),
+      signal,
+    });
+    if (res.ok) {
+      return {
+        provider: `Claude (${ANTHROPIC_MODEL})`,
+        body: res.body,
+        extractDelta: (msg) => (msg.type === "content_block_delta" && msg.delta?.type === "text_delta" ? msg.delta.text : null),
+      };
+    }
+    console.error(`[liveAssist] Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}${OR_KEY ? " — falling back" : ""}`);
+    if (!OR_KEY) return null;
+  }
+  const res = await fetch(OA.url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+    // Streamed so the first sentence can be spoken while the rest is still
+    // being written. Waiting for the whole reply meant several seconds of
+    // silence on every turn, which reads as the bot having not heard them.
+    body: JSON.stringify({ model: OA.model(OR_MODEL), temperature: 0.1, max_tokens: 220, messages, stream: true }),
+    signal,
+  });
+  if (!res.ok) {
+    console.error(`[liveAssist] ${OA.name} HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return null;
+  }
+  return {
+    provider: `${OA.name} (${OR_MODEL})`,
+    body: res.body,
+    extractDelta: (msg) => msg.choices?.[0]?.delta?.content || null,
+  };
+}
+
 async function respondTo(text) {
   if (!text || !text.trim()) return;
 
@@ -439,20 +525,9 @@ async function respondTo(text) {
   ];
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
-      // Low temperature on purpose: explaining what a form field wants should
-      // be near-deterministic. Creative variation is not a feature here.
-      // Streamed so the first sentence can be spoken while the rest is still
-      // being written. Waiting for the whole reply meant several seconds of
-      // silence on every turn, which reads as the bot having not heard them.
-      body: JSON.stringify({ model: OR_MODEL, temperature: 0.1, max_tokens: 220, messages, stream: true }),
-      signal: controller.signal,
-    });
+    const stream = await openBrainStream(messages, controller.signal);
     if (myTurn !== currentTurn) return;
-    if (!res.ok) {
-      console.error(`[liveAssist] OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!stream) {
       sendCommand({ command: "tts.speak", text: "Sorry, I had trouble just now. Could you say that again?" });
       return;
     }
@@ -473,7 +548,7 @@ async function respondTo(text) {
       sendCommand({ command: "tts.speak", text: sentence });
     };
 
-    for await (const chunk of res.body) {
+    for await (const chunk of stream.body) {
       // Stop mid-stream the moment this turn is superseded, so a stale answer
       // is never half-spoken over the applicant's new question.
       if (myTurn !== currentTurn) return;
@@ -487,7 +562,7 @@ async function respondTo(text) {
         if (!payload || payload === "[DONE]") continue;
         let delta;
         try {
-          delta = JSON.parse(payload).choices?.[0]?.delta?.content;
+          delta = stream.extractDelta(JSON.parse(payload));
         } catch {
           continue; // keep-alive or a fragment we cannot use yet
         }

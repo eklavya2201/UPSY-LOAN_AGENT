@@ -1,3 +1,4 @@
+import { openaiSide } from "./llmProviders.js";
 // Batch card-reading eval / model A/B harness.
 //
 // Runs each document through the SAME readCard() pipeline the app uses and prints
@@ -58,7 +59,7 @@ async function run() {
   // Show which readers are live so the results are easy to interpret.
   const readers = [];
   if (process.env.ANTHROPIC_API_KEY) readers.push(`claude (${process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8"})`);
-  if (process.env.OPENROUTER_API_KEY) readers.push(`openrouter (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
+  if (openaiSide()) readers.push(`${openaiSide().name.toLowerCase()} (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   readers.push("ocr (fallback)");
   console.log(`\nActive readers, in priority order: ${readers.join(" → ")}\n`);
 

@@ -1,3 +1,4 @@
+import { openaiSide } from "./llmProviders.js";
 // Batch income-extraction eval / model A/B harness — the income-doc counterpart
 // to eval-cards.js. Runs each file through the SAME extractIncome() the app uses
 // on /api/validate for co_income_proof, and prints what it read: doc type,
@@ -38,7 +39,7 @@ async function run() {
 
   const readers = [];
   if (process.env.ANTHROPIC_API_KEY) readers.push(`claude (${process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8"})`);
-  if (process.env.OPENROUTER_API_KEY) readers.push(`openrouter (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
+  if (openaiSide()) readers.push(`${openaiSide().name.toLowerCase()} (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   if (!readers.length) readers.push("(none configured — every file will read as unverified)");
   console.log(`\nActive readers, in priority order: ${readers.join(" → ")}\n`);
 

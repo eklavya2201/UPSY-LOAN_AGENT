@@ -21,7 +21,12 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 // time. Override if a call needs more reasoning than it needs speed.
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_VOICE_MODEL || "claude-haiku-4-5";
 
-const OR_KEY = process.env.OPENROUTER_API_KEY;
+import { openaiSide } from "./llmProviders.js";
+
+// The OpenAI-compatible side of the chain: OpenRouter, or OpenAI's own API
+// when only OPENAI_API_KEY is set. Resolved once in llmProviders.js.
+const OA = openaiSide();
+const OR_KEY = OA?.key || null;
 const OR_MODEL =
   process.env.OPENROUTER_VOICE_MODEL || process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini";
 
@@ -40,13 +45,13 @@ export function brainConfigured() {
 
 export function brainConfigError() {
   if (brainConfigured()) return null;
-  return "Neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY is set, so the relay has nothing to think with.";
+  return "No language-model key is set (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY), so the relay has nothing to think with.";
 }
 
 export function brainStatusLine() {
   const chain = [];
   if (ANTHROPIC_KEY) chain.push(`Claude (${ANTHROPIC_MODEL})`);
-  if (OR_KEY) chain.push(`OpenRouter (${OR_MODEL})`);
+  if (OR_KEY) chain.push(`${OA.name} (${OR_MODEL})`);
   return chain.length ? chain.join(" → ") : "not configured";
 }
 
@@ -118,12 +123,12 @@ async function* streamClaude(systemPrompt, history, signal) {
 }
 
 async function* streamOpenRouter(systemPrompt, history, signal) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(OA.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
     signal,
     body: JSON.stringify({
-      model: OR_MODEL,
+      model: OA.model(OR_MODEL),
       stream: true,
       max_tokens: MAX_TOKENS,
       // Low temperature for the same reason liveAssist.js uses it: quoting an
