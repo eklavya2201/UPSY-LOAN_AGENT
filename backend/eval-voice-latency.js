@@ -74,7 +74,60 @@ async function timeToFirstSentence({ url, key, model, extraHeaders = {} }) {
   return { firstToken, firstSentence: Date.now() - t0, text: buffer.trim().slice(0, 80) };
 }
 
+// Anthropic speaks its own dialect, so it needs its own reader. Worth the extra
+// function: this harness is described as ranking whatever is configured, and
+// until now it could not rank the one provider voiceBrain.js actually prefers —
+// which made "Claude is faster" a claim nobody here had ever measured.
+async function timeToFirstSentenceAnthropic({ key, model }) {
+  const t0 = Date.now();
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      max_tokens: 250,
+      stream: true,
+      temperature: 0.3,
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)] }],
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 120)}`);
+
+  let buffer = "";
+  let firstToken = null;
+  const decoder = new TextDecoder();
+  let partial = "";
+  for await (const chunk of res.body) {
+    partial += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = partial.indexOf("\n")) !== -1) {
+      const line = partial.slice(0, nl).trim();
+      partial = partial.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      let msg;
+      try {
+        msg = JSON.parse(line.slice(5).trim());
+      } catch (e) {
+        continue;
+      }
+      if (msg.type !== "content_block_delta" || msg.delta?.type !== "text_delta") continue;
+      if (firstToken === null) firstToken = Date.now() - t0;
+      buffer += msg.delta.text;
+      const { sentences } = takeCompleteSentences(buffer);
+      if (sentences.length) return { firstToken, firstSentence: Date.now() - t0, text: sentences[0] };
+    }
+  }
+  return { firstToken, firstSentence: Date.now() - t0, text: buffer.trim().slice(0, 80) };
+}
+
 const CANDIDATES = [
+  process.env.ANTHROPIC_API_KEY && {
+    label: `Claude ${process.env.ANTHROPIC_VOICE_MODEL || "claude-haiku-4-5"}`,
+    key: process.env.ANTHROPIC_API_KEY,
+    model: process.env.ANTHROPIC_VOICE_MODEL || "claude-haiku-4-5",
+    anthropic: true,
+  },
   process.env.GROQ_API_KEY && {
     label: "Groq llama-3.1-8b-instant",
     url: "https://api.groq.com/openai/v1/chat/completions",
@@ -110,7 +163,7 @@ for (const c of CANDIDATES) {
   let failed = null;
   for (let i = 0; i < RUNS; i++) {
     try {
-      const r = await timeToFirstSentence(c);
+      const r = c.anthropic ? await timeToFirstSentenceAnthropic(c) : await timeToFirstSentence(c);
       samples.push(r.firstSentence);
       sample = r.text;
     } catch (e) {

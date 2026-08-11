@@ -84,13 +84,42 @@ const BUCKETS = [
   },
 ];
 
-// Nothing matched. Deliberately says almost nothing — a generic filler that
-// tries to sound specific is how an agent ends up implying something it has not
-// worked out yet.
-const GENERIC = {
-  en: ["Okay, let me think about that for a second.", "Right, one moment."],
-  hi: ["Achha, ek second, main sochta hoon.", "Theek hai, ek minute."],
+// ── Receipts, for when the caller ANSWERED rather than asked ────────────────
+//
+// The buckets above were all written for a caller asking a question, back when
+// that was the only thing this agent did. It asks questions of its own now, so
+// most turns are ANSWERS — and "okay, so you want to know how much you could
+// borrow" is nonsense in reply to "my father earns ninety-five thousand".
+// Everything that was not a question therefore fell through to a generic.
+//
+// And the generics were the wrong shape entirely: "let me think about that for
+// a second" and "one moment" ANNOUNCE A WAIT. A person filling the same gap
+// does not say they are about to think, they say "got it" — a receipt, not a
+// stall. It buys the identical two seconds and it reads as the front of the
+// answer rather than as an apology for the delay.
+//
+// Short on purpose. Long enough to cover the model's first sentence, short
+// enough that the caller is never waiting on the filler itself.
+const RECEIPTS = {
+  en: ["Got it.", "Right.", "Okay.", "Sure.", "Understood.", "Okay, got it."],
+  hi: ["Theek hai.", "Achha.", "Samajh gaya.", "Haan, theek hai."],
 };
+
+// Neither a question nor a real answer — "yes", "okay", "hmm". Says nothing at
+// all: acknowledging an acknowledgement is how two people talk past each other.
+const BACKCHANNEL = /^(yes|yeah|yep|no|nope|ok|okay|sure|hmm+|uh huh|right|thanks|thank you|correct|exactly)\b[.! ]*$/i;
+
+// Does this read as a question? Cheap and wrong sometimes, which is fine —
+// getting it wrong costs a receipt where a restatement would have been slightly
+// better, never a claim about their case.
+const LOOKS_LIKE_A_QUESTION =
+  /\?|^(what|how|why|when|where|which|who|can|could|do|does|did|is|are|am|will|would|should|shall|any|tell me|explain)\b/i;
+
+function pickFresh(options, lastUsed) {
+  const fresh = options.filter((o) => o !== lastUsed);
+  const pool = fresh.length ? fresh : options;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 /**
  * Pick something to say while the model thinks.
@@ -105,17 +134,28 @@ const GENERIC = {
  */
 export function pickAcknowledgement(question, language = "en", lastUsed = null) {
   const lang = language === "hi" ? "hi" : "en";
-  const text = String(question || "");
+  const text = String(question || "").trim();
+  if (!text) return null;
 
-  // Very short utterances ("yes", "okay", "hmm") get nothing. Acknowledging an
-  // acknowledgement is how two people end up talking past each other.
-  if (text.trim().split(/\s+/).length < 3) return null;
+  // "Yes." / "Okay." — nothing to acknowledge.
+  if (BACKCHANNEL.test(text)) return null;
 
-  const bucket = BUCKETS.find((b) => b.match.test(text));
-  const options = (bucket ? bucket[lang] : GENERIC[lang]) || GENERIC.en;
-  const fresh = options.filter((o) => o !== lastUsed);
-  const pool = fresh.length ? fresh : options;
-  return pool[Math.floor(Math.random() * pool.length)];
+  // A QUESTION gets the topic restated, which both fills the gap and confirms
+  // they were understood.
+  if (LOOKS_LIKE_A_QUESTION.test(text)) {
+    const bucket = BUCKETS.find((b) => b.match.test(text));
+    if (bucket) return pickFresh(bucket[lang] || bucket.en, lastUsed);
+  }
+
+  // Everything else is an ANSWER to something the agent asked. Take the receipt.
+  //
+  // Deliberately allowed on consecutive turns — a person says "got it" twice
+  // running without it being strange, and this is the whole reason a caller
+  // never sits in silence while the model writes its first sentence. What must
+  // not repeat is the exact same word, which pickFresh handles. The old code
+  // said nothing at all on short turns, so precisely the turns with the least
+  // to think about were the ones with the longest silence.
+  return pickFresh(RECEIPTS[lang] || RECEIPTS.en, lastUsed);
 }
 
 // Exported for tests and for anyone tuning the matcher.
@@ -137,6 +177,6 @@ export function allFixedPhrases(language) {
   const langs = language ? [language] : ["en", "hi"];
   const out = [];
   for (const bucket of BUCKETS) for (const l of langs) out.push(...(bucket[l] || []));
-  for (const l of langs) out.push(...(GENERIC[l] || []));
+  for (const l of langs) out.push(...(RECEIPTS[l] || []));
   return out;
 }

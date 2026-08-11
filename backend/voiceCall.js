@@ -34,6 +34,7 @@ import { getApplication } from "./store.js";
 import { buildContextPayload } from "./liveAssistManager.js";
 import { DOCUMENTS, STAGES } from "./documents.js";
 import { buildVoiceSystemPrompt, buildIntroduction } from "./voicePrompt.js";
+import { accountIdentityFacts } from "./callSchema.js";
 import { mintRelayTicket, relayConfigError, RELAY_PATH, SAMPLE_RATE as RELAY_SAMPLE_RATE } from "./voiceRelay.js";
 
 const PROVIDER = (process.env.VOICE_PROVIDER || "cartesia").toLowerCase();
@@ -230,9 +231,18 @@ function mergeCallerContext(leadContext, account) {
     if (!context.name) context.name = account.name;
     context.callCount = account.callCount || 0;
     context.lastCallAt = account.lastCallAt || null;
-    if (account.profile && Object.keys(account.profile).length) {
-      context.priorFacts = account.profile;
-    }
+    // What the calls established, on top of what signup already told us. The
+    // stored profile wins: if a call corrected the name, that is the newer
+    // fact. Merged here rather than only at signup so accounts created before
+    // this existed also stop being asked for a name we have.
+    const identity = accountIdentityFacts(account);
+    const profile = account.profile || {};
+    const merged = {
+      ...identity,
+      ...profile,
+      applicant: { ...(identity.applicant || {}), ...(profile.applicant || {}) },
+    };
+    if (Object.keys(merged).length) context.priorFacts = merged;
   }
   return context;
 }
@@ -243,6 +253,22 @@ function mergeCallerContext(leadContext, account) {
 // socket went straight to the vendor; now that the socket terminates on our own
 // server, sending the agent's instructions to the client and trusting them back
 // would be handing an anonymous caller an edit box for the loan rules.
+// Words this caller is more likely to say than a stranger would be: their own
+// name, and their institute if an earlier call established one. Split into parts
+// as well as the whole, because someone says "Eklavya" far more often than
+// "Eklavya Pandey", and a boosted term only helps when it matches what was said.
+function callerKeyterms(context) {
+  const facts = context?.priorFacts || {};
+  const terms = new Set();
+  for (const value of [context?.name, facts.applicant?.name, facts.institute?.name]) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    terms.add(text);
+    for (const part of text.split(/\s+/)) if (part.length > 2) terms.add(part);
+  }
+  return [...terms];
+}
+
 function createRelaySession({ leadId, accountId, context, origin, language }) {
   const token = mintRelayTicket({
     leadId,
@@ -261,6 +287,10 @@ function createRelaySession({ leadId, accountId, context, origin, language }) {
     // is the same object the prompt is built from, and it never goes to the
     // browser for the reason stated above.
     context,
+    // Proper nouns this caller is likely to say, handed to the recogniser as
+    // boosted terms. The standing keyterm list in voiceStt.js covers the
+    // vocabulary of lending; this covers the vocabulary of one person.
+    keyterms: callerKeyterms(context),
   });
 
   const wsOrigin = String(origin || "").replace(/^http/, "ws");

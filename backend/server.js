@@ -28,8 +28,8 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
-import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail } from "./voiceAccounts.js";
-import { BRANCHES, DERIVED_BRANCH, coverage } from "./callSchema.js";
+import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail, mergeProfile } from "./voiceAccounts.js";
+import { BRANCHES, DERIVED_BRANCH, coverage, accountIdentityFacts } from "./callSchema.js";
 import { extractorStatusLine } from "./callExtract.js";
 import { planDocuments } from "./docPlan.js";
 import { createRateLimiter } from "./rateLimit.js";
@@ -932,6 +932,14 @@ app.post("/api/m/signup", async (req, res) => {
       phone: normalizePhone(req.body?.phone),
       password: req.body?.password,
     });
+    // The name they just typed IS the applicant's name, so seed the branch
+    // profile with it. Otherwise the first call greets them by name and then
+    // asks what their name is — which is what happened on the first real call,
+    // three times, because a name is also the hardest thing for speech
+    // recognition to get right.
+    await mergeProfile(account.accountId, accountIdentityFacts(account)).catch((e) =>
+      console.error("[m:auth] could not seed the profile:", e.message)
+    );
     // accountId only. The name and number are on the record already; putting
     // them in the log too would widen the plaintext-PII gap flagged in Phase 2
     // for no operational gain.

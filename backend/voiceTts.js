@@ -53,10 +53,24 @@ const DEEPGRAM_HOST = "api.deepgram.com";
 // it is exactly how the Cartesia pick went astray.
 const DEEPGRAM_VOICE = process.env.DEEPGRAM_TTS_MODEL || "aura-2-athena-en";
 
-// Ceiling on one sentence. Generously above the ~400ms a sentence really takes,
-// because this is a safety net against a stalled socket, not a latency control —
-// tripping it means something is already wrong.
-const SPEAK_TIMEOUT_MS = Number(process.env.TTS_SPEAK_TIMEOUT_MS || 10000);
+// Two ceilings, because "stalled" and "slow" are different faults and only one
+// of them is worth giving up on.
+//
+// IDLE is the real detector: a sentence that is still delivering audio is alive,
+// however long it takes, while one that has sent nothing for five seconds is
+// gone. The original single 10s TOTAL timeout could not tell those apart, so on
+// a bad connection it aborted sentences that were still streaming perfectly well
+// — measured on a real call: a four-second greeting delivered 3.16s of audio in
+// 79 chunks and was then declared timed out.
+//
+// TOTAL still exists so a pathological stream that dribbles one chunk every four
+// seconds cannot hold the speech queue forever.
+const IDLE_TIMEOUT_MS = Number(process.env.TTS_IDLE_TIMEOUT_MS || 5000);
+const SPEAK_TIMEOUT_MS = Number(process.env.TTS_SPEAK_TIMEOUT_MS || 30000);
+
+// How long to wait for Deepgram to confirm a Clear before giving up on the
+// socket entirely. Short: this is on the path of the next thing the agent says.
+const CLEAR_TIMEOUT_MS = Number(process.env.TTS_CLEAR_TIMEOUT_MS || 800);
 
 const CARTESIA_HOST = "api.cartesia.ai";
 const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2025-04-16";
@@ -135,11 +149,33 @@ class AuraTts {
     this.ready = null;
     this.pending = null;
     this.closed = false;
-    // Aura has no per-request id to filter late audio by, unlike Cartesia's
-    // context_id. A monotonic counter does the same job: chunks are handed to
-    // whichever request is current, and anything still arriving for an
-    // abandoned one is dropped because `pending` has already moved on.
     this.seq = 0;
+
+    // ⚠️ THE THING THAT MAKES THIS CLASS HARD, stated plainly because a previous
+    // version got it wrong and the bug reached a real caller as the agent's
+    // voice breaking up mid-word.
+    //
+    // Aura's audio arrives as bare binary frames with NO request id — unlike
+    // Cartesia's context_id, there is nothing in a frame that says which
+    // sentence it belongs to. An earlier comment here claimed a monotonic
+    // counter "does the same job" and that late audio from an abandoned request
+    // "is dropped because pending has already moved on". Both halves were false:
+    // handleMessage handed every binary frame to whatever `pending` happened to
+    // be current, so when one request was abandoned — a barge-in, a timeout —
+    // its remaining audio was delivered into the NEXT sentence, and its late
+    // `Flushed` then resolved that sentence early. From there the socket stayed
+    // one request out of step for the rest of the call.
+    //
+    // Measured, with the sentence lengths swapping places:
+    //   "Right."                        → 3.60s of audio, 90 chunks
+    //   "Your father's income is the…"   → 0.52s of audio, 13 chunks
+    //
+    // Since a frame cannot be attributed, the only correct move is to make sure
+    // nothing is ever in flight when a new request starts. `dirty` marks the
+    // socket as possibly still generating for a request nobody is listening to,
+    // and settleSocket() below drains it before the next Speak.
+    this.dirty = false;
+    this.clearedWaiter = null;
   }
 
   connect() {
@@ -180,13 +216,32 @@ class AuraTts {
     // WebSocket would give Blobs instead, whose length is `.size` not
     // `.byteLength`, which silently measures every frame as empty.
     if (isBinary) {
-      if (pending && raw.length) pending.onAudio(Buffer.from(raw));
+      // No pending request means these frames belong to something abandoned.
+      // Dropping them is the point — this is where the mis-splicing happened.
+      if (pending && raw.length) {
+        pending.touch();
+        pending.onAudio(Buffer.from(raw));
+      }
       return;
     }
     let msg;
     try {
       msg = JSON.parse(raw.toString());
     } catch (e) {
+      return;
+    }
+
+    // Confirmation that Deepgram has thrown away whatever it was generating, so
+    // the socket is safe to reuse. Handled before the `pending` guard because a
+    // Clear is sent precisely when there is no pending request left.
+    if (msg.type === "Cleared") {
+      const waiter = this.clearedWaiter;
+      this.clearedWaiter = null;
+      if (waiter) waiter();
+      return;
+    }
+    if (msg.type === "Warning") {
+      this.onError(`TTS warning: ${msg.description || msg.message || "unspecified"}`);
       return;
     }
     if (!pending) return;
@@ -200,10 +255,71 @@ class AuraTts {
     }
   }
 
+  /**
+   * Make sure nothing is still being generated for a request nobody owns.
+   *
+   * Called before a Speak whenever the previous request ended in any way other
+   * than its own Flushed — an interruption or a stall. Asks Deepgram to Clear
+   * and waits for it to confirm; if it does not confirm quickly, the socket
+   * cannot be trusted and is replaced. A reconnect costs ~600ms and only ever
+   * happens after a fault, which is a price worth paying to never again splice
+   * one sentence's audio into another's.
+   */
+  async settleSocket() {
+    this.dirty = false;
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return this.reconnect();
+
+    const cleared = new Promise((resolve) => {
+      this.clearedWaiter = resolve;
+    });
+    try {
+      ws.send(JSON.stringify({ type: "Clear" }));
+    } catch (e) {
+      return this.reconnect();
+    }
+
+    let timer;
+    const confirmed = await Promise.race([
+      cleared.then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), CLEAR_TIMEOUT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    this.clearedWaiter = null;
+    if (!confirmed) {
+      this.onError("TTS did not confirm a Clear — replacing the socket rather than risking crossed audio");
+      await this.reconnect();
+    }
+  }
+
+  // Drop the current socket and open a fresh one. Distinct from close(), which
+  // ends the engine for good.
+  async reconnect() {
+    const ws = this.ws;
+    this.ws = null;
+    this.ready = null;
+    this.clearedWaiter = null;
+    if (ws && ws.readyState <= WebSocket.OPEN) {
+      try {
+        ws.close();
+      } catch (e) {
+        /* already gone */
+      }
+    }
+    if (!this.closed) await this.connect();
+  }
+
   async speak(text, onAudio, signal) {
     if (!text || !text.trim()) return;
     if (signal?.aborted) return;
     await this.connect();
+    if (signal?.aborted) return;
+
+    // Anything still in flight from an abandoned request has to be gone before
+    // a new one starts, or its audio arrives inside this sentence.
+    if (this.dirty) await this.settleSocket();
     if (signal?.aborted) return;
 
     const mine = ++this.seq;
@@ -220,33 +336,43 @@ class AuraTts {
       // deadlocked the boot-time prewarm on the very first run.
       //
       // Resolve rather than reject: whatever audio did arrive has already been
-      // played, and the next sentence should still get its turn.
-      const timeout = setTimeout(() => {
+      // played, and the next sentence should still get its turn. But mark the
+      // socket dirty first — Deepgram has not stopped generating just because we
+      // stopped waiting, and the next request must not inherit that audio.
+      let idle;
+      const giveUp = (why) => {
         if (this.pending?.seq !== mine) return;
         this.pending = null;
-        this.onError(`TTS timed out waiting for the end of a sentence (${SPEAK_TIMEOUT_MS}ms)`);
+        this.dirty = true;
+        this.onError(`TTS ${why} — abandoning this sentence and resetting the stream`);
         resolve();
-      }, SPEAK_TIMEOUT_MS);
+      };
+      const total = setTimeout(() => giveUp(`ran past its ceiling (${SPEAK_TIMEOUT_MS}ms)`), SPEAK_TIMEOUT_MS);
+      // Re-armed by every audio frame: a sentence that is still arriving is
+      // healthy no matter how long it has been going.
+      const arm = () => {
+        clearTimeout(idle);
+        idle = setTimeout(() => giveUp(`went silent mid-sentence (no audio for ${IDLE_TIMEOUT_MS}ms)`), IDLE_TIMEOUT_MS);
+      };
+      arm();
 
       const settle = (fn) => (v) => {
-        clearTimeout(timeout);
+        clearTimeout(total);
+        clearTimeout(idle);
         fn(v);
       };
       resolve = settle(resolve);
       reject = settle(reject);
 
-      this.pending = { onAudio, resolve, reject, seq: mine };
+      this.pending = { onAudio, resolve, reject, seq: mine, touch: arm };
 
       const onAbort = () => {
         if (this.pending?.seq !== mine) return;
         this.pending = null;
-        // Tell Deepgram to stop generating too, so we are not paying for audio
-        // the caller has already talked over.
-        try {
-          this.ws?.send(JSON.stringify({ type: "Clear" }));
-        } catch (e) {
-          /* socket already going away */
-        }
+        // Deepgram keeps generating until told otherwise, so the socket is
+        // untrustworthy until a Clear is confirmed. settleSocket() does that
+        // before the next Speak rather than here, so barge-in stays instant.
+        this.dirty = true;
         // Resolve, not reject: an interrupted sentence is a normal event on a
         // phone call, not a failure.
         resolve();

@@ -79,9 +79,15 @@ export function sttConfigError() {
 }
 
 class DeepgramStt {
-  constructor({ sampleRate, language = "en", onSpeechStarted, onTranscript, onEagerTurn, onTurn, onError }) {
+  constructor({ sampleRate, language = "en", keyterms = [], onSpeechStarted, onTranscript, onEagerTurn, onTurn, onError }) {
     this.sampleRate = sampleRate;
     this.language = language;
+    // Terms known for THIS caller, on top of the standing list. A person's name
+    // is the hardest thing here — arbitrary proper nouns with no language model
+    // behind them — and on the first real call "Eklavya Pandey" came back as
+    // "Will my full full name be" and then "Is that q?". We know the name from
+    // their account, so the recogniser may as well be told to expect it.
+    this.keyterms = keyterms.filter(Boolean).slice(0, 10);
     this.onSpeechStarted = onSpeechStarted || (() => {});
     this.onTranscript = onTranscript || (() => {});
     // Fires on each settled fragment, ~800ms before onTurn confirms the turn.
@@ -115,7 +121,7 @@ class DeepgramStt {
       vad_events: "true",
     });
     // Repeated params, one per term — not a comma-joined single value.
-    for (const term of KEYTERMS) params.append("keyterm", term);
+    for (const term of [...KEYTERMS, ...this.keyterms]) params.append("keyterm", term);
 
     const ws = new WebSocket(`wss://${DEEPGRAM_HOST}/v1/listen?${params}`, {
       headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}` },

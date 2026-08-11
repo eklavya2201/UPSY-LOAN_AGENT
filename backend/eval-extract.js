@@ -18,7 +18,8 @@
 // having a bad run — which is itself the finding, and why it prints what it got.
 
 import "dotenv/config";
-import { coverage, computeUnderwriting, deriveFlags, coerce, parseRupees, getField } from "./callSchema.js";
+import { coverage, computeUnderwriting, deriveFlags, coerce, parseRupees, getField, accountIdentityFacts } from "./callSchema.js";
+import { pickAcknowledgement, allFixedPhrases, ACKNOWLEDGEMENT_BUCKETS } from "./voiceFillers.js";
 import { extractCallFacts, extractorConfigured, extractorStatusLine, validate } from "./callExtract.js";
 import { profilePatch } from "./callExtract.js";
 import { planDocuments } from "./docPlan.js";
@@ -196,6 +197,52 @@ const patch = profilePatch(
 // so a call that only establishes the amount still produces a complete verdict.
 check("underwriting is recomputed against the merged profile", patch.underwriting.foirUpdated, 23.7);
 check("and the branch that arrived is in the patch", patch.loan.amountNeeded, 1500000);
+
+console.log("\n── What we already know before they speak ──────────────────");
+// The first real call greeted the caller by name and then asked what their
+// name was, three times, and never heard it. A name is the worst thing to put
+// through speech recognition and it was already on the account.
+check("an account's name seeds the applicant branch",
+  accountIdentityFacts({ name: "Eklavya Pandey" }), { applicant: { name: "Eklavya Pandey" } });
+check("so the agent is never told to ask for it",
+  coverage(accountIdentityFacts({ name: "Eklavya Pandey" }))
+    .branches.find((b) => b.id === "applicant").missing.some((m) => m.id === "name"),
+  false);
+check("an anonymous caller is still asked",
+  coverage({}).branches.find((b) => b.id === "applicant").missing.some((m) => m.id === "name"), true);
+check("a nameless account contributes nothing", accountIdentityFacts({}), {});
+
+console.log("\n── Acknowledgements sound like answering, not stalling ─────");
+// The old generics announced a wait — "let me think about that for a second" —
+// and were the only thing an ANSWER could ever get, because every bucket was
+// written for a caller asking a question.
+const stalls = (s) => /think about that|one moment|ek second|ek minute/i.test(String(s || ""));
+
+const answer1 = pickAcknowledgement("my father earns ninety five thousand a month", "en", null);
+check("an answer gets a receipt", Boolean(answer1), true);
+check("...and it does not announce a wait", stalls(answer1), false);
+// The turns with the least to think about used to get the longest silence.
+const short1 = pickAcknowledgement("IIM Bangalore", "en", null);
+check("a two-word answer is acknowledged too", Boolean(short1), true);
+// Receipts may repeat across turns — people do — but never the same word twice.
+const answer2 = pickAcknowledgement("and she has three years of Form 16", "en", answer1);
+check("consecutive answers still get one", Boolean(answer2), true);
+check("...but never the identical line twice", answer2 === answer1, false);
+// A question still gets its topic restated, which confirms it was understood.
+// Any line from the matching bucket will do — it picks at random so the agent
+// does not sound like a recording. Asserting one exact string made this test
+// fail one run in two, which is a worse defect than the one it was guarding.
+check("a question gets the topic restated, from the right bucket",
+  ACKNOWLEDGEMENT_BUCKETS.find((b) => b.id === "documents")
+    .en.includes(pickAcknowledgement("what documents will my father need?", "en", null)),
+  true);
+check("pure backchannel gets nothing", pickAcknowledgement("yes", "en", null), null);
+check("neither does a bare okay", pickAcknowledgement("okay.", "en", null), null);
+// Every line the agent can repeat has to be in the phrase cache, or it is
+// re-synthesised and re-paid for on every call.
+check("every receipt is a cacheable fixed phrase",
+  ["Got it.", "Right.", "Okay.", "Sure.", "Understood.", "Okay, got it."].every((l) => allFixedPhrases("en").includes(l)),
+  true);
 
 console.log("\n── The doc agent only brings what the call implies ──────────");
 const docAsks = (p) => planDocuments(p).asked.map((d) => d.id);
