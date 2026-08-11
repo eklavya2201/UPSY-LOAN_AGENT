@@ -6,7 +6,7 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 ## 🧭 Start here (orientation for a new session)
 
-**Where the project is (2026-08-07):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**  ,https://upsy-loan-agent.onrender.com/m and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
+**Where the project is (2026-08-11):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com**  ,https://upsy-loan-agent.onrender.com/m and confirmed in production. A second, completely separate voice agent lives at **`/m` — a mobile page where the applicant taps a button and talks to UPSY in the browser**, no meeting platform involved.
 
 **🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` must stay set** (it defaults to `cartesia` in code, which cannot be deployed on a free account and fails every call).
 
@@ -253,6 +253,8 @@ npm run voice:relay   # preflight OUR OWN voice stack: transport → tickets →
 npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
 npm run eval:extract  # the branch schema: FOIR maths + flag rules offline, then a scripted call through the real extractor
 npm run eval:extract -- --seed   # ...and write that call into the store, so /team has a real caller to show
+npm run eval:voice    # where the reply latency actually goes — time to first SENTENCE, not total generation
+npm run assist:call   # join a real Meet/Zoom/Teams call directly (the live-assist agent, standalone)
 ```
 
 On boot the server prints its **document-reader priority** so you can see at a glance which AI path is active, e.g. `Document reader priority: Claude (claude-opus-4-8) → OpenRouter (openai/gpt-4o-mini) → OCR (fallback)`.
