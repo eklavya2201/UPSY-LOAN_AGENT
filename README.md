@@ -599,6 +599,14 @@ Three server events feed it, all riding the socket the relay already owns:
 
 The old topic ring survives as the fallback for any call where no `agenda` event arrives (echo mode, a future provider), and `matchTopic()`/the timed rotation are guarded off in agenda mode. `/m?debug` exposes `window.__upsyM.{showCall, applyAgenda, focusField}` so the map can be driven and screenshotted without a microphone.
 
+### 🔎 The false-info check — is the course the caller named real? (2026-08-11)
+
+The team's ask, verbatim in spirit: *"agar koi false info de toh hume pata ho — waisa course identify nahi hora online."* `backend/instituteVerify.js` is the scraper the schema had been waiting for: after an extraction pass lands an institute name, the relay fires one **web search → LLM judge** pass per distinct claim per call (off the voice path, nothing awaits it, cached per process). The judge reads ONLY the search snippets and returns `found` / `unclear` / `not_found`, plus a published programme fee when a snippet states one.
+
+**Where the verdict goes:** `profile._verification` + `institute.feeVerifiedOnline`, then flags recompute — `not_found` raises the new **`course_not_found` threat**, and a published fee >25% away from the quoted one fires the pre-existing `fee_deviation` threat, which had been dormant since the schema landed. The underscore is load-bearing: the agent's prompt never sees the verdict, because **the agent must never accuse a caller of naming a course that doesn't exist** — a search miss is our evidence problem, and the flag is for the officer on `/team`. `unclear` raises nothing, same principle as every other flag rule: fire only on evidence.
+
+**Search providers:** `SERPER_API_KEY` (google.serper.dev — free tier 2,500 queries) when set; otherwise DuckDuckGo's keyless HTML endpoint. ⚠️ **DDG answered with a bot-check (HTTP 202) from the dev machine on day one** — expect the keyless path to be flaky-to-dead depending on the IP, and treat the Serper key as the real path. Every failure is silence, never a flag. Judge verified against injected snippets: a real IIMB MBA → `found` with the ₹24.5L published fee extracted; an invented "MBA in Astro Finance" → `not_found`; thin results → `unclear`.
+
 ### What Profound actually does (researched from their shipped bundles, 2026-08-06)
 
 Their onboarding is behind a phone-OTP gate we did not sign up for, but the whole app ships as public JavaScript. Read from `profound.me`'s own bundles:

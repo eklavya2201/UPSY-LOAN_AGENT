@@ -123,8 +123,8 @@ export const BRANCHES = [
       { id: "offerLetter", label: "Offer letter", type: "enum", source: "call",
         options: ["received", "applied", "not yet"],
         ask: "whether they already have the offer or admission letter" },
-      { id: "feeVerifiedOnline", label: "Fee checked against the institute's own site", type: "money", source: "api",
-        note: "The flowchart wants the quoted fee cross-checked online and a major deviation flagged. No scraper is wired up — the flag stays dormant until one is." },
+      { id: "feeVerifiedOnline", label: "Published fee found online", type: "money", source: "api",
+        note: "Filled by instituteVerify.js when a search snippet states the programme fee. The fee_deviation flag below compares it against what the caller quoted." },
     ],
   },
 
@@ -705,8 +705,21 @@ export function deriveFlags(profile = {}, underwriting = null) {
     add("no_offer_letter", "watch", "institute",
       `Offer letter: ${inst.offerLetter}. Most lenders will not sanction without it.`);
   }
+  // The online cross-check (instituteVerify.js). "not_found" is the only
+  // status that flags: the results actively failed to support the claim.
+  // "unclear" — a thin search, a rate limit, a niche course — raises nothing,
+  // because a failed search is our evidence problem, not the caller's honesty
+  // problem. The verdict lives under an underscore key so the agent's prompt
+  // never sees it: this flag is for the officer, never for accusing a caller.
+  const ver = profile._verification || {};
+  if (ver.status === "not_found") {
+    add("course_not_found", "threat", "institute",
+      `"${inst.name || "the institute"}${inst.course ? ` — ${inst.course}` : ""}" could not be identified online${ver.note ? `: ${ver.note}` : "."} Ask for the offer letter and verify before proceeding.`);
+  }
+
   // "check for fee online on institute or trusted website (Major deviation to
-  // be flagged)". Dormant until something actually fetches a published fee.
+  // be flagged)". Live now: instituteVerify.js fills feeVerifiedOnline when a
+  // search snippet publishes the programme fee.
   if (inst.totalFee > 0 && inst.feeVerifiedOnline > 0) {
     const deviation = Math.abs(inst.totalFee - inst.feeVerifiedOnline) / inst.feeVerifiedOnline;
     if (deviation > 0.25) {

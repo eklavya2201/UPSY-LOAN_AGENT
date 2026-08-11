@@ -31,10 +31,11 @@ import { makeTts, ttsConfigured, ttsConfigError, ttsStatusLine, cacheablePhrases
 import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HISTORY } from "./voiceBrain.js";
 import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
-import { recordCall } from "./voiceAccounts.js";
+import { recordCall, mergeProfile } from "./voiceAccounts.js";
 import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
 import { fileCall, extractCallFacts, mergedProfile } from "./callExtract.js";
-import { agendaSnapshot, matchAgendaField } from "./callSchema.js";
+import { agendaSnapshot, matchAgendaField, deriveAll } from "./callSchema.js";
+import { verifyInstitute, claimKey } from "./instituteVerify.js";
 
 // Register the lines the agent repeats across calls, so each is synthesised once
 // and replayed thereafter. The anonymous opener qualifies because it is a fixed
@@ -730,6 +731,7 @@ class RelayCall {
         // untouched — only the standing instructions change.
         this.refreshPrompt(this.profile);
         if (!this.closed) this.sendAgenda();
+        this.checkInstitute();
       })
       .catch((e) => console.error("[voice:relay] extraction pass failed:", e.message))
       .finally(() => {
@@ -738,6 +740,46 @@ class RelayCall {
         this.queuedCapture = null;
         if (queued) this.captureFacts(queued);
       });
+  }
+
+  /**
+   * The false-info check: is the institute/course the caller named real?
+   *
+   * Fires after an extraction pass, once per distinct claim per call, and —
+   * like the extraction itself — nothing awaits it. The verdict goes to the
+   * officer as a flag (`course_not_found`, and `fee_deviation` when a
+   * published fee is found); it is deliberately NOT put in front of the agent,
+   * which must never accuse a caller of naming a course that does not exist.
+   * See instituteVerify.js for the full reasoning.
+   */
+  checkInstitute() {
+    const inst = this.profile?.institute;
+    if (!inst?.name) return;
+    const key = claimKey(inst);
+    if (this.checkedClaim === key) return;
+    this.checkedClaim = key;
+
+    verifyInstitute({ name: inst.name, course: inst.course, totalFee: inst.totalFee })
+      .then((verdict) => {
+        if (!verdict) return;
+        this.log(`online check: "${inst.name}" → ${verdict.status}${verdict.feeVerifiedOnline ? ` (published fee ₹${verdict.feeVerifiedOnline.toLocaleString("en-IN")})` : ""}`);
+
+        const patch = { _verification: verdict };
+        if (verdict.feeVerifiedOnline) patch.institute = { feeVerifiedOnline: verdict.feeVerifiedOnline };
+        this.profile = mergedProfile(this.profile, patch);
+
+        // Flags are recomputed wholesale from the merged profile — the same
+        // replace-not-merge rule fileCall applies, for the same reason.
+        const { underwriting, flags } = deriveAll(this.profile);
+        this.profile.underwriting = underwriting;
+        this.profile._flags = flags;
+
+        if (this.ticket.accountId) {
+          mergeProfile(this.ticket.accountId, { ...patch, underwriting, _flags: flags }, { replace: ["underwriting", "_flags", "_verification"] })
+            .catch((e) => console.error("[voice:relay] could not store the online check:", e.message));
+        }
+      })
+      .catch((e) => console.error("[voice:relay] online check failed:", e.message));
   }
 
   stop(reason) {
