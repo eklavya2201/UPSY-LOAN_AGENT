@@ -23,7 +23,7 @@
      untouched; this shares its hue, not its stylesheet.
 
      Every colour on this page comes from here or is a tint of it. If you change
-     the hue, change it here and in the canvas colours in m.js — those are the
+     the hue, change it here and in the canvas colours in voice-agent.js — those are the
      only ones that live outside this block. */
   :root {
     --ink: #070e15;            /* the true background, behind everything */
@@ -695,7 +695,7 @@
      one primary action on purpose (see the comment beside #permBtn), and a
      fourth full-width button would undo exactly that lesson.
 
-     Hidden during connecting and in-call — m.js only shows it on the brief
+     Hidden during connecting and in-call — voice-agent.js only shows it on the brief
      and sign-in screens. Somebody mid-call does not need a door out of the
      page, and the call view's own controls own that corner. */
   .doc-cta {
@@ -763,7 +763,7 @@
 
   <!-- The mirror of "Talk to agent" on a document page. Same tab and same
        origin, so the session the applicant already has survives the hop back;
-       /docs restores their place from sessionStorage. Shown by m.js on the
+       /docs restores their place from sessionStorage. Shown by voice-agent.js on the
        brief and sign-in screens only. -->
   <a class="doc-cta" id="docCta" href="/docs">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
@@ -798,7 +798,7 @@
         <div class="field">
           <label for="authPassword">Password</label>
           <!-- autocomplete is switched between current-password and new-password
-               in m.js, so a password manager offers the right thing for the
+               in voice-agent.js, so a password manager offers the right thing for the
                mode the form is actually in. -->
           <input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 8 characters" maxlength="200"/>
         </div>
@@ -877,7 +877,7 @@
         <span aria-hidden="true">·</span>
         <a class="linkish" href="/login">Check my eligibility</a>
       </p>
-      <!-- Filled by m.js: who is signed in and how to leave, or an invitation
+      <!-- Filled by voice-agent.js: who is signed in and how to leave, or an invitation
            to sign in for the caller who skipped past it. -->
       <p class="alt-row" id="accountRow" hidden></p>
     </div>
@@ -1039,6 +1039,6 @@
 </div>
 
 <script src="/voiceClient.js"></script>
-<script src="/m.js"></script>
+<script src="/voice-agent.js"></script>
 </body>
 </html>

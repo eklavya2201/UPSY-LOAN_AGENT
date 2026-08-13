@@ -924,7 +924,7 @@ async function accountFromRequest(req) {
   }
 }
 
-app.post("/api/m/signup", async (req, res) => {
+app.post("/api/voice/signup", async (req, res) => {
   const ip = req.ip || req.socket?.remoteAddress || "unknown";
   if (accountLimiter.check(ip)) {
     return res.status(429).json({ error: "Too many attempts. Please wait a few minutes and try again." });
@@ -959,7 +959,7 @@ app.post("/api/m/signup", async (req, res) => {
   }
 });
 
-app.post("/api/m/login", async (req, res) => {
+app.post("/api/voice/login", async (req, res) => {
   const ip = req.ip || req.socket?.remoteAddress || "unknown";
   if (accountLimiter.check(ip)) {
     return res.status(429).json({ error: "Too many attempts. Please wait a few minutes and try again." });
@@ -980,14 +980,14 @@ app.post("/api/m/login", async (req, res) => {
   }
 });
 
-app.post("/api/m/logout", async (req, res) => {
+app.post("/api/voice/logout", async (req, res) => {
   await endSession(bearerToken(req));
   res.status(204).end();
 });
 
 // Who am I? The page calls this on load with whatever token it kept, so a
 // returning caller lands on the brief rather than on a password prompt.
-app.get("/api/m/me", async (req, res) => {
+app.get("/api/voice/me", async (req, res) => {
   const account = await accountFromRequest(req);
   if (!account) return res.status(401).json({ error: "Not signed in." });
   res.json({ account: publicAccount(account) });
@@ -1228,11 +1228,20 @@ app.get("/api/voice/reviews", async (_req, res) => {
   res.json({ reviews: await listReviews(), summary: await reviewSummary() });
 });
 
-// The mobile surface. Its own page rather than a route of the applicant SPA —
-// it is a different design (dark, voice-first, phone-only) and shares nothing
+// The voice surface. Its own page rather than a route of the applicant SPA —
+// it is a different design (dark, voice-first, phone-first) and shares nothing
 // with index.html but the API.
-app.get(["/m", "/m/*"], (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "frontend", "m.html"));
+app.get(["/upsy-voice-agent", "/upsy-voice-agent/*"], (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "frontend", "voice-agent.html"));
+});
+
+// This lived at /m until 2026-08-12. The old path is kept as a permanent
+// redirect rather than deleted: it has been handed out in call sheets and
+// printed links, and a 404 on the voice line is a caller who never gets
+// through. The query string comes along so /m?debug still lands on ?debug.
+app.get(["/m", "/m/*"], (req, res) => {
+  const qs = req.originalUrl.indexOf("?");
+  res.redirect(301, "/upsy-voice-agent" + (qs === -1 ? "" : req.originalUrl.slice(qs)));
 });
 
 // SPA routing: serve the applicant app for its client-side routes

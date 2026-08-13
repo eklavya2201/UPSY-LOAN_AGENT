@@ -235,7 +235,7 @@
     const label = el.authSubmit.textContent;
     el.authSubmit.textContent = authMode === "signup" ? "Creating…" : "Signing in…";
     try {
-      const res = await api(authMode === "signup" ? "/api/m/signup" : "/api/m/login", {
+      const res = await api(authMode === "signup" ? "/api/voice/signup" : "/api/voice/login", {
         method: "POST",
         body: authMode === "signup" ? { name: name, phone: phone, password: password } : { phone: phone, password: password },
       });
@@ -262,7 +262,7 @@
   }
 
   async function signOut() {
-    api("/api/m/logout", { method: "POST" }).catch(function () {
+    api("/api/voice/logout", { method: "POST" }).catch(function () {
       // The local token is dropped either way — a caller tapping Sign out must
       // end up signed out even if the network does not cooperate.
     });
@@ -276,7 +276,7 @@
   }
 
   // Decide the first screen synchronously from whether a token exists at all,
-  // then confirm with the server in the background. Waiting for /api/m/me
+  // then confirm with the server in the background. Waiting for /api/voice/me
   // before showing anything would put a blank frame in front of every caller;
   // showing the sign-in screen first would make a returning caller watch it
   // flash past. A token that turns out to be dead bounces back here.
@@ -288,7 +288,7 @@
     }
     showView("brief");
     renderAccountRow();
-    const res = await api("/api/m/me").catch(function () {
+    const res = await api("/api/voice/me").catch(function () {
       return { ok: false, status: 0, data: {} };
     });
     if (res.ok) {

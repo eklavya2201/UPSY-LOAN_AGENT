@@ -22,7 +22,7 @@
 // One genuine upgrade falls out of owning this: we have the caller's words as
 // text. `/m`'s constellation was built to spotlight the topic being discussed
 // and had to settle for a timed rotation because Cartesia only ever sent audio.
-// The `transcript` event below is what m.js's matchTopic() has been waiting for.
+// The `transcript` event below is what voice-agent.js's matchTopic() has been waiting for.
 
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "node:crypto";

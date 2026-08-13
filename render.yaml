@@ -18,8 +18,9 @@ services:
         sync: false
       - key: AGENTCALL_API_KEY
         sync: false
-      # Browser voice calls on /m. Without these the page still loads and the
-      # Call button reports exactly what is missing — it does not break the app.
+      # Browser voice calls on /upsy-voice-agent. Without these the page still
+      # loads and the Call button reports exactly what is missing — it does not
+      # break the app.
       #
       # "upsy" is our own relay: Deepgram → Claude → Deepgram Aura, with
       # turn-taking in backend/voiceRelay.js. Unlike the hosted path, the audio
@@ -37,8 +38,8 @@ services:
       # Only used when VOICE_PROVIDER=cartesia (the hosted agent path).
       - key: CARTESIA_AGENT_ID
         sync: false
-      # Where /m's "Schedule call" requests are texted. Unset is fine — they
-      # still persist and print to the server log.
+      # Where /upsy-voice-agent's "Schedule call" requests are texted. Unset is
+      # fine — they still persist and print to the server log.
       - key: OPS_PHONE
         sync: false
       # The false-info check (backend/instituteVerify.js) searches the web for

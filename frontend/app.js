@@ -154,7 +154,7 @@ async function startSession(phone) {
   partnerInstitute = data.partnerInstitute || null;
   idx = firstPendingIdx();
   sessionStorage.setItem("upsy_phone", phone); // lets a page refresh restore the session
-  // Also readable from /m (frontend/m.js), so a voice call started there can be
+  // Also readable from /upsy-voice-agent (frontend/voice-agent.js), so a voice call started there can be
   // grounded in this applicant's real record instead of running anonymously.
   if (LEAD && LEAD.leadId) sessionStorage.setItem("upsy_lead", LEAD.leadId);
   // The name too, purely so /m can greet them before the call rather than
@@ -809,11 +809,11 @@ function renderCurrent() {
          rather than floating on top of it. -->
     <div class="fixed right-4 bottom-5 z-30 flex flex-col items-end gap-3 xl:right-[336px]">
       <!-- A real link, not a router call: /m is its own page, not a route of
-           this SPA. Same tab and same origin on purpose — m.js reads the
+           this SPA. Same tab and same origin on purpose — voice-agent.js reads the
            sessionStorage key app.js writes ("upsy_lead"), so the caller lands
            grounded in their own file instead of anonymous, and Back returns
            them to the document they were on. -->
-      <a href="/m" id="voiceCta"
+      <a href="/upsy-voice-agent" id="voiceCta"
         class="pl-4 pr-5 py-3 min-h-11 flex items-center gap-2 bg-white text-primary font-semibold text-sm rounded-full border border-primary-line shadow-lg shadow-primary/10 hover:bg-primary-soft active:scale-95 transition">
         <span class="material-symbols-outlined text-[20px]">graphic_eq</span>Talk to agent
       </a>
