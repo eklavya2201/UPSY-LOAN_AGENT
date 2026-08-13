@@ -632,6 +632,114 @@ async function askReupload(leadId, docId) {
   await loadList(); selectApp(leadId);
 }
 
+// ---------- call feedback ----------
+// What callers said about the call itself, from the sheet /m shows after one
+// ends. Kept as its own mode rather than a column on the caller list because
+// most reviews have no account behind them: the anonymous caller is the one we
+// otherwise never hear from, and burying their feedback under a list of
+// sign-ups would hide exactly the half that is hardest to get.
+//
+// Every value below is caller-typed and goes through esc() — same rule as the
+// voice views, and the reason that rule exists.
+
+let reviews = [];
+let reviewStats = null;
+
+async function loadReviews() {
+  try {
+    const r = await (await fetch("/api/voice/reviews")).json();
+    reviews = r.reviews || [];
+    reviewStats = r.summary || null;
+  } catch (e) {
+    reviews = [];
+    reviewStats = null;
+  }
+  renderReviewSummary();
+  renderReviewList();
+}
+
+const starRow = (n) =>
+  `<span class="tracking-tight" aria-label="${n} out of 5">${
+    "★".repeat(n)}<span class="text-outline-variant">${"★".repeat(5 - n)}</span></span>`;
+
+// 1-2 reads as a complaint, 3 as a shrug, 4-5 as fine. Colouring by that split
+// rather than by a gradient keeps the list scannable for the only thing an
+// officer is actually looking for.
+const ratingTone = (n) => (n <= 2 ? "text-danger" : n === 3 ? "text-amber" : "text-success");
+
+function renderReviewSummary() {
+  const s = reviewStats;
+  if (!s || !s.count) {
+    $("#appList").innerHTML = `<div class="p-6 text-sm text-on-surface-variant bg-white rounded-2xl border border-outline-variant/50">
+      Nobody has rated a call yet. The sheet appears on <span class="font-semibold">/m</span> after a call that lasted at least 20 seconds and had a real back-and-forth.</div>`;
+    return;
+  }
+  const max = Math.max(...Object.values(s.distribution));
+  const bars = [5, 4, 3, 2, 1].map((n) => {
+    const c = s.distribution[n] || 0;
+    const pct = max ? Math.round((c / max) * 100) : 0;
+    return `<div class="flex items-center gap-2 text-xs">
+      <span class="w-3 text-on-surface-variant">${n}</span>
+      <span class="material-symbols-outlined text-[13px] ${ratingTone(n)}" style="font-variation-settings:'FILL' 1">star</span>
+      <span class="flex-1 h-2 bg-surface-container rounded-full overflow-hidden"><span class="block h-full rounded-full ${n <= 2 ? "bg-danger" : n === 3 ? "bg-amber" : "bg-success"}" style="width:${pct}%"></span></span>
+      <span class="w-5 text-right text-on-surface-variant">${c}</span>
+    </div>`;
+  }).join("");
+
+  $("#appList").innerHTML = `
+    <div class="bg-white rounded-2xl p-5 border border-outline-variant/50 card-shadow">
+      <div class="flex items-end gap-3 mb-1">
+        <span class="text-4xl font-bold leading-none">${s.average}</span>
+        <span class="text-sm text-on-surface-variant pb-1">out of 5</span>
+      </div>
+      <div class="text-xs text-on-surface-variant mb-4">${s.count} rating${s.count === 1 ? "" : "s"} · ${s.withComment} left a comment</div>
+      <div class="space-y-1.5">${bars}</div>
+      ${s.poor ? `<div class="mt-4 pt-3 border-t border-outline-variant/40 text-xs text-danger font-semibold flex items-center gap-1.5">
+        <span class="material-symbols-outlined text-[16px]">flag</span>${s.poor} call${s.poor === 1 ? "" : "s"} rated 1-2
+      </div>` : ""}
+    </div>
+    <div class="mt-3 text-[11px] text-on-surface-variant px-1 leading-relaxed">
+      Stored in <code>data/reviews.json</code>, which Render's free tier wipes on a respin — treat the average as a reading, not a metric.
+    </div>`;
+}
+
+function renderReviewList() {
+  const q = ($("#search").value || "").toLowerCase();
+  const list = reviews.filter((r) => !q || (r.comment || "").toLowerCase().includes(q) || String(r.rating) === q);
+  $("#pageSub").textContent = reviewStats?.count
+    ? `${reviewStats.count} rating${reviewStats.count === 1 ? "" : "s"} from callers on the /m phone line.`
+    : "Ratings left by callers after a call on the /m phone line.";
+
+  if (!list.length) {
+    $("#detail").innerHTML = `<div class="h-64 grid place-items-center text-on-surface-variant bg-white/50 border border-dashed border-outline-variant rounded-2xl">
+      ${reviews.length ? "No review matches that search." : "No call feedback yet."}</div>`;
+    return;
+  }
+
+  $("#detail").innerHTML = `<div class="space-y-3">${list.map((r) => {
+    const mins = r.callSeconds ? `${Math.floor(r.callSeconds / 60)}m ${r.callSeconds % 60}s` : "—";
+    const who = r.leadId
+      ? `<a href="?lead=${encodeURIComponent(r.leadId)}&tab=extract" class="text-primary font-semibold hover:underline">${esc(r.leadId)}</a>`
+      : r.accountId ? `<span class="text-on-surface-variant">signed-in caller</span>`
+      : `<span class="text-on-surface-variant">anonymous</span>`;
+    return `
+    <div class="bg-white rounded-2xl p-5 border ${r.rating <= 2 ? "border-danger/30" : "border-outline-variant/50"} card-shadow">
+      <div class="flex items-start justify-between gap-4 mb-2">
+        <span class="text-lg ${ratingTone(r.rating)}">${starRow(r.rating)}</span>
+        <span class="text-xs text-on-surface-variant shrink-0">${fmtTime(r.at)}</span>
+      </div>
+      ${r.comment
+        ? `<p class="text-sm text-on-surface leading-relaxed mb-3">“${esc(r.comment)}”</p>`
+        : `<p class="text-sm text-on-surface-variant italic mb-3">No comment left.</p>`}
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-on-surface-variant border-t border-outline-variant/40 pt-3">
+        <span>${who}</span>
+        <span class="flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">schedule</span>${mins} on the call</span>
+        <span class="flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">forum</span>${r.turns} turn${r.turns === 1 ? "" : "s"}</span>
+      </div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
 // ---------- voice callers ----------
 // People who have only ever talked to UPSY on the phone, via /m. A separate
 // population from borrower files on purpose — see the note in team.html. What
@@ -1026,8 +1134,14 @@ function renderVoiceDetail(a) {
 // ---------- list mode ----------
 let listMode = "leads";
 
+const LIST_MODES = {
+  leads: { title: "Applications", search: "Search applicants…" },
+  voice: { title: "Voice callers", search: "Search callers…" },
+  reviews: { title: "Call feedback", search: "Search comments…" },
+};
+
 function setListMode(mode) {
-  listMode = mode === "voice" ? "voice" : "leads";
+  listMode = LIST_MODES[mode] ? mode : "leads";
   document.querySelectorAll(".list-mode").forEach((b) => {
     const on = b.dataset.mode === listMode;
     b.classList.toggle("bg-white", on);
@@ -1035,10 +1149,11 @@ function setListMode(mode) {
     b.classList.toggle("card-shadow", on);
     b.classList.toggle("text-on-surface-variant", !on);
   });
-  $("#search").placeholder = listMode === "voice" ? "Search callers…" : "Search applicants…";
-  $("#pageTitle").textContent = listMode === "voice" ? "Voice callers" : "Applications";
+  $("#search").placeholder = LIST_MODES[listMode].search;
+  $("#pageTitle").textContent = LIST_MODES[listMode].title;
   $("#detail").innerHTML = EMPTY_DETAIL;
   if (listMode === "voice") { selectedVoice = null; loadVoiceAccounts(); }
+  else if (listMode === "reviews") { loadReviews(); }
   else { selected = null; renderList(); }
 }
 
@@ -1052,8 +1167,9 @@ window.addEventListener("popstate", () => {
 
 document.querySelectorAll(".list-mode").forEach((b) => b.addEventListener("click", () => setListMode(b.dataset.mode)));
 
-// One search box, two lists — it filters whichever one is on screen.
-$("#search").addEventListener("input", () => (listMode === "voice" ? renderVoiceList() : renderList()));
+// One search box, three lists — it filters whichever one is on screen.
+$("#search").addEventListener("input", () =>
+  listMode === "voice" ? renderVoiceList() : listMode === "reviews" ? renderReviewList() : renderList());
 
 loadList().then(() => {
   // Deep link / refresh: restore the lead + tab from the URL.

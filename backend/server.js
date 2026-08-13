@@ -29,6 +29,7 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
+import { recordReview, listReviews, reviewSummary, parseRating, isPoorRating, reviewOpsMessage } from "./reviews.js";
 import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail, mergeProfile } from "./voiceAccounts.js";
 import { BRANCHES, DERIVED_BRANCH, coverage, accountIdentityFacts } from "./callSchema.js";
 import { extractorStatusLine } from "./callExtract.js";
@@ -1164,6 +1165,67 @@ app.post("/api/voice/callback", async (req, res) => {
 // The officer-facing side of the same queue.
 app.get("/api/voice/callbacks", async (_req, res) => {
   res.json({ callbacks: await listCallbacks() });
+});
+
+// ── What the caller thought of the call ───────────────────────────────────
+// Public and unauthenticated, like the session and callback routes, because an
+// anonymous caller's opinion is worth exactly as much as a signed-in one's —
+// arguably more, since they are the ones we otherwise never hear from. Rate
+// limited on the same principle, more generously: this writes a small row
+// rather than minting a billable credential.
+const reviewLimiter = createRateLimiter({ limit: 10, windowMs: 30 * 60 * 1000 });
+
+app.post("/api/voice/review", async (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (reviewLimiter.check(ip)) {
+    return res.status(429).json({ error: "Thanks — we've got your feedback already." });
+  }
+
+  const rating = parseRating(req.body?.rating);
+  if (rating === null) {
+    return res.status(400).json({ error: "Please pick a rating from 1 to 5." });
+  }
+
+  try {
+    const entry = await recordReview({
+      rating,
+      comment: req.body?.comment,
+      accountId: req.body?.accountId || null,
+      leadId: req.body?.leadId || null,
+      callSeconds: Number(req.body?.callSeconds) || 0,
+      turns: Number(req.body?.turns) || 0,
+    });
+
+    // Best-effort on both, exactly like the callback route: feedback that is
+    // recorded but not announced is still recorded, so never fail the request
+    // because a notifier or the lead source is down. A happy caller does not
+    // page anyone — only a poor rating goes out, and only once.
+    if (isPoorRating(entry.rating)) {
+      const opsPhone = process.env.OPS_PHONE;
+      if (opsPhone) {
+        notifier.send(opsPhone, reviewOpsMessage(entry)).catch((e) => console.error("[review] notify failed:", e.message));
+      } else {
+        console.log(`[review] ${reviewOpsMessage(entry)}`);
+      }
+    } else {
+      console.log(`[review] ${entry.rating}/5${entry.comment ? ` — "${entry.comment.slice(0, 80)}"` : ""}`);
+    }
+
+    if (entry.leadId) {
+      source
+        .pushStatus(entry.leadId, { event: "call_rated", label: `Rated their call with UPSY ${entry.rating}/5${entry.comment ? `: "${entry.comment.slice(0, 160)}"` : ""}` })
+        .catch((e) => console.error("[review] timeline write failed:", e.message));
+    }
+
+    res.json({ ok: true, id: entry.id });
+  } catch (e) {
+    console.error("[review] failed:", e.message);
+    res.status(500).json({ error: "We couldn't save that. Please try again." });
+  }
+});
+
+app.get("/api/voice/reviews", async (_req, res) => {
+  res.json({ reviews: await listReviews(), summary: await reviewSummary() });
 });
 
 // The mobile surface. Its own page rather than a route of the applicant SPA —

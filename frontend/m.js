@@ -50,6 +50,16 @@
     muteBtn: $("muteBtn"),
     hangupBtn: $("hangupBtn"),
     sheet: $("scheduleSheet"),
+    reviewSheet: $("reviewSheet"),
+    reviewForm: $("reviewForm"),
+    reviewDone: $("reviewDone"),
+    reviewDoneLine: $("reviewDoneLine"),
+    rvWord: $("rvWord"),
+    rvComment: $("rvComment"),
+    rvMsg: $("rvMsg"),
+    rvSubmit: $("rvSubmit"),
+    rvSkip: $("rvSkip"),
+    rvClose: $("rvClose"),
     scheduleForm: $("scheduleForm"),
     scheduleDone: $("scheduleDone"),
     scheduleDoneLine: $("scheduleDoneLine"),
@@ -771,6 +781,10 @@
   let call = null;
   let timerId = null;
   let closingSelf = false;
+  // How much of a call there was to have an opinion about. Counted here rather
+  // than read off the server so that a call which never reached the relay
+  // cannot look like a conversation someone sat through.
+  let callerTurns = 0;
 
   const STATUS_TEXT = {
     connecting: "Connecting…",
@@ -856,6 +870,11 @@
           // The provider's event vocabulary is not fully confirmed against a
           // live call yet. Pick up anything that looks like text and let it
           // drive the spotlight; ignore everything else.
+          // A finished caller turn is the honest unit of "did they actually
+          // have a conversation" — wall-clock alone counts a phone left on a
+          // table. Only final transcripts count, or one sentence spoken in
+          // fragments would read as several turns.
+          if (msg && msg.event === "transcript" && msg.role === "caller" && msg.final) callerTurns += 1;
           const text = msg && (msg.text || msg.transcript || (msg.data && msg.data.text));
           if (typeof text === "string") matchTopic(text);
         },
@@ -890,6 +909,11 @@
     clearInterval(timerId);
     timerId = null;
     const active = call;
+    // Read the length before the handle goes: elapsedSeconds() lives on the
+    // call object, and this function's whole job is to throw that object away.
+    const seconds = active && active.elapsedSeconds ? active.elapsedSeconds() : 0;
+    const turns = callerTurns;
+    callerTurns = 0;
     call = null;
     if (active) {
       try {
@@ -903,6 +927,110 @@
     if (history.state && history.state.upsyCall) {
       closingSelf = true;
       history.back();
+    }
+    maybeAskForReview(seconds, turns);
+  }
+
+  // ── How was that call? ────────────────────────────────────────────────────
+  // Asked after the call, never during, and not after every call. The bar is
+  // deliberately about whether there was a conversation to judge rather than
+  // about time alone: a call that connected and got nowhere is exactly the one
+  // worth hearing about, but a mis-tap that lasted four seconds is not a
+  // review, it is noise that would drag an average down for no reason.
+  const REVIEW_MIN_SECONDS = 20;
+  const REVIEW_MIN_TURNS = 2;
+  const REVIEWED_KEY = "upsy_m_reviewed_at";
+  const REVIEW_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+  let reviewContext = { callSeconds: 0, turns: 0 };
+
+  function askedRecently() {
+    try {
+      const at = Number(localStorage.getItem(REVIEWED_KEY) || 0);
+      return at && Date.now() - at < REVIEW_COOLDOWN_MS;
+    } catch (e) {
+      // Private mode / storage disabled: fall back to asking. Being asked
+      // twice is a smaller failure than never being able to say anything.
+      return false;
+    }
+  }
+
+  function maybeAskForReview(seconds, turns) {
+    if (seconds < REVIEW_MIN_SECONDS || turns < REVIEW_MIN_TURNS) return;
+    if (askedRecently()) return;
+    reviewContext = { callSeconds: seconds, turns: turns };
+    openReview();
+  }
+
+  const RATING_WORDS = {
+    1: "Sorry — tell us what went wrong.",
+    2: "That's not good enough. What happened?",
+    3: "Fine, but not great. What would help?",
+    4: "Good. Anything still off?",
+    5: "Glad it helped.",
+  };
+
+  function selectedRating() {
+    const picked = el.reviewSheet.querySelector('input[name="rvRating"]:checked');
+    return picked ? Number(picked.value) : null;
+  }
+
+  function openReview() {
+    el.reviewSheet.hidden = false;
+    // Same reflow-not-rAF reason as the schedule sheet: rAF does not fire in a
+    // tab that is not compositing, and the sheet would never appear.
+    void el.reviewSheet.offsetHeight;
+    el.reviewSheet.classList.add("open");
+    el.rvMsg.textContent = "";
+  }
+
+  function closeReview() {
+    el.reviewSheet.classList.remove("open");
+    setTimeout(function () {
+      el.reviewSheet.hidden = true;
+      el.reviewForm.hidden = false;
+      el.reviewDone.hidden = true;
+    }, 240);
+  }
+
+  // Skipping is a real answer and is remembered like one. Without this the
+  // sheet would reappear after their next call, which is how a polite request
+  // turns into nagging.
+  function dismissReview() {
+    try { localStorage.setItem(REVIEWED_KEY, String(Date.now())); } catch (e) {}
+    closeReview();
+  }
+
+  async function submitReview() {
+    const rating = selectedRating();
+    if (!rating) return;
+    el.rvSubmit.disabled = true;
+    el.rvMsg.textContent = "Sending…";
+    try {
+      const r = await fetch("/api/voice/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rating: rating,
+          comment: el.rvComment.value,
+          leadId: leadId || null,
+          accountId: account ? account.id : null,
+          callSeconds: reviewContext.callSeconds,
+          turns: reviewContext.turns,
+        }),
+      });
+      const data = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(data.error || "Couldn't send that.");
+      try { localStorage.setItem(REVIEWED_KEY, String(Date.now())); } catch (e) {}
+      el.reviewDoneLine.textContent = rating <= 2
+        ? "We've flagged this for the team — someone will look at what went wrong."
+        : "This goes straight to the people building UPSY.";
+      el.reviewForm.hidden = true;
+      el.reviewDone.hidden = false;
+      el.rvMsg.textContent = "";
+    } catch (e) {
+      el.rvMsg.textContent = e.message || "Couldn't send that — please try again.";
+      el.rvSubmit.disabled = false;
     }
   }
 
@@ -1006,6 +1134,18 @@
   el.cbClose.addEventListener("click", closeSchedule);
   el.cbSubmit.addEventListener("click", submitCallback);
 
+  // The stars are radios, so one delegated change handler covers taps, clicks
+  // and arrow keys alike — there is no separate keyboard path to maintain.
+  el.reviewSheet.addEventListener("change", function (e) {
+    if (e.target.name !== "rvRating") return;
+    const rating = selectedRating();
+    el.rvWord.textContent = RATING_WORDS[rating] || "";
+    el.rvSubmit.disabled = !rating;
+  });
+  el.rvSubmit.addEventListener("click", submitReview);
+  el.rvSkip.addEventListener("click", dismissReview);
+  el.rvClose.addEventListener("click", closeReview);
+
   el.muteBtn.addEventListener("click", function () {
     if (!call) return;
     const muted = call.setMuted(!call.muted);
@@ -1059,6 +1199,22 @@
       showCall: function () {
         showView("call");
         if (map.start) map.start();
+      },
+      // The review sheet only appears after a real call that met the length
+      // and turn thresholds, which is not something you can stage by hand.
+      // askReview() opens it directly; askReview(5, 1) exercises the gate
+      // itself, and should open nothing.
+      askReview: function (seconds, turns) {
+        if (arguments.length === 0) { reviewContext = { callSeconds: 90, turns: 6 }; openReview(); return; }
+        maybeAskForReview(seconds, turns);
+      },
+      reviewState: function () {
+        return {
+          open: !el.reviewSheet.hidden,
+          rating: selectedRating(),
+          submitDisabled: el.rvSubmit.disabled,
+          askedRecently: askedRecently(),
+        };
       },
     };
   }
