@@ -173,7 +173,8 @@ function applicantContextBlock(c) {
 const COLLECTION_STYLE = `How to collect it — this part matters more than the list:
 - They called with a question. ANSWER IT FIRST, then ask one thing. Never open with a question of your own, and never ask two in a row.
 - One question at a time, in your own words, as part of the conversation. Never read the list aloud, never say "next question", never announce that you are collecting information. If it starts to feel like a form, stop asking and go back to helping.
-- Ask in the branch order above — the student first, then where they are studying, then what they need, then the co-applicant. Each one only makes sense once you have the one before it, and the amount is meaningless before you know the fee.
+- Work through the must-haves first, then the rest in branch order. Within the must-haves, keep the natural chain: the fee before the amount they need, and the amount before you ask what the co-applicant earns — an income figure means nothing until there is a number to test it against.
+- Do NOT march through the must-haves as a block. They are what you steer toward, not a checklist to clear before you are allowed to be helpful. Answer what they ask, be useful, and take each one as the conversation opens a door to it.
 - If they will not answer something, or seem uncomfortable, DROP IT and move on. A refused question is a fine outcome; a caller who hangs up is not.
 - WHEN YOU CANNOT MAKE OUT AN ANSWER, YOU GET ONE RETRY. Ask once more, differently and more simply. If the second attempt is still unclear, say you will pick it up later, move on to something else, and do not come back to it on this call. Asking a third time is the worst thing you can do on a phone call — it tells the caller the machine is broken, and they are right.
 - NEVER ask anyone to repeat or spell out a NAME. Names are what speech recognition gets wrong most, and you already have theirs. If a name comes through garbled, use the one you were given and carry on — someone will confirm the spelling against their ID anyway.
@@ -194,12 +195,28 @@ function agendaBlock(priorFacts) {
   const cover = coverage(priorFacts || {});
   const byId = new Map(cover.branches.map((b) => [b.id, b]));
 
+  // Essentials are pulled OUT of the branch list and named first. The branch
+  // order below is still the flowchart's, and still correct for a call that
+  // runs its course — but a call that ends early used to leave whatever came
+  // first alphabetically in the flowchart, which was often age and city, with
+  // no income and no amount. Naming the decisive handful up front means four
+  // minutes produces a file an officer can act on.
+  const essentials = cover.branches.flatMap((c) =>
+    c.missing.filter((m) => m.essential).map((m) => (m.only ? `${m.ask} — ${m.only}` : m.ask)));
+
+  const essentialBlock = essentials.length
+    ? `GET THESE FIRST, in whatever order the conversation allows. Without them nobody can tell this caller anything useful about their loan, and a call that ends early having got only these is a good call:\n${essentials.map((a) => `    · ${a}`).join("\n")}`
+    : `You already have everything the decision needs from this caller. Anything below is filling in the picture — take it only if the conversation goes there naturally, and let them lead.`;
+
   const lines = BRANCHES.map((branch) => {
     const c = byId.get(branch.id);
     if (!c || !c.missing.length) {
       return `- ${branch.title}: nothing outstanding — you already have this.`;
     }
-    return `- ${branch.title} (${branch.blurb})\n${c.missing.map((m) => `    · ${m.ask}`).join("\n")}`;
+    // Essentials are listed above; showing them twice invites asking twice.
+    const rest = c.missing.filter((m) => !m.essential);
+    if (!rest.length) return `- ${branch.title}: only the must-haves above are outstanding.`;
+    return `- ${branch.title} (${branch.blurb})\n${rest.map((m) => `    · ${m.ask}`).join("\n")}`;
   });
 
   const done = cover.total ? `${cover.captured} of ${cover.total} already on file.` : "";
@@ -215,6 +232,8 @@ function agendaBlock(priorFacts) {
 
   return [
     `What UPSY still needs from this caller. This is your agenda, not a script — it is what a lender will ask for, gathered in conversation so nobody has to ask twice. ${done}`.trim(),
+    essentialBlock,
+    essentials.length ? `Then, if the call is still going and they are happy to keep talking — everything here is optional and none of it is worth losing the caller over:` : null,
     lines.join("\n"),
     declinedBlock,
     COLLECTION_STYLE,

@@ -43,6 +43,29 @@
 // Non-call fields are kept here anyway, because the flag rules below need them
 // and because the dashboard should show an officer that a field exists and is
 // pending rather than silently omitting it.
+//
+// ── essential: the file cannot be decided without it ────────────────────────
+// NOT "required" — nothing here is required, and a caller may refuse anything.
+// It marks the fields computeUnderwriting() actually consumes, plus the two
+// that decide which questions and which documents follow:
+//
+//   institute.totalFee / loan.amountNeeded  → what is being borrowed
+//   coApplicant.monthlyIncome / annualItr   → what it is tested against
+//   coApplicant.existingEmiMonthly          → without it FOIR is computed as
+//                                             if they have no debts, which
+//                                             flatters every single file
+//   coApplicant.category                    → decides monthly-vs-ITR, and the
+//                                             whole income document set
+//   loan.type                               → drops the property papers
+//   institute.name / course                 → the verification check, and the
+//                                             course-level document rules
+//
+// Why it exists: the agenda used to run in flowchart order, so a caller who
+// hung up at four minutes left behind whatever happened to come first — often
+// age, city and marks, with no income and no amount. The same four minutes now
+// produce a file an officer can act on. The flowchart order still governs how
+// everything is DISPLAYED, on /team and on the call map; this only reorders
+// what the agent reaches for first.
 
 // ── Field types ─────────────────────────────────────────────────────────────
 // Small on purpose. Each one exists because coerce() has to do something
@@ -103,9 +126,9 @@ export const BRANCHES = [
     title: "Institute & course",
     blurb: "Where the money is going, and what the real number is.",
     fields: [
-      { id: "name", label: "Institute", type: "text", source: "call",
+      { id: "name", label: "Institute", type: "text", source: "call", essential: true,
         ask: "which institute or university" },
-      { id: "course", label: "Course", type: "text", source: "call",
+      { id: "course", label: "Course", type: "text", source: "call", essential: true,
         ask: "which course, and at what level" },
       { id: "country", label: "Country", type: "text", source: "call",
         ask: "whether it is in India or abroad, and where" },
@@ -114,7 +137,7 @@ export const BRANCHES = [
         // stated without it — eligibility.js has always computed course duration
         // + 9 months, and today it falls back to a guess of 24.
         ask: "how long the course runs" },
-      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call",
+      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call", essential: true,
         ask: "roughly what the total fee comes to" },
       { id: "hostelFeeIncluded", label: "Hostel fee inside that figure", type: "boolean", source: "call",
         // Straight off the flowchart: inclusive → treat as tuition; exclusive →
@@ -133,9 +156,9 @@ export const BRANCHES = [
     title: "The loan itself",
     blurb: "What they actually need from us, as opposed to what the course costs.",
     fields: [
-      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call",
+      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call", essential: true,
         ask: "how much of that fee they need to borrow, as opposed to what the family can put in" },
-      { id: "type", label: "Secured or unsecured", type: "enum", source: "call",
+      { id: "type", label: "Secured or unsecured", type: "enum", source: "call", essential: true,
         options: ["secured", "unsecured"],
         ask: "whether they have property or a deposit to offer as security, or want it without collateral" },
       { id: "collateral", label: "What the security is", type: "text", source: "call",
@@ -165,12 +188,12 @@ export const BRANCHES = [
         // the same list for the lead path, and the two must not drift.
         options: ["father", "mother", "brother", "sister", "spouse", "other"],
         ask: "how that person is related to them" },
-      { id: "category", label: "Income category", type: "enum", source: "call",
+      { id: "category", label: "Income category", type: "enum", source: "call", essential: true,
         options: ["salaried", "self-employed", "pensioner", "farmer"],
         ask: "whether that person is salaried, self-employed, a pensioner or a farmer" },
-      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call",
+      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true,
         ask: "roughly what they take home in a month" },
-      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call",
+      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call", essential: true,
         appliesWhen: { category: ["self-employed", "farmer"] },
         ask: "what the latest ITR shows as annual income" },
       { id: "itrYearsAvailable", label: "Years of ITR available", type: "number", source: "call", unit: "years",
@@ -187,7 +210,7 @@ export const BRANCHES = [
       { id: "recentJobChange", label: "Changed job recently", type: "boolean", source: "call",
         appliesWhen: { category: ["salaried"] },
         ask: "whether they have changed jobs recently — that decides whether we need the joining letter too" },
-      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call",
+      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call", essential: true,
         // The number the whole underwriting branch turns on, which is why it is
         // asked of every category rather than sitting under one of them.
         ask: "what they are already paying every month across all their existing loans" },
@@ -303,6 +326,24 @@ export function fieldApplies(field, branchValues) {
     if (actual === null || actual === undefined || actual === "") return true;
     return allowed.includes(String(actual));
   });
+}
+
+/**
+ * The condition a still-ungated field is waiting on, as words the prompt can
+ * print — "only if self-employed or a farmer".
+ *
+ * Needed because an unknown gate keeps BOTH income questions live (above), and
+ * the agenda now names the essential ones up front. Without the condition
+ * attached, "what the latest ITR shows" sits in a must-have list and a salaried
+ * caller gets asked for an ITR they will never have.
+ */
+export function conditionText(field) {
+  if (!field.appliesWhen) return null;
+  const parts = Object.values(field.appliesWhen).map((allowed) => {
+    const opts = allowed.map(String);
+    return opts.length > 1 ? `${opts.slice(0, -1).join(", ")} or ${opts[opts.length - 1]}` : opts[0];
+  });
+  return `only if ${parts.join("; ")}`;
 }
 
 /** Only the fields a conversation is allowed to fill. */
@@ -437,7 +478,7 @@ export function coverage(profile = {}) {
       blurb: branch.blurb,
       total: askable.length,
       captured: askable.length - missing.length,
-      missing: missing.map((f) => ({ id: f.id, label: f.label, ask: f.ask })),
+      missing: missing.map((f) => ({ id: f.id, label: f.label, ask: f.ask, essential: Boolean(f.essential), only: conditionText(f) })),
       declined: declined.map((f) => ({ id: f.id, label: f.label })),
     };
   });
@@ -479,19 +520,18 @@ export function agendaSnapshot(profile = {}) {
             : declinedSet.has(`${branch.id}.${f.id}`)
               ? "declined" // asked — they did not know. Off the agenda, out of the counts.
               : "pending";
-        return { id: f.id, label: f.label, status };
+        return { id: f.id, label: f.label, status, essential: Boolean(f.essential) };
       });
     return { id: branch.id, title: branch.title, blurb: branch.blurb, fields };
   });
 
+  // `next` has to follow the same order the agent actually asks in, or the call
+  // map spotlights one dot while the agent asks about another. Essentials first,
+  // flowchart order within each group — exactly what agendaFor() renders.
   let next = null;
-  for (const b of branches) {
-    const f = b.fields.find((x) => x.status === "pending");
-    if (f) {
-      next = { branch: b.id, field: f.id };
-      break;
-    }
-  }
+  const pending = branches.flatMap((b) => b.fields.filter((f) => f.status === "pending").map((f) => ({ branch: b.id, field: f.id, essential: f.essential })));
+  const nextField = pending.find((f) => f.essential) || pending[0];
+  if (nextField) next = { branch: nextField.branch, field: nextField.field };
 
   const all = branches.flatMap((b) => b.fields);
   const done = all.filter((f) => f.status === "done").length;
