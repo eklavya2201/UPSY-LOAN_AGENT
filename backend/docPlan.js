@@ -252,6 +252,21 @@ function itrReason(co) {
  * the list is that the caller hears a shorter one, not a longer explanation of
  * a shorter one.
  */
+/**
+ * The one rule about documents that is not about the list: TELL, do not ASK.
+ *
+ * Reported from a real call — the agent was quizzing callers on whether they
+ * had a given document, and a yes or a no went nowhere. There is no field for
+ * it: `aadhaarOnFile` and `panOnFile` are source:"document" and are filled by
+ * an actual upload, never by an answer. So the question spent the caller's
+ * time, taught us nothing, and made a helpful moment feel like an audit. What
+ * the caller wants at that point is the list; what we want is the upload.
+ *
+ * Exported because the voice prompt falls back to the full catalogue for a
+ * caller nothing is known about yet, and the rule has to hold on that path too.
+ */
+export const DOCUMENT_TELL_DONT_ASK = `Do NOT quiz them on whether they already have a document. "Do you have your Aadhaar?" records nothing — the answer has nowhere to go, and only an upload can settle it. If documents come up, TELL them what they will need and where to upload it, then move on. The exceptions are the three questions that DO have a field behind them and change the list: whether the offer letter has arrived, and how many years of ITR or Form 16 the co-applicant can produce.`;
+
 export function documentPlanForPrompt(profile = {}) {
   const plan = planDocuments(profile);
   if (!plan.asked.length) return null;
@@ -262,5 +277,5 @@ export function documentPlanForPrompt(profile = {}) {
   const unknown = plan.pending.length
     ? `\n\nThis list is not settled yet. Answering these would narrow it further: ${plan.pending.map((p) => p.question).join("; ")}.`
     : "";
-  return `The documents THIS person actually needs, worked out from what they have told you. If they ask what they will need, name the next one or two from here — never read the list out:\n${lines}${dropped}${unknown}`;
+  return `The documents THIS person actually needs, worked out from what they have told you. If they ask what they will need, name the next one or two from here — never read the list out:\n${lines}${dropped}${unknown}\n\n${DOCUMENT_TELL_DONT_ASK}`;
 }

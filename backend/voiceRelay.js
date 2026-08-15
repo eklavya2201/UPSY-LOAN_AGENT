@@ -111,14 +111,53 @@ const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 0);
 //
 // Every finished call is extracted at teardown regardless; this is about how
 // often the dashboard AND the caller's own /m screen see the branches fill in.
-// Three caller turns is roughly a minute of talking — since the agenda event
-// made the map visible to the caller, updates a person is watching for, the
-// old six-turn cadence read as a frozen screen.
+// Every caller turn. Six was the original, three followed once the map became
+// something a caller watches, and one is where real testing put it: the gap
+// between "they answered" and "the agenda knows" is the window in which the
+// agent asks the same question twice, and every turn of cadence is another
+// turn of that window.
+//
+// The cost of this is close to nothing — an extra small-model call per turn,
+// roughly a tenth of a US cent on a whole call — and it buys back the thing
+// that made calls feel broken. `askedThisCall` in the relay covers the gap
+// that remains, because even at every turn this is still a model call that
+// lands after the next reply has started.
 //
 // It is safe to run inside a live call for one reason only: nothing awaits it.
 // It is a separate request on a separate socket, started and abandoned — see
 // captureFacts(). Set to 0 to extract at teardown and nowhere else.
-const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 3);
+const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 1);
+
+// ── "That's everything, thanks" ─────────────────────────────────────────────
+// A caller who is finished should not have to hunt for the End button, and a
+// call left open bills for silence. Only unmistakable sign-offs count: a bare
+// "no" or "nahi" is an ANSWER to whatever was just asked, not the end of a
+// call, and treating it as one would hang up on people mid-conversation.
+// Everything here has to be a phrase somebody says when they are leaving.
+const CLOSING_INTENT = new RegExp(
+  [
+    "\\bnothing (?:from my side|else|more)\\b",
+    "\\bno (?:more|further|other) (?:questions?|doubts?)\\b",
+    // Must END the sentence. "That's all the money we have saved" is a normal
+    // thing to say about a down payment, and hanging up on it would be awful.
+    "\\bthat(?:'?s| is) (?:all|it|everything)\\b(?=\\s*(?:$|[.,!?]|thanks?\\b|thank you\\b|bye\\b|for now\\b|then\\b))",
+    "\\b(?:i am|i'?m|we(?:'?re| are)|all) done\\b",
+    "\\b(?:good\\s?bye|bye bye|bye)\\b",
+    "\\bthank(?:s| you)[, ]+(?:bye|that(?:'?s| is) all)\\b",
+    // Hindi/Hinglish, as spoken: "bas itna hi", "ho gaya", "theek hai bye".
+    "\\bbas (?:itna|itni) hi\\b",
+    "\\bho gaya\\b",
+    "\\bkuch nahi(?: chahiye)?\\b",
+  ].join("|"),
+  "i"
+);
+
+// How long to let the goodbye actually reach the caller before the socket goes.
+// The speech chain settles when SYNTHESIS finishes, which is not when playback
+// finishes — the browser is still draining its buffer. Closing on the former
+// cuts the agent off mid-word, which is a worse ending than no ending. Generous
+// on purpose: these seconds are the last thing the caller experiences.
+const GOODBYE_GRACE_MS = 2500;
 
 // Silent PCM at the pipeline's one and only sample rate. Int16 zeroes.
 function silence(ms) {
@@ -216,6 +255,14 @@ class RelayCall {
     // Caller turns only, and only for deciding when to read the call into the
     // file mid-way. The agent's own lines do not establish facts about anyone.
     this.callerTurns = 0;
+    // "branch.field" for every question the agent has actually asked aloud on
+    // this call. Per-call and never persisted: on the next call the extractor
+    // has long since caught up, and a stale entry would silence a question
+    // that genuinely still needs asking.
+    this.askedThisCall = new Set();
+    // Set when the caller signs off, cleared the moment they speak again —
+    // "that's all" followed by one more question is a normal thing to do.
+    this.callerSaidDone = false;
     this.extracting = false;
     this.queuedCapture = null;
     // Everything spoken goes through one chain. The TTS socket carries a single
@@ -398,7 +445,18 @@ class RelayCall {
     // for the question actually being asked. Cosmetic — a miss just leaves the
     // spotlight where it was, which is why a cheap word match is enough.
     const hit = matchAgendaField(text, this.profile);
-    if (hit) send(this.ws, { event: "focus", branch: hit.branch, field: hit.field });
+    if (hit) {
+      send(this.ws, { event: "focus", branch: hit.branch, field: hit.field });
+      // ...and remember that we asked, which is NOT cosmetic. The extractor
+      // runs behind the conversation, so between passes the agenda still lists
+      // a field the caller just answered and the agent asks a second time —
+      // the single complaint from real testing. This costs no model call and
+      // no latency: the match already happened for the spotlight, and it is
+      // the only signal available the instant a question leaves the agent's
+      // mouth. A miss here is survivable in the same way it is for the
+      // spotlight: worst case we are back to today's behaviour.
+      this.askedThisCall.add(`${hit.branch}.${hit.field}`);
+    }
   }
 
   // The branch map with statuses — what is answered, pending, or ruled out —
@@ -496,6 +554,26 @@ class RelayCall {
       this.captureFacts("mid-call");
     }
 
+    // They are talking, so whatever they said last turn was not the end of the
+    // call after all. Cleared before the test below, never after.
+    this.callerSaidDone = false;
+
+    // Heard as they say it, acted on after the reply has been spoken — so the
+    // agent still gets to answer and sign off rather than the line simply
+    // dying on them. The flag is checked in the turn's `finally`.
+    if (CLOSING_INTENT.test(text)) {
+      this.callerSaidDone = true;
+      this.log("caller signalled they were finished — will end the call after this reply");
+    }
+
+    // Fold in what we have already asked BEFORE generating this reply, rather
+    // than waiting for the extraction above to come back. That pass is a model
+    // call and lands a second or more later — which is the whole reason the
+    // agent re-asks a question the caller has just answered. This rebuild is
+    // string work against state we already have, so it costs nothing and is
+    // always current at the moment the reply is written.
+    if (this.askedThisCall.size) this.refreshPrompt(this.profile);
+
     // Did we already start thinking about exactly this during the silence?
     const spec = this.spec;
     const adopt = Boolean(spec && spec.text === text && !spec.failed && !spec.controller.signal.aborted);
@@ -574,8 +652,34 @@ class RelayCall {
         this.speaking = false;
         this.inFlight = null;
         this.setState("listening");
+        if (this.callerSaidDone) this.endAfterGoodbye();
       }
     }
+  }
+
+  /**
+   * Close the call once the sign-off has actually been heard.
+   *
+   * Waits on the speech chain rather than a timer alone, because the goodbye
+   * may still be synthesising when the turn's `finally` runs. Then holds for
+   * GOODBYE_GRACE_MS so the browser can drain what it has buffered.
+   *
+   * If the caller speaks again in the meantime they were not finished after
+   * all — `callerSaidDone` is cleared by the next turn, and this bails. That
+   * matters more than it looks: the alternative is hanging up on somebody who
+   * said "that's all" and then thought of one more thing, which is exactly
+   * when people remember the question that made them call.
+   */
+  endAfterGoodbye() {
+    const turnAtRequest = this.turnSeq;
+    this.speechChain
+      .catch(() => {})
+      .then(() => new Promise((r) => setTimeout(r, GOODBYE_GRACE_MS)))
+      .then(() => {
+        if (this.closed) return;
+        if (!this.callerSaidDone || this.turnSeq !== turnAtRequest) return;
+        this.stop("caller said they were finished");
+      });
   }
 
   // Queue something to say. Returns a promise that settles when it has finished
@@ -662,7 +766,11 @@ class RelayCall {
       const before = this.ticket.systemPrompt;
       // An anonymous caller has no context object, but what this call has
       // established still narrows the agenda and the document list mid-call.
-      const rebuilt = buildVoiceSystemPrompt({ ...(this.ticket.context || {}), priorFacts: profile });
+      const rebuilt = buildVoiceSystemPrompt({
+        ...(this.ticket.context || {}),
+        priorFacts: profile,
+        alreadyAsked: [...this.askedThisCall],
+      });
       if (rebuilt && rebuilt !== before) {
         this.ticket.systemPrompt = rebuilt;
         this.log("re-aimed: the agenda and the document list now match what this call has established");

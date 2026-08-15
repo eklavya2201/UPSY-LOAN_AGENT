@@ -13,7 +13,7 @@
 
 import { DOCUMENTS, STAGES } from "./documents.js";
 import { BRANCHES, coverage } from "./callSchema.js";
-import { documentPlanForPrompt } from "./docPlan.js";
+import { documentPlanForPrompt, DOCUMENT_TELL_DONT_ASK } from "./docPlan.js";
 
 // Built from documents.js rather than hardcoded, so the agent can never recite
 // a checklist that has drifted from what /docs actually asks for.
@@ -199,6 +199,7 @@ const COLLECTION_STYLE = `How to collect it — this part matters more than the 
 - If they raise something further down the list themselves, take it — follow them, and come back to the order afterwards.
 - REPEAT EVERY NUMBER BACK before you use it. "So that's fifteen lakh — have I got that right?" Amounts, incomes, EMIs, percentages, ages. Voice recognition mishears digits, and an answer built on a misheard figure is worse than no answer at all. This is the one place where repeating yourself is right.
 - Never ask for a PAN, Aadhaar, account or card NUMBER. Asking which city an address is in is fine and is not the same thing.
+- WHEN THEY SAY THEY ARE DONE, BE DONE. "Nothing from my side", "that's all", "bas itna hi" — do not squeeze in one more question, and do not offer a list of other things you could help with. Say what happens next in one sentence, thank them, and stop. The call ends itself a moment later, so a question asked here is one nobody hears the answer to.
 - You are not verifying anything and you cannot approve anything. You are having a conversation that saves them repeating themselves to a person later. Do not tell them a field is required, and never suggest that answering more gets them a better outcome.`;
 
 // Only worth using once the conversation has established something — with an
@@ -209,9 +210,22 @@ function documentPlan(priorFacts) {
   return documentPlanForPrompt(priorFacts);
 }
 
-function agendaBlock(priorFacts) {
+function agendaBlock(priorFacts, alreadyAsked = []) {
   const cover = coverage(priorFacts || {});
   const byId = new Map(cover.branches.map((b) => [b.id, b]));
+
+  // Questions this call has already put to the caller. The extractor runs a
+  // model call behind the conversation, so for a second or two after someone
+  // answers, the agenda still says the field is missing — and the agent, doing
+  // as it is told, asks again. That was the complaint from real testing. The
+  // relay word-matches every sentence the agent speaks (it already did, for
+  // the call map) and passes the hits here, which is the only signal that
+  // exists the instant a question is asked rather than after it is understood.
+  //
+  // It suppresses the ASK, never the answer: if they reply, the extractor
+  // still files it whenever it catches up.
+  const asked = new Set(alreadyAsked);
+  const askedLine = (branchId, fieldId) => asked.has(`${branchId}.${fieldId}`);
 
   // Essentials are pulled OUT of the branch list and named first. The branch
   // order below is still the flowchart's, and still correct for a call that
@@ -219,8 +233,10 @@ function agendaBlock(priorFacts) {
   // first alphabetically in the flowchart, which was often age and city, with
   // no income and no amount. Naming the decisive handful up front means four
   // minutes produces a file an officer can act on.
+  const unasked = (c) => c.missing.filter((m) => !askedLine(c.id, m.id));
+
   const essentials = cover.branches.flatMap((c) =>
-    c.missing.filter((m) => m.essential).map((m) => (m.only ? `${m.ask} — ${m.only}` : m.ask)));
+    unasked(c).filter((m) => m.essential).map((m) => (m.only ? `${m.ask} — ${m.only}` : m.ask)));
 
   const essentialBlock = essentials.length
     ? `GET THESE FIRST, in whatever order the conversation allows. Without them nobody can tell this caller anything useful about their loan, and a call that ends early having got only these is a good call:\n${essentials.map((a) => `    · ${a}`).join("\n")}`
@@ -232,10 +248,21 @@ function agendaBlock(priorFacts) {
       return `- ${branch.title}: nothing outstanding — you already have this.`;
     }
     // Essentials are listed above; showing them twice invites asking twice.
-    const rest = c.missing.filter((m) => !m.essential);
+    const rest = unasked(c).filter((m) => !m.essential);
     if (!rest.length) return `- ${branch.title}: only the must-haves above are outstanding.`;
     return `- ${branch.title} (${branch.blurb})\n${rest.map((m) => `    · ${m.ask}`).join("\n")}`;
   });
+
+  // Named explicitly as well as removed from the lists. Removal alone leaves
+  // the agent free to circle back on its own; being told it has already asked
+  // is what stops "sorry, and what was the fee again?" two turns later.
+  const askedBlock = asked.size
+    ? `ALREADY ASKED ON THIS CALL — do not ask any of these again, in any wording. If they have not answered yet, they heard you and chose not to; leave it. If they answered, it is being written down even if it is not showing above yet:\n${[...asked].map((k) => {
+        const [b, f] = k.split(".");
+        const label = BRANCHES.find((x) => x.id === b)?.fields.find((x) => x.id === f)?.label;
+        return `    · ${label || f}`;
+      }).join("\n")}`
+    : null;
 
   const done = cover.total ? `${cover.captured} of ${cover.total} already on file.` : "";
 
@@ -253,6 +280,7 @@ function agendaBlock(priorFacts) {
     essentialBlock,
     essentials.length ? `Then, if the call is still going and they are happy to keep talking — everything here is optional and none of it is worth losing the caller over:` : null,
     lines.join("\n"),
+    askedBlock,
     declinedBlock,
     COLLECTION_STYLE,
   ].filter(Boolean).join("\n\n");
@@ -279,11 +307,11 @@ export function buildVoiceSystemPrompt(context) {
     // has been established — and the relay rebuilds this prompt mid-call as the
     // facts land, so the list narrows during the conversation that narrows it.
     documentPlan(context?.priorFacts) ||
-      `The documents UPSY collects, in the order it asks for them. Use this to answer "what will I need?" — but never read the whole list aloud:\n${documentChecklist()}`,
+      `The documents UPSY collects, in the order it asks for them. Use this to answer "what will I need?" — but never read the whole list aloud:\n${documentChecklist()}\n\n${DOCUMENT_TELL_DONT_ASK}`,
     hasContext ? applicantContextBlock(context) : publicContextBlock(),
     // After the context block, so "still needed" is read against what is
     // already known rather than contradicting it two paragraphs later.
-    agendaBlock(context?.priorFacts),
+    agendaBlock(context?.priorFacts, context?.alreadyAsked),
     PRIVACY_RULES,
     HONESTY_RULES,
   ].join("\n\n");
