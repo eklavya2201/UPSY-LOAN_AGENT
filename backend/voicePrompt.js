@@ -88,7 +88,20 @@ function humanizeKey(key) {
 //     naming an outcome for an individual, and the surest way to keep the agent
 //     from saying "you're a Lender 3 case" is for it never to have been told.
 //     That verdict is for the officer reading the dashboard.
-const PROMPT_EXCLUDED_KEYS = new Set(["underwriting"]);
+//   source: "api" fields — anything WE looked up rather than the caller told
+//     us. Withheld for the same reason as `underwriting`, and the reason is
+//     not theoretical: a real caller quoted a ₹30L fee, instituteVerify.js
+//     found ₹24.42L published on the university's site, and the agent — which
+//     had been handed "fee verified online: 2442000" under a heading saying
+//     this is UPSY's own record and to confirm it in passing — read ₹24.42L
+//     back to them as if it were their number. The caller's own figure is the
+//     fact; ours is evidence for an officer, and the fee_deviation flag is
+//     where the two get compared. The other two api fields are CIBIL scores,
+//     which an agent must never volunteer to anyone.
+const PROMPT_EXCLUDED_KEYS = new Set([
+  "underwriting",
+  ...BRANCHES.flatMap((b) => b.fields.filter((f) => f.source === "api").map((f) => f.id)),
+]);
 
 function isExcludedKey(key) {
   return String(key).startsWith("_") || PROMPT_EXCLUDED_KEYS.has(key);
@@ -104,7 +117,12 @@ function renderFacts(value, depth = 0) {
   if (typeof value === "object") {
     return Object.entries(value).flatMap(([k, v]) => {
       if (v === null || v === undefined || v === "") return [];
-      if (depth === 0 && isExcludedKey(k)) return [];
+      // At EVERY depth, not just the top. Branch facts are nested one level
+      // down, so a depth-0-only check excluded `_flags` at the root and let
+      // `institute.feeVerifiedOnline` straight through — which is exactly how
+      // the fee leak happened. It would also have leaked any future nested
+      // underscore key without anyone noticing.
+      if (isExcludedKey(k)) return [];
       if (typeof v === "object" && !Array.isArray(v)) {
         const nested = renderFacts(v, depth + 1);
         return nested.length ? [`${pad}- ${humanizeKey(k)}:`, ...nested] : [];
