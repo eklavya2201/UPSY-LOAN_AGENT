@@ -1291,6 +1291,57 @@ To go live, set: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`
 - **Exotel is currently OFF** (`NOTIFY_CHANNEL=mock` since 2026-07-27) — the sweep was making real (failing, balance-blocked) SMS/WhatsApp attempts against the live account every minute during dev. Credentials are untouched in `.env`; set `NOTIFY_CHANNEL=exotel` to re-enable at launch (after fixing the account-side blockers + raising `STALE_AFTER_MS`).
 - Notifier writes (`recordNudge`) and edits made to `applications.json` by external scripts don't mix while the server runs — the store caches the JSON in memory and writes it back whole. Stop the server before hand-editing data files.
 
+## 🚀 Going live on upsy.in — the integration decision (open, 2026-08-12)
+
+Where this runs in production is not settled: **AWS**, **inside the existing `upsy.in`**, or staying where it is. This section is what the choice actually turns on, written from the code rather than from preference — several constraints below are load-bearing and one of them is a bug waiting for a reverse proxy.
+
+### The three shapes, and what each costs
+
+| | What it means | Code changes |
+|---|---|---|
+| **Subdomain** — `loans.upsy.in` | Its own origin, DNS record pointing at wherever this runs | **None.** Recommended |
+| **Path on the main site** — `upsy.in/loans/…` | Reverse-proxied under the marketing site | **Real refactor** — see "mount at the root" below |
+| **Separate host** — today's Render URL | What exists now | None, but the product lives at a URL that is not the brand |
+
+### What integrating into `upsy.in` actually requires
+
+**1. Everything must sit on ONE origin.** The applicant flow and the voice agent hand off to each other through `sessionStorage`, which is per-origin by definition. Put `/docs` on one subdomain and `/upsy-voice-agent` on another and the handoff silently degrades: the lead id does not travel, so **every call from the document flow lands anonymous** and the agent greets a stranger it already has a file on. `localStorage` for the voice account and the review cooldown has the same rule. This is not a thing to work around with CORS — cross-origin storage is not shared, full stop.
+
+**2. Mount it at the root of that origin.** Assets are referenced absolutely (`/app.js`, `/voice-agent.js`, `/voiceClient.js`, `/liveAssistPhases.js`) and the routes are root-level (`/login`, `/intake`, `/docs`, `/team`, `/upsy-voice-agent`, `/voice/stream`). Under `upsy.in/loans/` every one of those 404s. Making a subpath work means threading a base path through the HTML, the SPA router and the socket URL — doable, and entirely avoided by using a subdomain.
+
+**3. Those route names are generic and will collide.** `/login`, `/docs`, `/team` and `/intake` are exactly the paths a marketing site tends to already own. On a subdomain the question disappears.
+
+**4. WebSockets have to survive the proxy.** The voice relay is a WebSocket upgrade on `/voice/stream`, on the same port as everything else. Whatever sits in front must pass `Upgrade`/`Connection` through (nginx: `proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`). If it does not, **everything works except voice**, and the symptom is "the call button is broken" rather than anything that names a proxy.
+
+**5. Idle timeouts must exceed a call.** Calls run up to `VOICE_MAX_CALL_MS` (10 minutes). An ALB's default idle timeout is 60 seconds and nginx's `proxy_read_timeout` is 60 — both will cut a live call mid-sentence. Raise them past the call cap.
+
+**6. HTTPS is mandatory, not a nice-to-have.** `getUserMedia` only works in a secure context, so on plain HTTP the microphone never opens and voice cannot run at all.
+
+**7. ⚠️ `app.set("trust proxy", …)` is NOT set, and this breaks behind any reverse proxy.** Every rate limiter keys on `req.ip`. Behind nginx, an ALB or CloudFront that is the socket's peer, so **all 100 users share a single bucket** — `POST /api/voice/session` allows 5 per 10 minutes, meaning the fifth caller of the hour locks out everyone else. It is one line, and it must land in the same change as the proxy.
+
+**8. Already handled, so leave it alone:** the WebSocket URL is built from `x-forwarded-proto` before `req.protocol`, so a TLS-terminating proxy correctly yields `wss://` rather than a mixed-content `ws://`. Note that this is a *different* mechanism from item 7 — the protocol is read from the header directly, while `req.ip` needs Express to be told to trust the proxy.
+
+**9. One instance, or sticky sessions.** A live call's state — turn-taking, history, TTS socket, the agenda — lives in the process holding the socket. Two instances behind a round-robin balancer will break calls. At 100 users, run one instance and skip the whole question.
+
+**10. `APP_URL`** must be set to the final public origin: it is what the SMS/WhatsApp reminder links point at.
+
+### AWS vs Render, for this specific app
+
+Both work. What differs:
+
+| | Render | AWS |
+|---|---|---|
+| WebSockets | Work by default | Fine on ALB/EC2/Fargate; **API Gateway + Lambda cannot host this** — the relay holds a long-lived stateful socket |
+| Persistent storage | Add a disk to the service | EBS, or the S3 + RDS split this README's "what production needs" section describes |
+| TLS + domain | Managed | ACM + ALB, or CloudFront |
+| Effort to move | Already there | Half a day to containerise and wire, plus the proxy items above |
+
+**The honest read:** at 100 users nothing here needs AWS. If UPSY is already on AWS and wants one bill and one VPC, moving is straightforward — just budget for items 4, 5 and 7, which are the ones that bite. **The `upsy.in` question is separate from the AWS question**: a subdomain pointed at either host gives the brand URL with no code change, and that is the cheapest correct answer.
+
+### The pre-launch blockers still apply either way
+
+Persistent storage, atomic writes, a SIGTERM handler, dashboard auth, PII redaction and the nudge timings are all independent of where this runs. Moving to AWS does not solve any of them, and deploying inside `upsy.in` makes the auth one **more** urgent, not less — the dashboard would then sit on the company's own domain.
+
 ## Deployment (Render)
 
 Live test deploy, 2026-07-30: **https://upsy-loan-agent.onrender.com**
