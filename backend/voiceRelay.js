@@ -33,8 +33,9 @@ import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
 import { recordCall, mergeProfile } from "./voiceAccounts.js";
 import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
-import { fileCall, extractCallFacts, mergedProfile } from "./callExtract.js";
-import { agendaSnapshot, matchAgendaField, deriveAll } from "./callSchema.js";
+import { fileCall, extractCallFacts, mergedProfile, fastAnswerPatch } from "./callExtract.js";
+import { agendaSnapshot, matchAgendaField, deriveAll, getField } from "./callSchema.js";
+import { readAnswer } from "./fastAnswer.js";
 import { verifyInstitute, claimKey } from "./instituteVerify.js";
 
 // Register the lines the agent repeats across calls, so each is synthesised once
@@ -263,6 +264,9 @@ class RelayCall {
     // Set when the caller signs off, cleared the moment they speak again —
     // "that's all" followed by one more question is a normal thing to do.
     this.callerSaidDone = false;
+    // The field the agent's last sentence asked about, so the next thing the
+    // caller says can be read as the answer to it. See fastAnswer.js.
+    this.pendingAsk = null;
     this.extracting = false;
     this.queuedCapture = null;
     // Everything spoken goes through one chain. The TTS socket carries a single
@@ -456,6 +460,10 @@ class RelayCall {
       // mouth. A miss here is survivable in the same way it is for the
       // spotlight: worst case we are back to today's behaviour.
       this.askedThisCall.add(`${hit.branch}.${hit.field}`);
+      // The question the caller is about to answer. Only the LAST match counts:
+      // if the agent said two things, the one it finished on is the one they
+      // are replying to.
+      this.pendingAsk = { branch: hit.branch, field: hit.field };
     }
   }
 
@@ -553,6 +561,10 @@ class RelayCall {
       // this can run inside. See captureFacts() for why it cannot block a turn.
       this.captureFacts("mid-call");
     }
+
+    // Read the answer to the question we just asked, before anything else and
+    // without a model. See fastAnswer.js for why this is narrow on purpose.
+    this.fileFastAnswer(text);
 
     // They are talking, so whatever they said last turn was not the end of the
     // call after all. Cleared before the test below, never after.
@@ -748,6 +760,53 @@ class RelayCall {
     // than inside it: the transcript is the record, and it must land even if
     // the extractor is unconfigured, rate-limited or wrong.
     this.captureFacts("call ended");
+  }
+
+  /**
+   * Write the answer to the question we just asked, immediately and with no
+   * model call.
+   *
+   * The extractor still runs and still sees this turn — this does not replace
+   * it, it front-runs it for the one case that needs no intelligence: we asked
+   * for a number, they said a number. Everything harder (facts nobody asked
+   * for, corrections, conflicts, names) stays with the model, which is why
+   * fastAnswer.js returns null far more often than it returns a value.
+   *
+   * Synchronous up to the point of persisting, so the agenda and the prompt
+   * are correct for the reply being generated a few lines later. The store
+   * write is fire-and-forget for the same reason every other write on this
+   * path is: a live call must never wait on a disk.
+   */
+  fileFastAnswer(text) {
+    const ask = this.pendingAsk;
+    if (!ask) return;
+    // One shot per question. If they answer, we have it; if they said
+    // something unparseable, a second sentence from the same person is more
+    // likely to be a follow-on thought than a retry of the answer.
+    this.pendingAsk = null;
+
+    const field = getField(ask.branch, ask.field);
+    if (!field) return;
+
+    const read = readAnswer(field, text);
+    if (!read) return; // the normal outcome — the extractor will handle it
+
+    const result = fastAnswerPatch(this.profile, ask.branch, ask.field, read.value, read.quote);
+    if (!result) return; // already answered; a correction is the model's job
+
+    this.profile = result.profile;
+    this.log(`filed "${field.label}" the moment it was said (no model): ${JSON.stringify(read.value)}`);
+
+    // The caller is watching this map fill in, so it must not wait for a
+    // round trip that may not even happen on an anonymous call.
+    this.sendAgenda();
+    send(this.ws, { event: "focus", branch: ask.branch, field: ask.field });
+
+    if (this.ticket.accountId) {
+      mergeProfile(this.ticket.accountId, result.patch, { replace: ["underwriting", "_flags"] }).catch((e) =>
+        console.error("[voice:relay] could not persist a fast answer:", e.message)
+      );
+    }
   }
 
   /**

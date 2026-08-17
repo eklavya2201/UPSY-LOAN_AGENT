@@ -457,6 +457,59 @@ export function profilePatch(existing, extraction) {
 }
 
 /**
+ * File one answer that plain code read off the caller's reply, with no model.
+ *
+ * The fast half of the pair described in fastAnswer.js: when the agent has just
+ * asked for a specific field and the reply parses cleanly, the value is written
+ * here in the same tick rather than waiting for the extractor. Everything
+ * downstream — the derived branch, the flags, the agenda, the call map — is
+ * recomputed exactly as it is for an extraction, because a profile that is
+ * half-derived is worse than one that is late.
+ *
+ * Shares `deriveAll` and the same `replace` semantics as profilePatch() on
+ * purpose: two write paths that derive differently is how a FOIR ends up
+ * disagreeing with the income it was computed from.
+ *
+ * Refuses to overwrite. An occupied field means either the caller is correcting
+ * themselves or our match was wrong, and both are the extractor's job — it can
+ * see the whole conversation, and this can see one sentence.
+ *
+ * @returns {{profile: object, patch: object}|null} null when it declined to write
+ */
+export function fastAnswerPatch(existing, branchId, fieldId, value, quote) {
+  const current = existing?.[branchId]?.[fieldId];
+  if (!(current === null || current === undefined || current === "")) return null;
+
+  const merged = structuredClone(existing || {});
+  merged[branchId] = { ...(merged[branchId] || {}), [fieldId]: value };
+  const { underwriting, flags } = deriveAll(merged);
+
+  // Same shape the extractor produces, so an officer cannot tell — and does not
+  // need to — which half of the pair filled a given row. The quote is the
+  // caller's own sentence, which is the evidence rule this repo applies to
+  // every value on that dashboard.
+  const evidence = {
+    ...(existing?._evidence || {}),
+    [`${branchId}.${fieldId}`]: { said: quote, via: "answered when asked" },
+  };
+
+  // A field that now holds an answer is no longer declined — the caller was
+  // asked again and this time they told us. Mirrors profilePatch().
+  const declined = (existing?._declined || []).filter((key) => key !== `${branchId}.${fieldId}`);
+
+  return {
+    profile: merged,
+    patch: {
+      [branchId]: { [fieldId]: value },
+      underwriting,
+      _flags: flags,
+      _evidence: evidence,
+      ...(declined.length !== (existing?._declined || []).length ? { _declined: declined } : {}),
+    },
+  };
+}
+
+/**
  * Read a call and write it into the caller's file. Extract → merge → derive.
  *
  * Lives here rather than in voiceRelay.js so that the relay owns only the

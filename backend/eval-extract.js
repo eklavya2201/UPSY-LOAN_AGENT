@@ -21,7 +21,8 @@ import "dotenv/config";
 import { coverage, computeUnderwriting, deriveFlags, coerce, parseRupees, getField, accountIdentityFacts } from "./callSchema.js";
 import { pickAcknowledgement, allFixedPhrases, ACKNOWLEDGEMENT_BUCKETS } from "./voiceFillers.js";
 import { extractCallFacts, extractorConfigured, extractorStatusLine, validate } from "./callExtract.js";
-import { profilePatch } from "./callExtract.js";
+import { profilePatch, fastAnswerPatch } from "./callExtract.js";
+import { readAnswer } from "./fastAnswer.js";
 import { planDocuments } from "./docPlan.js";
 
 let passed = 0;
@@ -435,6 +436,48 @@ async function seed() {
   const result = await fileCall({ accountId: account.accountId, turns: TRANSCRIPT, reason: "seed" });
   console.log(`  ${result?.summary || "nothing filed — is a model key set?"}`);
   console.log(`  → open /team, switch to Voice callers, and pick ${account.name}.\n`);
+}
+
+// ── The fast path: answers filed without a model ────────────────────────────
+// These run offline and are the guard on the one component allowed to write a
+// loan file with no intelligence behind it. Every "refused" case below is a
+// wrong number that would otherwise have landed on an officer's screen looking
+// established — which is worse than the two-second wait it saves.
+console.log("\n── Answering the question we just asked (no model) ──────────");
+{
+  const income = getField("coApplicant", "monthlyIncome");
+  const amount = getField("loan", "amountNeeded");
+  const category = getField("coApplicant", "category");
+  const jobChange = getField("coApplicant", "recentJobChange");
+  const fullName = getField("applicant", "name");
+  const v = (f, t) => readAnswer(f, t)?.value ?? null;
+
+  check("'my father earns 1.5 lakhs' → 150000", v(income, "my father earns 1.5 lakhs"), 150000);
+  check("'about 95000 a month' → 95000", v(income, "he takes home about 95000 a month"), 95000);
+  check("Indian grouping '1,50,000'", v(income, "1,50,000"), 150000);
+  check("'we need around 20 lakhs' → 20L", v(amount, "we need around 20 lakhs"), 2000000);
+  check("'he is salaried' → salaried", v(category, "he is salaried"), "salaried");
+  check("'no, twelve years there' → false", v(jobChange, "no, he has been there twelve years"), false);
+
+  // The refusals. Each one is a real sentence that must NOT become a value.
+  check("a range is refused", v(amount, "between 20 and 25 lakhs"), null);
+  check("'20 to 25 lakhs' is refused", v(amount, "20 to 25 lakhs"), null);
+  check("a stray number is refused", v(income, "I have 2 brothers and he earns 95000"), null);
+  check("'I don't know' is not an answer", v(income, "I don't know exactly"), null);
+  check("'pata nahi' is not an answer", v(income, "pata nahi"), null);
+  check("a 'no' inside a sentence is not a no", v(jobChange, "my brother has no loans"), null);
+  check("an ambiguous enum is refused", v(category, "salaried or self-employed?"), null);
+  check("names are always left to the model", v(fullName, "Akhilesh Kumar"), null);
+
+  // Writing it: derive everything, evidence it, and never overwrite.
+  const before = { loan: { amountNeeded: 2000000 }, coApplicant: { existingEmiMonthly: 0 } };
+  const w = fastAnswerPatch(before, "coApplicant", "monthlyIncome", 150000, "my father earns 1.5 lakhs");
+  check("the value lands", w.profile.coApplicant.monthlyIncome, 150000);
+  check("FOIR is computed in the same tick", w.patch.underwriting.ready, true);
+  check("the caller's own words are the evidence", w.patch._evidence["coApplicant.monthlyIncome"].said, "my father earns 1.5 lakhs");
+  check("an occupied field is never overwritten", fastAnswerPatch(w.profile, "coApplicant", "monthlyIncome", 999999, "no I meant ten lakhs"), null);
+  const wasDeclined = { ...before, _declined: ["coApplicant.monthlyIncome"] };
+  check("answering clears a declined marker", fastAnswerPatch(wasDeclined, "coApplicant", "monthlyIncome", 150000, "1.5 lakhs").patch._declined, []);
 }
 
 if (process.argv.includes("--seed")) await seed();
