@@ -170,8 +170,31 @@ export function shortLanguage(code) {
   return SARVAM_LANGUAGES[short] ? short : null;
 }
 
+/**
+ * The key, with surrounding whitespace removed.
+ *
+ * ⚠️ NOT DEFENSIVE PROGRAMMING FOR ITS OWN SAKE — this cost a real debugging
+ * session on the live Render instance. Render's environment editor is a
+ * multi-line box, so a pasted key very easily carries a trailing space or
+ * newline. That value is still truthy, so every "is Sarvam configured?" check
+ * passed and the boot log said the Indian-language path was ready — and then
+ * every actual request was rejected by Sarvam, because the header contained a
+ * key with a space on the end.
+ *
+ * The symptom is the worst kind: English works (different provider), every
+ * other language fails, the key is visibly present in the dashboard, and
+ * nothing anywhere says why. Trimming costs nothing and removes the entire
+ * class.
+ *
+ * The same trap applies to every other key in this project — DEEPGRAM_API_KEY
+ * above all, since voice cannot run without it. Worth doing there too.
+ */
+function sarvamKey() {
+  return (process.env.SARVAM_API_KEY || "").trim();
+}
+
 export function sarvamConfigured() {
-  return Boolean(process.env.SARVAM_API_KEY);
+  return Boolean(sarvamKey());
 }
 
 export function sarvamConfigError() {
@@ -196,7 +219,7 @@ export function sarvamStatusLine(language) {
 }
 
 function authHeaders() {
-  return { "api-subscription-key": process.env.SARVAM_API_KEY };
+  return { "api-subscription-key": sarvamKey() };
 }
 
 // ── Hearing ─────────────────────────────────────────────────────────────────
