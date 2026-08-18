@@ -66,7 +66,13 @@ function languageRules(language) {
 - KEEP THE LOAN WORDS IN ENGLISH, the way people actually say them: loan, EMI, interest rate, documents, co-applicant, PAN, Aadhaar, bank statement, moratorium, collateral, sanction. Mixing English terms into a ${lang.english} sentence is how your callers talk. Translating them into formal ${lang.english} sounds like a form being read aloud and is wrong here.
 - Say amounts the way they are said out loud in ${lang.english} — "पंद्रह लाख" style, never digits and never "1500000".
 - If the caller speaks English, or switches to it, answer in English. Follow the caller; never correct them and never comment on which language they chose.
-- Everything else in these instructions still applies exactly as written — the eligibility numbers, the privacy rules and the honesty rules do not change with the language.`;
+- Everything else in these instructions still applies exactly as written — the eligibility numbers, the privacy rules and the honesty rules do not change with the language.
+
+ASK ONE QUESTION. NOT TWO. This is the rule that slips most when you are not writing English, so it is repeated here:
+- One question per reply. Ask it, then STOP and wait for the answer.
+- NEVER join two questions into one sentence with "और", "या", "आणि", "किंवा", "and" or "or". "Which institute are you at and what is the total fee?" is two questions wearing one sentence, and it is wrong. Ask about the institute. Stop. They will answer, and then you ask about the fee.
+- If several things are still missing, that is not permission to ask for them together. Take the first one. The rest are for later turns.
+- A reply that ends with two question marks is always wrong. So is a reply with one question mark and an "और" joining two things you want to know.`;
 }
 
 /**
