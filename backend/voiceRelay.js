@@ -542,9 +542,46 @@ class RelayCall {
   // two had already drifted apart once (the acknowledgement was emitted to the
   // page but never entered the history), and a transcript missing the lines the
   // caller actually heard is worse than no transcript at all.
-  sendAgentText(text) {
+  /**
+   * Put a line on the page. Says nothing about whether the caller heard it.
+   *
+   * Split from commitAgentText() because the two happen at different moments
+   * and an earlier version did both at the first one — see the comment there.
+   */
+  showAgentText(text) {
     if (!text) return;
     send(this.ws, { event: "transcript", role: "agent", text, final: true });
+  }
+
+  /**
+   * Record that the agent actually SAID this, and act on it.
+   *
+   * ⚠️ CALL THIS AFTER THE SENTENCE HAS BEEN SPOKEN, NOT BEFORE. The emit loop
+   * used to do `sendAgentText(sentence)` and then `await speak(sentence)`,
+   * which recorded what the agent INTENDED to say. A barge-in abandons that
+   * sentence after a word or two, so the transcript claimed a question that the
+   * caller never heard — and everything downstream believed it:
+   *
+   *   · matchAgendaField lit the dot for a question that was never asked, which
+   *     is why the constellation stopped lining up with the conversation
+   *   · askedThisCall marked the field answered-for, so it was never asked again
+   *   · pendingAsk pointed at it, so the caller's next word was filed against it
+   *   · the extractor saw "agent asked X" then "caller: yes" and attributed the
+   *     yes to X — and then to the NEXT question too, which is exactly the
+   *     report: one "yes" landing on two questions
+   *
+   * Reported from a real call: the caller answered before the agent had
+   * finished, said "yes" again out of politeness, and both questions came back
+   * answered. One cause, four symptoms.
+   *
+   * A sentence cut short is therefore recorded as nothing at all. That is
+   * deliberate and matches how the rest of this system treats uncertainty: the
+   * extractor then sees a bare "yes" with no question in front of it and files
+   * nothing, which is the safe outcome. Absence is recoverable; a wrong value
+   * in a loan file is not.
+   */
+  commitAgentText(text) {
+    if (!text) return;
     this.turns.push({ role: "agent", text, at: new Date().toISOString() });
 
     // Spotlight the field this sentence is about, so the page lights the dot
@@ -612,8 +649,10 @@ class RelayCall {
       signal: controller.signal,
       onSentence: async (sentence) => {
         if (spec.live) {
-          this.sendAgentText(sentence);
+          this.showAgentText(sentence);
           await this.speak(sentence, controller.signal);
+          // Only now is it known that the caller heard it — see commitAgentText.
+          if (!controller.signal.aborted) this.commitAgentText(sentence);
         } else {
           spec.buffered.push(sentence);
         }
@@ -728,7 +767,12 @@ class RelayCall {
       if (ack) {
         this.lastAck = ack;
         this.ackedLastTurn = true;
-        this.sendAgentText(ack);
+        // Committed immediately rather than after speaking, unlike a generated
+        // sentence: an acknowledgement is never a question, so it cannot put a
+        // pendingAsk on the wrong field or light a dot — and it is the one line
+        // guaranteed to be spoken before anything else in the turn.
+        this.showAgentText(ack);
+        this.commitAgentText(ack);
         this.speak(ack, controller.signal);
       }
     } else {
@@ -745,8 +789,9 @@ class RelayCall {
         while (spec.buffered.length) {
           const sentence = spec.buffered.shift();
           if (myTurn !== this.turnSeq) break;
-          this.sendAgentText(sentence);
+          this.showAgentText(sentence);
           await this.speak(sentence, controller.signal);
+          if (myTurn === this.turnSeq && !controller.signal.aborted) this.commitAgentText(sentence);
         }
         spec.live = true;
         const spoken = await spec.promise;
@@ -760,8 +805,9 @@ class RelayCall {
         signal: controller.signal,
         onSentence: async (sentence) => {
           if (myTurn !== this.turnSeq) return;
-          this.sendAgentText(sentence);
+          this.showAgentText(sentence);
           await this.speak(sentence, controller.signal);
+          if (myTurn === this.turnSeq && !controller.signal.aborted) this.commitAgentText(sentence);
         },
       });
       if (spoken && myTurn === this.turnSeq) {
