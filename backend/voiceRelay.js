@@ -168,6 +168,15 @@ const CLOSING_INTENT = new RegExp(
     "\\b(?:i am|i'?m|we(?:'?re| are)|all) done\\b",
     "\\b(?:good\\s?bye|bye bye|bye)\\b",
     "\\bthank(?:s| you)[, ]+(?:bye|that(?:'?s| is) all)\\b",
+    // A thanks that is the ENTIRE utterance — "ok thanks", "thank you so much",
+    // "thik hai thanks". This is how most people actually sign off, and none of
+    // the phrases above catch it.
+    //
+    // Anchored to the whole turn, and that is the entire safety of it: a thanks
+    // with anything substantive after it is someone thanking you and carrying
+    // on — "thanks, and what about the co-applicant?" — and hanging up there is
+    // far worse than leaving a finished call open a few seconds longer.
+    "^(?:(?:ok|okay|alright|right|cool|great|acha|achha|thik hai|theek hai)[\\s,.]*)*(?:thanks|thank you|thankyou)(?:\\s+(?:a lot|so much|very much|yaar))?[\\s,.!]*$",
     // Hindi/Hinglish, as spoken: "bas itna hi", "ho gaya", "theek hai bye".
     "\\bbas (?:itna|itni) hi\\b",
     "\\bho gaya\\b",
