@@ -126,11 +126,62 @@ async function searchWeb(query) {
 
 // ── The judge ───────────────────────────────────────────────────────────────
 
-function judgePrompt({ name, course, totalFee }, results) {
+/**
+ * Every rupee figure a snippet actually states, in rupees.
+ *
+ * Indian sources write the same number half a dozen ways — "₹24,42,000",
+ * "24.42 Lakhs", "Rs 24.42L", "2442000" — so each is parsed rather than
+ * string-matched. Both readings of a bare grouped number are kept (with and
+ * without the commas) because "24,42,000" and "2,442,000" are the same amount
+ * written for different audiences.
+ */
+function feesStatedIn(results) {
+  const text = (results || []).map((r) => `${r.title || ""} ${r.snippet || ""}`).join(" ");
+  const found = new Set();
+  const re = /(?:₹|rs\.?|inr)?\s*([\d][\d,.]*)\s*(cr|crore|crores|lakhs?|lacs?|l|k|thousand)?/gi;
+  for (const m of text.matchAll(re)) {
+    const digits = m[1].replace(/,/g, "");
+    const n = Number(digits);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const unit = (m[2] || "").toLowerCase();
+    if (/^(cr|crore|crores)$/.test(unit)) found.add(Math.round(n * 10000000));
+    else if (/^(lakhs?|lacs?|l)$/.test(unit)) found.add(Math.round(n * 100000));
+    else if (/^(k|thousand)$/.test(unit)) found.add(Math.round(n * 1000));
+    else found.add(Math.round(n));
+  }
+  return found;
+}
+
+/**
+ * Does a snippet actually state this figure?
+ *
+ * Tolerant by 1%, because a source may round ₹24,42,000 to "24.4 lakhs" and
+ * refusing that would throw away a real published fee over a rounding step.
+ * Wide enough to accept the same number written differently, far too narrow to
+ * accept a different number.
+ */
+export function feeAppearsIn(value, results) {
+  for (const stated of feesStatedIn(results)) {
+    if (Math.abs(stated - value) <= Math.max(1, value * 0.01)) return true;
+  }
+  return false;
+}
+
+function judgePrompt({ name, course }, results) {
+  // ⚠️ The caller's quoted fee is deliberately NOT shown to the judge.
+  //
+  // It used to be, as context. Observed on a real call: the caller quoted ₹30L
+  // and the judge returned a "published" fee of exactly ₹30,00,000 — the same
+  // number, handed back. An earlier call on the same institute had found
+  // ₹24.42L, so this was not the institute's real published figure.
+  //
+  // That failure is silent and total: fee_deviation compares the two numbers,
+  // so a judge that echoes the quote makes them agree every time and the check
+  // can never fire. The judge's only job is to read snippets, and it cannot
+  // parrot a number it was never told.
   const claim = [
     `Institute: "${name}"`,
     course ? `Course: "${course}"` : null,
-    totalFee ? `Total fee the caller quoted: ₹${totalFee}` : null,
   ].filter(Boolean).join("\n");
 
   const listing = results
@@ -214,9 +265,16 @@ function parseJson(text) {
 /**
  * Check one institute/course claim against the open web.
  *
- * @param {object} claim - { name, course, totalFee } from profile.institute.
+ * @param {object} claim - { name, course } from profile.institute.
  *   `searchResults` may be supplied to skip the live search — the testing seam,
  *   so the judge can be exercised without a search provider on the network.
+ *
+ *   ⚠️ The caller's quoted fee is NOT a parameter, and must not become one
+ *   again. It was passed in as context and the judge handed it straight back as
+ *   the "published" figure, which makes fee_deviation compare a number with
+ *   itself and never fire. This function's whole job is to produce a figure
+ *   INDEPENDENT of what the caller claimed; the comparison happens in
+ *   deriveFlags(), in code, where it cannot be talked out of a verdict.
  * @returns {Promise<null | {
  *   status: "found"|"unclear"|"not_found",
  *   note: string,
@@ -226,7 +284,7 @@ function parseJson(text) {
  * }>} null when there is nothing to check, nothing to judge with, or the
  *   search/judge failed — every failure is silence, never a flag.
  */
-export async function verifyInstitute({ name, course, totalFee, searchResults } = {}) {
+export async function verifyInstitute({ name, course, searchResults } = {}) {
   if (!name || !verifierConfigured()) return null;
   const key = claimKey({ name, course });
   if (cache.has(key)) return cache.get(key);
@@ -244,12 +302,12 @@ export async function verifyInstitute({ name, course, totalFee, searchResults } 
       }
 
       const text = ANTHROPIC_KEY
-        ? await askClaude(judgePrompt({ name, course, totalFee }, results)).catch(async (e) => {
+        ? await askClaude(judgePrompt({ name, course }, results)).catch(async (e) => {
             if (!OR_KEY) throw e;
             console.error(`[verify] Claude failed, falling back to OpenRouter: ${e.message}`);
-            return askOpenRouter(judgePrompt({ name, course, totalFee }, results));
+            return askOpenRouter(judgePrompt({ name, course }, results));
           })
-        : await askOpenRouter(judgePrompt({ name, course, totalFee }, results));
+        : await askOpenRouter(judgePrompt({ name, course }, results));
 
       const parsed = parseJson(text);
       if (!parsed || !["found", "unclear", "not_found"].includes(parsed.verdict)) {
@@ -258,11 +316,21 @@ export async function verifyInstitute({ name, course, totalFee, searchResults } 
       }
 
       const fee = Number(parsed.published_total_fee);
+      // Same plausibility bounds as callSchema.coerce() for money.
+      const plausible = Number.isFinite(fee) && fee > 1000 && fee <= 1000000000 ? Math.round(fee) : null;
+      // ...and it must be traceable to a snippet, exactly as every value on the
+      // dashboard must be traceable to something the caller said. Not showing
+      // the judge the quoted fee stops the parroting we saw; this stops the
+      // next version of it, where a number is produced from somewhere other
+      // than the search results in front of it.
+      const traceable = plausible !== null && feeAppearsIn(plausible, results);
+      if (plausible !== null && !traceable) {
+        console.warn(`[verify] discarded a published fee of ₹${plausible} for "${name}" — no snippet states it`);
+      }
       return {
         status: parsed.verdict,
         note: String(parsed.note || "").slice(0, 300),
-        // Same plausibility bounds as callSchema.coerce() for money.
-        feeVerifiedOnline: Number.isFinite(fee) && fee > 1000 && fee <= 1000000000 ? Math.round(fee) : null,
+        feeVerifiedOnline: traceable ? plausible : null,
         sources: results.map((r) => r.url).filter(Boolean).slice(0, 3),
         checkedAt: new Date().toISOString(),
       };

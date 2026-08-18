@@ -24,6 +24,7 @@ import { extractCallFacts, extractorConfigured, extractorStatusLine, validate } 
 import { profilePatch, fastAnswerPatch } from "./callExtract.js";
 import { readAnswer } from "./fastAnswer.js";
 import { planDocuments } from "./docPlan.js";
+import { feeAppearsIn } from "./instituteVerify.js";
 
 let passed = 0;
 let failed = 0;
@@ -500,6 +501,25 @@ console.log("\n── The matcher only ACTS when it is sure ──────�
   // A bare yes/no fits every boolean equally, so it can never self-check.
   const jobChange = getField("coApplicant", "recentJobChange");
   check("booleans are never filed without a model", readAnswer(jobChange, "yes"), null);
+}
+
+// ── A published fee has to come from a snippet, not from the caller ─────────
+// Observed on a real call: the caller quoted ₹30L and the judge returned ₹30L
+// as the "published" figure — the same number handed back. fee_deviation then
+// compares a number with itself and can never fire, so the false-info check is
+// silently dead. The judge no longer sees the quoted fee at all; this is the
+// second lock, requiring the figure to be traceable to a snippet.
+console.log("\n── A published fee must be traceable to a snippet ───────────");
+{
+  const snip = (s) => [{ title: "", snippet: s, url: "" }];
+  check("plain grouped digits are read", feeAppearsIn(2442000, snip("Total programme fee is ₹24,42,000 for the two-year MBA.")), true);
+  check("'24.42 Lakhs' is the same number", feeAppearsIn(2442000, snip("The MBA costs 24.42 Lakhs in total.")), true);
+  check("'Rs 24.42L' too", feeAppearsIn(2442000, snip("Fee: Rs 24.42L (all inclusive)")), true);
+  check("rounding to '24 lakh' is tolerated", feeAppearsIn(2400000, snip("Programme fee 24 lakh")), true);
+  // The reported bug, as a permanent test.
+  check("a fee no snippet states is refused", feeAppearsIn(3000000, snip("The MBA at Symbiosis is a two-year residential programme.")), false);
+  check("a different figure does not vouch for it", feeAppearsIn(3000000, snip("Hostel charges are ₹1,20,000 per year.")), false);
+  check("no snippets means no published fee", feeAppearsIn(2442000, []), false);
 }
 
 if (process.argv.includes("--seed")) await seed();

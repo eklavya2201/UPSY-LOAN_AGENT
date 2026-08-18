@@ -966,7 +966,10 @@ class RelayCall {
     if (this.checkedClaim === key) return;
     this.checkedClaim = key;
 
-    verifyInstitute({ name: inst.name, course: inst.course, totalFee: inst.totalFee })
+    // The quoted fee is deliberately not passed: the judge used to be shown it
+    // and handed it straight back as the "published" figure, which makes
+    // fee_deviation compare a number with itself. See instituteVerify.js.
+    verifyInstitute({ name: inst.name, course: inst.course })
       .then((verdict) => {
         if (!verdict) return;
         this.log(`online check: "${inst.name}" → ${verdict.status}${verdict.feeVerifiedOnline ? ` (published fee ₹${verdict.feeVerifiedOnline.toLocaleString("en-IN")})` : ""}`);
