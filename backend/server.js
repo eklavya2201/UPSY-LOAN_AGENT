@@ -39,6 +39,24 @@ import { createRateLimiter } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+
+// ⚠️ WITHOUT THIS, EVERY VISITOR SHARES ONE RATE-LIMIT BUCKET, and it only goes
+// wrong once the app is behind a proxy — which is to say, only in production.
+//
+// Every limiter here keys on `req.ip`. Locally that is the caller. Behind
+// Render (or nginx, or an ALB, or CloudFront) the socket's peer is the PROXY,
+// so req.ip is the same value for all of them: POST /api/voice/session allows 5
+// per 10 minutes, so the fifth call of the hour locks out everyone on the
+// internet. Observed on the deployed instance within minutes of the first real
+// testing session, presenting as "calls just stopped starting".
+//
+// `1`, not `true`. `true` trusts the whole X-Forwarded-For chain, which a
+// client can prepend to at will and thereby forge an IP and bypass the limiter
+// entirely. `1` means "trust exactly one hop", which is Render's proxy and
+// nothing else. If another proxy is ever put in front, raise this to match the
+// number of hops — do not set it to true.
+app.set("trust proxy", 1);
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const source = getActiveSource();
 const notifier = getActiveNotifier();
@@ -1051,6 +1069,33 @@ app.get("/api/voice/schema", (_req, res) => {
 // Five calls per 10 minutes per device. A real caller starting over after a
 // dropped connection stays well inside this; a script does not.
 const voiceLimiter = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
+
+/**
+ * What this deployment can actually do, per language.
+ *
+ * Added because answering "is Sarvam configured on Render?" otherwise meant
+ * starting a real call — which costs money, and which the rate limiter refuses
+ * once anyone has been testing, so the one moment you most need the answer is
+ * the moment you cannot get it. The boot log has always said this; nobody
+ * looking at a deployed instance from outside can read the boot log.
+ *
+ * ⚠️ BOOLEANS AND PROVIDER NAMES ONLY. No key, no prefix of a key, no length of
+ * a key. "Which languages work" is not sensitive; anything that narrows a
+ * credential is. Keep it that way if this grows.
+ */
+app.get("/api/voice/status", (_req, res) => {
+  const languages = {};
+  for (const lang of ["en", "hi", "mr", "te", "ta", "kn", "ml", "bn", "gu", "pa", "od", "auto"]) {
+    const problem = voiceConfigError(lang);
+    languages[lang] = problem ? { ready: false, reason: problem } : { ready: true };
+  }
+  res.json({
+    provider: voiceProvider(),
+    relay: relayStatusLine("en"),
+    relayNonEnglish: relayStatusLine("hi"),
+    languages,
+  });
+});
 
 app.post("/api/voice/session", async (req, res) => {
   if (!voiceConfigured()) {

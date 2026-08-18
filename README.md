@@ -332,6 +332,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 | Change what the agent asks for on a call | `backend/callSchema.js`, then "The extractor is built" |
 | Debug how a call *sounds* | "The first real calls, and the four bugs only a human found" |
 | Work on Hindi / Marathi / Telugu | "UPSY speaks Indian languages now — the Sarvam adapter", then `backend/voiceSarvam.js` |
+| Ask a DEPLOYED instance what it can do | `GET /api/voice/status` — ready/not-ready per language, with the reason. Booleans and provider names only, never a key |
 | Make the agent faster | "Claude, measured" — the prompt is 2,416 tokens and caching is not engaging |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
 | Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
@@ -1469,7 +1470,9 @@ Where this runs in production is not settled: **AWS**, **inside the existing `up
 
 **6. HTTPS is mandatory, not a nice-to-have.** `getUserMedia` only works in a secure context, so on plain HTTP the microphone never opens and voice cannot run at all.
 
-**7. ⚠️ `app.set("trust proxy", …)` is NOT set, and this breaks behind any reverse proxy.** Every rate limiter keys on `req.ip`. Behind nginx, an ALB or CloudFront that is the socket's peer, so **all 100 users share a single bucket** — `POST /api/voice/session` allows 5 per 10 minutes, meaning the fifth caller of the hour locks out everyone else. It is one line, and it must land in the same change as the proxy.
+**7. ✅ `app.set("trust proxy", 1)` — FIXED 2026-08-18, after it bit on the live Render instance exactly as predicted below.** The original note read: *"all 100 users share a single bucket — the fifth caller of the hour locks out everyone else. It is one line, and it must land in the same change as the proxy."* It did not need 100 users. One person testing their own deploy exhausted the shared bucket within minutes, and the symptom was `429` on **every** language at once, which reads as "the deploy is broken" rather than as a rate limit.
+
+Every limiter keys on `req.ip`; behind Render's proxy that was the proxy's address for everybody. Note the value is **`1`, not `true`** — `true` trusts the entire `X-Forwarded-For` chain, which a client can prepend to and thereby forge an IP, bypassing the limiter completely. `1` trusts exactly one hop. Raise it only if another proxy is added in front, and never to `true`.
 
 **8. Already handled, so leave it alone:** the WebSocket URL is built from `x-forwarded-proto` before `req.protocol`, so a TLS-terminating proxy correctly yields `wss://` rather than a mixed-content `ws://`. Note that this is a *different* mechanism from item 7 — the protocol is read from the header directly, while `req.ip` needs Express to be told to trust the proxy.
 
