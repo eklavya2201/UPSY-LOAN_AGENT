@@ -84,15 +84,20 @@ export const BRANCHES = [
     blurb: "Who is studying, and whether their own profile holds up.",
     fields: [
       { id: "name", label: "Full name", type: "text", source: "call",
+        keywords: ["नाम","नाव","पूरा","पूर्ण","name"],
         ask: "their full name, as it reads on their ID" },
       { id: "age", label: "Age", type: "number", source: "call", unit: "years",
+        keywords: ["उम्र","वय","age"],
         ask: "how old they are" },
       { id: "city", label: "City they live in", type: "text", source: "call",
+        keywords: ["शहर","गाव","गांव","राहता","रहते","city"],
         ask: "which city they currently live in" },
       { id: "currentQualification", label: "Current qualification", type: "enum", source: "call",
         options: ["10th", "12th", "diploma", "undergraduate", "postgraduate"],
+        keywords: ["शिक्षण","पढ़ाई","डिग्री","पदवी","qualification"],
         ask: "what they have most recently completed or are completing — 12th, a diploma, a degree" },
       { id: "marksPercent", label: "Marks (average %)", type: "percent", source: "call",
+        keywords: ["मार्क्स","गुण","टक्के","प्रतिशत","परसेंट","marks","percent","percentage"],
         ask: "roughly what percentage they scored in that qualification",
         // The flowchart says to average this off the marksheets. What the caller
         // says is a starting point that the marksheet upload later overrides —
@@ -101,7 +106,7 @@ export const BRANCHES = [
         note: "Provisional until the marksheets are read." },
       { id: "gapYears", label: "Gap years since that qualification", type: "number", source: "call", unit: "years",
         ask: "whether there has been any gap after that, and how long" },
-      { id: "hasCreditHistory", label: "Has any card or loan already", type: "boolean", source: "call", keywords: ["credit","history","cibil","bureau","cards","loan"],
+      { id: "hasCreditHistory", label: "Has any card or loan already", type: "boolean", source: "call", keywords: ["credit","history","cibil","bureau","cards"],
         // The proxy for the bureau pull that is not built. The flowchart's own
         // note — "NTC is good to go" — means a caller with no credit history is
         // not a problem, so the useful question is the yes/no, not the score.
@@ -127,17 +132,21 @@ export const BRANCHES = [
     blurb: "Where the money is going, and what the real number is.",
     fields: [
       { id: "name", label: "Institute", type: "text", source: "call", essential: true,
+        keywords: ["संस्थान","संस्था","कॉलेज","कालेज","युनिव्हर्सिटी","यूनिवर्सिटी","विद्यापीठ","institute","college","university"],
         ask: "which institute or university" },
       { id: "course", label: "Course", type: "text", source: "call", essential: true,
+        keywords: ["कोर्स","अभ्यासक्रम","पढ़ाई","शिक्षण","शिकत","course"],
         ask: "which course, and at what level" },
       { id: "country", label: "Country", type: "text", source: "call",
+        keywords: ["देश","विदेश","परदेश","बाहेर","country"],
         ask: "whether it is in India or abroad, and where" },
       { id: "courseDurationMonths", label: "Course length", type: "number", source: "call", unit: "months",
         // Not on the flowchart, and it is here because the moratorium cannot be
         // stated without it — eligibility.js has always computed course duration
         // + 9 months, and today it falls back to a guess of 24.
+        keywords: ["अवधि","कालावधी","साल","वर्ष","वर्षे","महीने","महिने","duration","long"],
         ask: "how long the course runs" },
-      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call", essential: true, keywords: ["fee","fees","cost","costs","tuition","total","charge","charges"],
+      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call", essential: true, keywords: ["fee","fees","cost","costs","tuition","total","charge","charges","फी","फीस","शुल्क","खर्च","किंमत"],
         ask: "roughly what the total fee comes to" },
       { id: "hostelFeeIncluded", label: "Hostel fee inside that figure", type: "boolean", source: "call",
         // Straight off the flowchart: inclusive → treat as tuition; exclusive →
@@ -145,6 +154,7 @@ export const BRANCHES = [
         ask: "whether that figure includes hostel and living costs or is tuition only" },
       { id: "offerLetter", label: "Offer letter", type: "enum", source: "call",
         options: ["received", "applied", "not yet"],
+        keywords: ["ऑफर","प्रवेश","अ‍ॅडमिशन","एडमिशन","offer","admission","letter"],
         ask: "whether they already have the offer or admission letter" },
       { id: "feeVerifiedOnline", label: "Published fee found online", type: "money", source: "api",
         note: "Filled by instituteVerify.js when a search snippet states the programme fee. The fee_deviation flag below compares it against what the caller quoted." },
@@ -156,12 +166,14 @@ export const BRANCHES = [
     title: "The loan itself",
     blurb: "What they actually need from us, as opposed to what the course costs.",
     fields: [
-      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call", essential: true, keywords: ["borrow","borrowing","need","require","loan","amount","much"],
+      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call", essential: true, keywords: ["borrow","borrowing","need","require","loan","amount","much","रकम","रक्कम","कितना","किती","चाहिए","पाहिजे","लागेल","लाख"],
         ask: "how much of that fee they need to borrow, as opposed to what the family can put in" },
       { id: "type", label: "Secured or unsecured", type: "enum", source: "call", essential: true,
         options: ["secured", "unsecured"],
+        keywords: ["सिक्योरिटी","सुरक्षा","गहाण","तारण","संपत्ति","मालमत्ता","जमीन","secured","unsecured","security"],
         ask: "whether they have property or a deposit to offer as security, or want it without collateral" },
       { id: "collateral", label: "What the security is", type: "text", source: "call",
+        keywords: ["संपत्ति","मालमत्ता","जमीन","घर","प्लॉट","गहाण","तारण","collateral","property"],
         ask: "what the security would be, if they mentioned having any" },
     ],
   },
@@ -187,17 +199,19 @@ export const BRANCHES = [
         // "no cousin of student applicant etc." eligibility.js already encodes
         // the same list for the lead path, and the two must not drift.
         options: ["father", "mother", "brother", "sister", "spouse", "other"],
+        keywords: ["रिश्ता","नाते","relation"],
         ask: "how that person is related to them" },
-      { id: "category", label: "Income category", type: "enum", source: "call", essential: true, keywords: ["salaried","self","employed","business","pensioner","farmer","profession","does","work"],
+      { id: "category", label: "Income category", type: "enum", source: "call", essential: true, keywords: ["salaried","self","employed","business","pensioner","farmer","profession","does","work","नौकरी","नोकरी","व्यवसाय","धंदा","काम","करते","करतात","शेती","पेन्शन"],
         options: ["salaried", "self-employed", "pensioner", "farmer"],
         ask: "whether that person is salaried, self-employed, a pensioner or a farmer" },
-      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true, keywords: ["earn","earns","earning","salary","salaried","take","home","pay","paid","income","month","monthly","bring"],
+      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true, keywords: ["earn","earns","earning","salary","salaried","take","home","pay","paid","income","month","monthly","bring","सैलरी","पगार","कमाई","आमदनी","उत्पन्न","महीना","महिना","मिळतात","कमाते"],
         ask: "roughly what they take home in a month" },
-      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call", essential: true, keywords: ["itr","return","returns","filed","annual","yearly"],
+      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call", essential: true, keywords: ["itr","return","returns","filed","annual","yearly","सालाना","वार्षिक","रिटर्न","भरला","भरते"],
         appliesWhen: { category: ["self-employed", "farmer"] },
         ask: "what the latest ITR shows as annual income" },
       { id: "itrYearsAvailable", label: "Years of ITR available", type: "number", source: "call", unit: "years",
         appliesWhen: { category: ["self-employed", "farmer"] },
+        keywords: ["साल","वर्ष","वर्षे","रिटर्न","itr","years"],
         ask: "how many years of ITR they can produce — three is ideal, two is the minimum" },
       { id: "form16YearsAvailable", label: "Years of Form 16 available", type: "number", source: "call", unit: "years",
         appliesWhen: { category: ["salaried"] },
@@ -210,7 +224,7 @@ export const BRANCHES = [
       { id: "recentJobChange", label: "Changed job recently", type: "boolean", source: "call",
         appliesWhen: { category: ["salaried"] },
         ask: "whether they have changed jobs recently — that decides whether we need the joining letter too" },
-      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call", essential: true, keywords: ["emi","emis","repay","repaying","instalment","installment","existing","loans","borrowings","outgo"],
+      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call", essential: true, keywords: ["emi","emis","repay","repaying","instalment","installment","existing","loans","borrowings","outgo","किस्त","हप्ता","हफ्ता","कर्ज","चालू"],
         // The number the whole underwriting branch turns on, which is why it is
         // asked of every category rather than sitting under one of them.
         ask: "what they are already paying every month across all their existing loans" },
@@ -550,12 +564,122 @@ const MATCH_STOPWORDS = new Set([
   "yes", "if", "else", "than", "then", "as", "by", "any", "one", "two", "three",
   "some", "roughly", "about", "already", "still", "would", "will", "can", "could",
   "should", "just", "also", "etc", "most", "there", "out", "per", "all", "who",
+  // "loan" is in half the labels, half the ask texts and most of what the agent
+  // says out loud — it cannot distinguish one field from another here any more
+  // than "the" can. It became actively harmful once the prompt started keeping
+  // loan vocabulary in English inside Indian-language sentences: in "आपको कितना
+  // loan चाहिए?" it was the only Latin token, so a question about the AMOUNT was
+  // matched to "Has any card or loan already" on that one word. Removing it from
+  // that field's keywords was not enough, because the field's own label and ask
+  // text still contributed it.
+  "loan", "loans",
+  // ── Hindi and Marathi function words ──────────────────────────────────────
+  // The same job the English list above does, and it is not optional: without
+  // it "कितना"/"किती" ("how much") behaves as a CONTENT word and wins on every
+  // question that contains it — the fee question, the salary question and the
+  // amount question all collapse onto whichever field happens to list it.
+  // Measured: adding these as keywords first took the matcher to 5/13, and the
+  // failures were all this.
+  "है", "हैं", "हूँ", "हो", "था", "थी", "थे", "का", "की", "के", "को", "में", "से",
+  "पर", "और", "या", "यह", "वह", "क्या", "कौन", "कौनसा", "कितना", "कितनी", "कितने",
+  "आप", "आपका", "आपकी", "आपके", "आपको", "मैं", "मुझे", "हम", "कर", "करना", "करते",
+  "रहे", "रही", "चाहिए", "चाहते", "चाहती", "लिए", "कुछ", "कोई", "नहीं", "जी", "तो",
+  "अगर", "बता", "बताइए", "सकता", "सकते", "सकती", "गया", "गयी", "हुआ", "होता",
+  "आहे", "आहेत", "आहात", "होते", "होती", "तुम्ही", "तुमचा", "तुमची", "तुमचे",
+  "तुमच्या", "तुम्हाला", "मला", "माझा", "माझी", "किती", "काय", "कोणता", "कोणती",
+  "कोणत्या", "कोणते", "हवं", "हवे", "हवी", "पाहिजे", "लागेल", "आणि", "किंवा",
+  "मी", "ते", "हे", "ही", "साठी", "मध्ये", "नाही", "करू", "सांगा", "असेल",
 ]);
 
+/**
+ * Does the sentence contain this keyword, allowing for inflection?
+ *
+ * ⚠️ EXACT TOKEN EQUALITY DOES NOT WORK IN INDIAN LANGUAGES, and this is why a
+ * first pass at multilingual matching scored 5/13. They inflect by suffixing:
+ * a caller asked about the institute says "संस्थेत" (*in the institute*), never
+ * the bare "संस्था" the keyword list holds. Marathi does the same to every noun
+ * — "वडील" becomes "वडिलांचा", "फी" becomes "फीची".
+ *
+ * English gets away with exact matching because its inflection is mostly a
+ * trailing "s", and the keyword lists already spell both forms out. Doing that
+ * for Devanagari would mean enumerating every case ending of every noun.
+ *
+ * So: Latin tokens keep exact matching, which preserves every English result
+ * this file already had. Non-Latin tokens match on a shared prefix of four or
+ * more characters, which is the stem in practice and is far cheaper than a real
+ * stemmer. Four, not three: three collapses distinct words in a script where
+ * two characters often carry a whole syllable.
+ */
+const STEM_PREFIX = 4;
+
+function shares(said, word) {
+  if (said.has(word)) return true;
+  // ASCII stays exact — English precision is already tuned and must not move.
+  if (/^[a-z0-9]+$/.test(word)) return false;
+  if (word.length < STEM_PREFIX) return false;
+  for (const s of said) {
+    if (s.length < STEM_PREFIX || /^[a-z0-9]+$/.test(s)) continue;
+    let i = 0;
+    const max = Math.min(s.length, word.length);
+    while (i < max && s[i] === word[i]) i++;
+    if (i >= STEM_PREFIX) return true;
+  }
+  return false;
+}
+
+// Devanagari and the other Indic scripts write a word in far fewer code points
+// than Latin does — "फी" is two, "ITR" is three. The Latin rule (>2) exists to
+// drop "a"/"an"/"of" noise, and those short function words have their own
+// stopword list anyway. Applying it to Devanagari would silently discard real
+// content words.
+const MIN_TOKEN_LATIN = 3;
+const MIN_TOKEN_OTHER = 2;
+
+/**
+ * Words worth matching on, in any script.
+ *
+ * ⚠️ THIS USED TO BE `.replace(/[^a-z0-9 ]/g, " ")`, and that one character
+ * class silently disabled the entire anti-repeat system on every non-English
+ * call. It deleted every Devanagari, Telugu and Tamil character in the string,
+ * so a Hindi question tokenised to NOTHING, matchAgendaField() returned null on
+ * its first line, and three things stopped working at once:
+ *
+ *   · `askedThisCall` never recorded a question, so the agent asked the same
+ *     one again, and again — the loudest complaint from real Hindi testing
+ *   · `pendingAsk` was never set, so answers were not attributed to questions
+ *   · the `focus` event never fired, so /upsy-voice-agent's constellation never
+ *     lit up and the live loan file appeared frozen in every language but English
+ *
+ * Worse than missing, it MIS-MATCHED. The prompt deliberately keeps loan words
+ * in English inside an Indian-language sentence ("तुम्हाला किती loan हवं आहे?"),
+ * so the only surviving token was "loan" — and that question about the amount
+ * was confidently filed as being about the caller's credit history. A wrong
+ * match is worse than none: it marks the wrong field as asked and spotlights
+ * the wrong branch.
+ *
+ * ⚠️ AND `\p{M}` IS NOT OPTIONAL — leaving it out was the second version of this
+ * same bug, caught only because the tokens were printed. In Devanagari the
+ * vowel signs (ी ा ि ु े ो) and the virama (्) are Unicode MARKS, not letters,
+ * so `[^\p{L}\p{N}]` strips them and shatters every word it touches:
+ *
+ *     "कुल फीस कितनी है?"  →  "तन"          (one fragment, from four words)
+ *     "खर्च"               →  "खर"
+ *
+ * Which looks like matching simply not working, and is impossible to spot by
+ * reading — the surviving fragments are still Devanagari, so nothing announces
+ * that anything was lost. The same applies to Tamil, Telugu, Kannada, Bengali
+ * and Gujarati, all of which build syllables the same way.
+ *
+ * Zero-width joiner and non-joiner are kept for the same reason: they sit
+ * inside conjuncts and removing them splits the word.
+ */
 function matchTokens(text) {
   const out = new Set();
-  for (const w of String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/)) {
-    if (w.length > 2 && !MATCH_STOPWORDS.has(w)) out.add(w);
+  for (const w of String(text || "").toLowerCase().replace(/[^\p{L}\p{M}\p{N}‌‍]+/gu, " ").split(/\s+/)) {
+    if (!w) continue;
+    // ASCII-only words are Latin; anything else came from an Indic script.
+    const min = /^[a-z0-9]+$/.test(w) ? MIN_TOKEN_LATIN : MIN_TOKEN_OTHER;
+    if (w.length >= min && !MATCH_STOPWORDS.has(w)) out.add(w);
   }
   return out;
 }
@@ -583,7 +707,7 @@ export function matchAgendaField(text, profile = {}) {
       // a field; keywords are how a person says it out loud.
       let score = 0;
       for (const w of matchTokens(`${field.label} ${field.ask || ""} ${(field.keywords || []).join(" ")}`)) {
-        if (said.has(w)) score++;
+        if (shares(said, w)) score++;
       }
       if (!score) continue;
       const v = values[field.id];
