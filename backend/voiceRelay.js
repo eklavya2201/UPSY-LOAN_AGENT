@@ -340,6 +340,9 @@ class RelayCall {
     this.spec = null;
     this.state = null;
     this.lastAck = null;
+    // Whether the previous turn already got one. Never twice running — see
+    // shouldAcknowledge().
+    this.ackedLastTurn = false;
     // What is known about this caller so far, growing as extraction reads the
     // call. Starts from earlier calls (or empty for a stranger) and is what the
     // live agenda on /m is drawn from — for an account holder it tracks the
@@ -717,16 +720,19 @@ class RelayCall {
     // speculative reply is already written, because the real answer beats an
     // acknowledgement of it. Deliberately not awaited: the point is that this
     // plays while generation runs, and the speech queue keeps the ordering.
-    if (!(adopt && spec.buffered.length)) {
+    if (!(adopt && spec.buffered.length) && this.shouldAcknowledge()) {
       // this.language, not the ticket's: after an auto call has switched, an
       // English "Got it." in front of a Marathi answer is the agent audibly
       // falling out of the caller's language for one beat.
       const ack = pickAcknowledgement(text, this.language, this.lastAck);
       if (ack) {
         this.lastAck = ack;
+        this.ackedLastTurn = true;
         this.sendAgentText(ack);
         this.speak(ack, controller.signal);
       }
+    } else {
+      this.ackedLastTurn = false;
     }
 
     try {
@@ -1031,6 +1037,42 @@ class RelayCall {
     // often repeat themselves in English to be safe, which undoes the whole
     // thing — and reads to them as detection having failed.
     send(this.ws, { event: "language", language: short });
+  }
+
+  /**
+   * Should this turn get a spoken acknowledgement at all?
+   *
+   * ⚠️ THIS REVERSES AN EARLIER DECISION, on the strength of real calls in
+   * three languages. The rule used to be "acknowledge every turn, only block
+   * the identical word twice running", written when the opposite fault was
+   * live: short answers got nothing, so the turns with least to think about sat
+   * in the longest silence.
+   *
+   * It over-corrected. A receipt on EVERY turn is not a receipt, it is a verbal
+   * tic — reported from real calls as the agent saying "ok / sure / ठीक आहे"
+   * in front of every single sentence, in every language. The transcript of one
+   * Marathi call has it on all six turns, and read back it is unmistakable:
+   *
+   *     caller: मला एज्युकेशन लोनसाठी माहिती पाहिजे
+   *     UPSY  : समजलं.
+   *     UPSY  : तुम्हाला एज्युकेशन लोनसाठी काही दस्तऐवज लागतील.
+   *
+   * People do not do that. They acknowledge perhaps one turn in two or three,
+   * and the rest of the time simply answer — the answer IS the acknowledgement.
+   * So: never twice running. That keeps the filler for the turns that follow a
+   * silence, which are the ones it was built for, and removes the tic.
+   *
+   * The second rule is about language, not rhythm. On an `auto` call before
+   * detection has settled, we do not yet know what the caller speaks, and every
+   * fixed phrase we have is written in a specific language — so an English
+   * "Sure." lands in front of a Marathi answer. That is the same "silence beats
+   * the wrong language" judgement made in voiceFillers.js, applied one level up
+   * where the uncertainty actually lives.
+   */
+  shouldAcknowledge() {
+    if (this.ackedLastTurn) return false;
+    if (this.ticket.language === "auto" && !this.languageLocked) return false;
+    return true;
   }
 
   refreshPrompt(profile) {
