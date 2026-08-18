@@ -21,6 +21,8 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 >
 > **Which AI is running:** the Anthropic credits ran out on 2026-08-12, so `ANTHROPIC_API_KEY` is deliberately **blank** and everything runs on OpenRouter `gpt-4o-mini`. Paste a key back into `.env` and Claude returns everywhere with no code change. Two things are unavailable until then: **PDF reading** (Claude is the only reader that does it) and the Phase 0 reader evals, which have still never been run.
 
+**🇮🇳 And as of 2026-08-18 it talks in eleven languages.** `backend/voiceSarvam.js` is built and measured: `saaras:v3-realtime` hears Hindi, Marathi and Telugu and **correctly names which one it is hearing** (0.93–0.99 confidence), `bulbul:v3` speaks all eleven, and warm first audio is *faster* than Aura. Deepgram keeps English so nothing already tuned gets re-litigated. `npm run voice:sarvam`. **And the whole call happens in that language** — a picker on `/upsy-voice-agent` defaulting to "Detect my language", the agent's own replies, and the acknowledgements. Verified against the real relay: a Hindi caller is detected after two agreeing turns and the conversation continues in Hindi, including the agent reading a salary figure back before using it. Full detail, and the two bugs this surfaced, in "UPSY speaks Indian languages now" and the section after it.
+
 **🔊 UPSY has its own voice stack now, and it talks (2026-08-07).** We stopped waiting for Cartesia. `backend/voiceRelay.js` is a WebSocket server on this process that terminates the caller's audio socket and runs the call itself — turn-taking and barge-in ours. **`VOICE_PROVIDER=upsy` must stay set** (it defaults to `cartesia` in code, which cannot be deployed on a free account and fails every call).
 
 **The live chain, and where each piece is configured:**
@@ -73,6 +75,106 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
   **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude.
 
 **On the voice itself, four picks in one day, and only the ones made by listening were any good.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → Jacqueline, "empathic customer support" → **`aura-2-athena-en` on Deepgram**, "calm, smooth, professional". The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good; Deepgram has none at all. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from a catalogue's prose was wrong twice.
+
+### 🇮🇳 UPSY speaks Indian languages now — the Sarvam adapter (2026-08-18)
+
+**Why this moved to the front: institutes asked for it.** Not a technical itch — partner institutes want the agent to talk to their applicants in Hindi, Marathi, Telugu and the rest. Until today `SARVAM_API_KEY` had sat in `.env` since 2026-08-07 and **was never read by a single line of code**; every mention of Sarvam in the repo was a comment describing where it would go.
+
+**The blocker was never detection, it was the voice.** Deepgram Aura has *zero* Indian-language voices — English, Spanish, German, French, Dutch, Italian, Japanese, and that is the list. Deepgram's *recogniser* has moved on since this file last looked (nova-3 now does Hindi, Marathi, Telugu, Tamil, Kannada, Gujarati, Punjabi as named languages), but its auto-detect `multi` mode spans ten languages of which **Hindi is the only Indian one**. So Deepgram can neither speak these languages nor tell them apart, and no amount of tuning the existing path gets there.
+
+**What was built:** `backend/voiceSarvam.js` (`SarvamStt` + `SarvamTts`, behind the existing `makeStt`/`makeTts` interfaces) and `backend/voiceResample.js`. `npm run voice:sarvam` proves it.
+
+| | |
+|---|---|
+| Hearing | **`saaras:v3-realtime`** over websocket, `language_code=auto`, which returns a `language` **and a confidence on every final** |
+| Speaking | **`bulbul:v3`**, 11 languages, `linear16` |
+| Languages | Hindi, Marathi, Telugu, Tamil, Kannada, Malayalam, Bengali, Gujarati, Punjabi, Odia, English |
+| Cost | STT ₹30/hour (₹0.50/min), TTS ₹30 per 10k characters. ₹100 free on signup — this whole session's testing cost a few rupees |
+
+**Measured, on the real API, by synthesising a caller and playing it back into the recogniser:**
+
+| | detected | confidence | transcript |
+|---|---|---|---|
+| Hindi | ✅ `hi` | 0.93 | "मुझे एमबीए के लिए ₹15 लाख का लोन चाहिए, क्या मैं एलिजिबल हूँ?" |
+| Marathi | ✅ `mr` | 0.99 | "मला माझ्या मुलीच्या शिक्षणासाठी वीस लाख रुपयांचे कर्ज हवे आहे." |
+| Telugu | ✅ `te` | 0.98 | "నాకు ఎంబీఏ చదవడానికి పదిహేను లక్షల రుణం కావాలి." |
+
+**And it is faster than Aura, which was not the expectation.** Warm first chunk **216–230ms** against Aura's ~396ms. The first measurement said 831ms and was wrong in an instructive way — it opened a fresh socket per sentence, so it was measuring the handshake. The relay opens one socket per *call*, which is why that cost lands during "Connecting…" where nobody is listening. A Hindi call through the real relay speaks **478ms** after the socket opens.
+
+**Deepgram still owns English, on purpose.** Every measured decision in this repo — the 800ms endpointing, the two-word barge-in rule, the keyterm list, the idle-based stall detector — was tuned against Deepgram's behaviour. Routing English through Sarvam would quietly invalidate all of it in exchange for nothing. `STT_PROVIDER=auto` (the default) means Deepgram for `en`, Sarvam for everything else **and for `auto`**, because detection has to be on the socket from turn zero — there is no picking after the fact.
+
+**⚠️ The 44.1kHz invariant is broken, and only on this path.** This README used to note with some pride that the pipeline ran `pcm_s16le` @ 44.1kHz end to end with no resample step anywhere. Sarvam's recogniser accepts **8kHz or 16kHz and closes the socket with code 4000** on anything else, so `voiceResample.js` exists now. Three things in it are load-bearing and none are obvious:
+
+- **The read position and the seam sample carry across chunks.** Resampling each 2048-sample frame independently restarts the fraction every 46ms and loses the interval across the boundary — a click 23 times a second that sounds exactly like a bad microphone and would be blamed on the caller's phone.
+- **A 6-pole Butterworth low-pass runs before decimation.** 4-pole was written first and *measured*: a 12kHz tone folded back to 4kHz only **26.7dB** down, sitting on top of speech. 6-pole puts it at **−39.1dB**. Fricatives are exactly the energy up there, so the artefact was worst on the sounds already hardest to recognise.
+- **It is asserted, not assumed.** `voice:sarvam` checks the streamed output is *sample-identical* to whole-buffer conversion, that the speech band loses less than 1.5dB, and that the alias image stays below −35dB.
+
+**🐛 And it surfaced a real bug in code that was already shipped.** The phrase cache was keyed by **text alone** — correct while exactly one engine existed, since the same words always came back in the same voice. With two engines able to speak English, the first call to synthesise "Got it." would decide which voice **every later call** heard it in, for the life of the process: answering in athena, acknowledging in priya, on alternating turns. Now keyed by voice *and* text. Nearly impossible to diagnose from a bug report that can only say "the voice keeps changing".
+
+**A measured fix worth keeping:** "एमबीए" (MBA) first came back as "एमबीआई" (MBI). Sarvam takes a free-text `prompt` hint rather than Deepgram's repeated `keyterm` params, and the standing lending vocabulary was not reaching it at all — only the per-caller names were. Adding it fixed MBA outright. The caller's own terms go first in that string, because it is length-capped and truncation should eat the generic vocabulary rather than this person's name.
+
+### 🗣️ …and the whole call now happens in that language (2026-08-18)
+
+The adapter above carried Marathi audio while the agent answered in English words, because the prompt still said *"you can only continue in English today. Do not pretend to switch."* That is closed. **A caller picks a language — or lets the agent work it out — and the entire call follows.**
+
+**Proven end to end against the real relay.** A synthetic Hindi caller, `language=auto`, three turns:
+
+```
+CALLER: मुझे एमबीए के लिए पंद्रह लाख रुपये का लोन चाहिए।
+UPSY  : आप किस संस्थान में पढ़ाई कर रहे हैं?
+[voice:relay] switching to hi (confidence 0.98, 2 turns agreeing)
+CALLER: मेरे पिताजी की सैलरी नब्बे हज़ार रुपये महीना है।
+UPSY  : जी, ठीक है।
+UPSY  : तो आपके पिताजी की सैलरी नब्बे हजार रुपये है। क्या आपके पास कोई संपत्ति है…?
+```
+
+Note the third line: **the agent read the number back before using it**, in Hindi, unprompted — the mitigation this file has always wanted for the misheard-amount risk, surviving translation.
+
+**The rule that stops it sounding ridiculous.** `languageRules()` in `voicePrompt.js` tells the model to **keep the loan vocabulary in English** — loan, EMI, interest rate, documents, co-applicant, PAN, moratorium. Nobody in India asks about their "शिक्षा ऋण की मासिक किस्त"; they say "loan" and "EMI" inside a Hindi sentence. A model told only "reply in Hindi" writes textbook Hindi that reads as a translated form, and a caller hears a machine. The acknowledgements are written the same way (`"अच्छा, तो बात repayment की है।"`).
+
+**How auto-detect decides, and why it is deliberately reluctant.** Three gates, all required: confidence ≥ 0.75, ≥ 3 words, and **2 consecutive finals agreeing**. Then it locks for the call. The reason is that real callers are code-mixed — *"mujhe fifteen lakh ka loan chahiye"* is one sentence containing two languages — so consecutive detections genuinely disagree, and acting on each one swaps the voice mid-conversation. Staying in English one extra turn is a small annoyance; a voice that keeps changing is what a caller reports as broken. All three are env-tunable (`VOICE_LANG_*`) and every declined detection is logged, so they can be tuned against real calls rather than guessed at again.
+
+**🐛 "The voice is breaking" — reported from a real test, and it was the oldest bug in this file wearing a new coat (2026-08-18).**
+
+Same symptom as the first real calls in 2026-08-10 (*"immm u...p..syyy"*), same root cause, arriving by a **second route** that the original fix did not cover.
+
+Audio frames carry no request id — on Aura and on bulbul alike — so `handleMessage()` can only hand a frame to whatever request is current when it arrives. The 08-10 fix protected the socket we **keep** (Clear, wait for `Cleared`, replace if unconfirmed). It said nothing about the socket we **throw away**. And `ws.close()` is not a stop: it begins a closing *handshake*, so the socket stays open for a round trip and keeps delivering frames that were already generated. Those frames outlive `reconnect()`, land on the next sentence's `pending`, and are spliced into the middle of it.
+
+**Diagnosed by measuring rather than guessing**, and two plausible theories were killed first:
+
+| suspect | verdict |
+|---|---|
+| Wrong resample ratio | ❌ Sarvam honours the requested rate. It also **rejects 44100 on the websocket** — 8000/16000/22050/24000 only, which confirms the 24000 default |
+| A RIFF header inside the PCM | ❌ bare PCM, no container |
+| Our resampler clicking at chunk seams | ❌ **0 of 79** chunk boundaries had a step; it *reduces* discontinuities (712 → 11) |
+| An abandoned socket still delivering | ✅ **reproduced** |
+
+The reproduction is the same one the 08-10 entry describes — **the durations swap places**. Speak a short line alone, then speak it right after barging in on a long one:
+
+| | before | after |
+|---|---|---|
+| `"ठीक है।"` alone | 1.02s | 1.11s |
+| …following an interruption | **2.65s** (2.58x — carrying the long sentence's audio) | 1.11s |
+| contaminated runs | **1 in 3** | 0 in 4 |
+
+Intermittent, which is why it reads as "sometimes breaks" and why the check runs it four times — one clean run proves nothing. Fixed by **detaching the listeners and using `terminate()`, not `close()`**, and applied to **both** engines: Aura carried the identical latent bug and is where it bit first. `npm run voice:sarvam` now holds the line.
+
+**The lesson is the one this file already learned once and had to learn again:** a comment claiming late audio "is dropped because `pending` has already moved on" was wrong in 2026-08-10, and the reasoning "nothing is in flight when a new request starts" was wrong again here. Both were beliefs about timing that nobody had measured. Both took a person on a real call to notice.
+
+**🐛 And the test caught a race that reasoning had missed.** `adoptLanguage()` originally awaited `tts.setLanguage()` directly, on the reasoning that switching only happens between turns. Wrong: it runs from the **STT callback**, which fires whenever the recogniser finalises — completely independent of whether a sentence is being spoken. Changing language replaces the TTS socket, so a sentence in flight found `this.ws` null underneath it (`speech failed: Cannot read properties of null`). It is the same shape as the `respondTo()` race that once spoke two replies, and the same fix: **put it on the speech chain** everything else is ordered by. Zero errors and 39s of continuous audio afterwards.
+
+**What a caller sees:** a language picker on `/upsy-voice-agent`, above the microphone selector and visible from the start, listing all eleven in their own script with **"Detect my language" as the default**. It sits above the device pickers on purpose — a caller who cannot see it assumes the agent only speaks English, speaks English, and detection then correctly detects English. The greeting says the same thing out loud for the same reason. When detection moves the call, the page says "Speaking in Marathi", because a caller who is not told the machine noticed will repeat themselves in English to be safe.
+
+**⚠️ Still open, honestly:**
+
+- **The voice was NOT chosen by listening.** `priya` was picked from a name. This repo has done that twice and been wrong twice. `voice:sarvam` writes samples to `data/voice-samples/` — **listen before a caller does**, and `SARVAM_TTS_PACE` is a working speed control, unlike sonic-2's.
+- **Greetings exist in English, Hindi and Marathi only.** Every *reply* is model-written so all eleven work, but the greeting is fixed copy and writing customer-facing copy in a language you cannot read back is the same mistake as picking a voice from a catalogue. A Telugu caller gets an English greeting that invites them to speak Telugu, then the agent answers in Telugu from turn two. Adding a language is one line in `GREETINGS`.
+- **Acknowledgements likewise** — en, hi, mr. Anything else gets **silence**, not an English "Got it.", because the agent audibly dropping out of the caller's language for one beat reads as broken.
+- **No institute default and no sticky per-account language.** The picker is the only way in; an institute in Pune should default to Marathi and a second call should open where the first one left off. Cheapest remaining win.
+- **`auto` routes English through Sarvam, not Deepgram.** Deliberate — it makes a mid-call switch a reconnect instead of an engine swap — but it means an English caller on the default setting is *not* on the tuned Deepgram path. Pick "English" explicitly to get that.
+- **The extractor is unexercised on Devanagari.** `callExtract.js` verifies every quote against the transcript; nobody has checked that matching holds in a non-Latin script.
+- **`instituteVerify.js` will web-search a course name in Devanagari** and could raise a false `course_not_found` on a real institute — the same shape as the `BTEC`/*B.Tech* bug already fixed once.
+- **Numbers in a new language.** Digit mishearing is still the most dangerous open bug in the voice path, and it has now been measured only in English on a tuned recogniser. The read-back behaviour above is encouraging, not a guarantee.
 
 ### 📞 The first real calls, and the four bugs only a human found (2026-08-10)
 
@@ -229,6 +331,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 | Work on what a call captures and remembers | "`/upsy-voice-agent` accounts and remembered calls" |
 | Change what the agent asks for on a call | `backend/callSchema.js`, then "The extractor is built" |
 | Debug how a call *sounds* | "The first real calls, and the four bugs only a human found" |
+| Work on Hindi / Marathi / Telugu | "UPSY speaks Indian languages now — the Sarvam adapter", then `backend/voiceSarvam.js` |
 | Make the agent faster | "Claude, measured" — the prompt is 2,416 tokens and caching is not engaging |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
 | Work on the *previous* priority (Avanse precision) | "Avanse (`online.avanse.com`)" then the "⏸️ PAUSED — Avanse precision" roadmap block |
@@ -263,6 +366,7 @@ npm start
 npm run eval          # batch-test PAN/Aadhaar card reading on files in data/uploads/ (or pass file paths)
 npm run eval:income   # batch-test ITR/Form16/salary-slip income reading (scans project root + data/uploads/, or pass file paths)
 npm run voice:relay   # preflight OUR OWN voice stack: transport → tickets → does it actually speak → does the brain stream
+npm run voice:sarvam  # preflight the INDIAN-LANGUAGE path: resampler → does bulbul speak → does saaras hear → is the language identified
 npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
 npm run eval:extract  # the branch schema: FOIR maths + flag rules offline, then a scripted call through the real extractor
 npm run eval:extract -- --seed   # ...and write that call into the store, so /team has a real caller to show
@@ -1440,6 +1544,8 @@ npm start
 ## Code map
 
 - `backend/llmProviders.js` — **which endpoint the non-Claude side talks to**, decided in one place: OpenRouter when its key exists, otherwise OpenAI's own API with the `openai/` model prefix stripped. Placeholder values (`your_…_here`) count as absent. Ten modules used to hardcode this URL each, which is how one of them ends up pointing somewhere else. **This is the file that makes "swap providers by editing `.env`" true.**
+- `backend/voiceSarvam.js` — **hearing and speaking in Indian languages.** `SarvamStt` (`saaras:v3-realtime`, `language_code=auto`, which names the language on every final) and `SarvamTts` (`bulbul:v3`, eleven languages), both behind the same interfaces the Deepgram engines use, so the relay cannot tell which is behind it. Also where the per-language vocabulary hint lives. **Deepgram still carries English** — see `STT_PROVIDER` in `voiceStt.js` for why.
+- `backend/voiceResample.js` — the only resample step in the project, and it exists solely because Sarvam's recogniser takes 8k/16k and closes the socket on anything else. Carries the fractional read position and the seam sample across chunks (otherwise a click 23 times a second) and low-passes before decimating (otherwise 12kHz folds onto 4kHz speech). Both properties asserted in `npm run voice:sarvam`.
 - `backend/documents.js` — the requirements config: stages, documents in collection order, the "why" text, and per-document format rules. **Edit here to change what the agent collects.**
 - `backend/validators.js` — the format cross-check logic (magic-byte sniff, PAN regex, Aadhaar Verhoeff checksum).
 - `backend/ocr.js` — local-OCR fallback: reads PAN/Aadhaar/name/DOB off card images; fuzzy-corrects common OCR misreads; the Verhoeff checksum for Aadhaar (`aadhaarChecksumValid`); `namesMatch()` / `addressesMatch()` — the fuzzy comparators used by cross-document consistency (both reusable for validating any vision-model output, not just OCR's own).
@@ -1577,6 +1683,11 @@ npm start
 - [x] **The second review round — four fixes from real calls** (2026-08-12): the agent reading our own web lookup back as the caller's fee; asking questions already answered; quizzing about documents with nowhere to record the answer; and not ending when the caller was finished. **The second of those took three attempts and is the most instructive failure in this repo** — see the section above
 - [x] **A fuzzy matcher no longer writes loan files** (2026-08-12): `matchAgendaField` reports confidence, the write path is off, and the repeat is solved in the prompt instead
 - [x] **The fee verifier no longer parrots** (2026-08-12): the judge is not shown the caller's quoted fee, and any published figure it returns must be traceable to an actual search snippet
+- [x] **The Sarvam adapter — Indian languages, with automatic detection** (2026-08-18): `backend/voiceSarvam.js` (`saaras:v3-realtime` hearing with `language_code=auto`, `bulbul:v3` speaking eleven languages) and `backend/voiceResample.js` (the first resample step in this pipeline, because Sarvam takes 16kHz and closes the socket on anything else). Detection measured correct on Hindi, Marathi and Telugu at 0.93–0.99 confidence; warm first audio 216–230ms, *faster* than Aura. Deepgram keeps English so nothing already tuned gets re-litigated. Surfaced and fixed a shipped bug: the phrase cache was keyed by text alone, which with two engines would have served one voice's audio to the other. `npm run voice:sarvam`
+- [x] **The whole call happens in the caller's language** (2026-08-18): `languageRules()` in `voicePrompt.js` (which keeps *loan, EMI, co-applicant* in English inside a Hindi sentence, because that is how these conversations are actually held), greetings and acknowledgements in Devanagari, a language picker on `/upsy-voice-agent` defaulting to auto-detect, and mid-call switching behind three gates — confidence, word count, and two consecutive finals agreeing. Caught a race: `adoptLanguage()` replaced the TTS socket from the STT callback, under a sentence that was still being spoken; it goes on the speech chain now
+- [ ] **Institute-level default language + sticky per account** — the picker is the only way in today. An institute in Pune should default to Marathi, and a second call should open in the language the first one ended in. `voiceAccounts.js` already stores call history, so this is cheap
+- [ ] **Greetings and acknowledgements beyond en/hi/mr** — every model-written reply works in all eleven; only the fixed copy is short, and it should be written by someone who speaks the language. One line each in `GREETINGS` and `RECEIPTS`
+- [ ] **Listen to `data/voice-samples/` and pick the voice properly** — `priya` was chosen from a name, which is how this repo picked wrong twice before
 - [ ] **Escape the lead list in `team.js`** — `esc()` exists and the voice views use it; the older applicant-list and detail rendering still interpolate names and notes straight into `innerHTML`
 - [ ] **Three more lenders' field guides** — same pattern as `avanse.js`, pending screenshots/walkthroughs of each
 - [ ] **A fast model to classify which field a question asked** — the one piece that would make `fastAnswer.js` safe to switch on, and the reviewer's original suggestion
@@ -1754,7 +1865,7 @@ This is the README's old **Step 2 — in-app voice widget** (below), which was a
 - [x] ~~**3. Wire Claude**~~ — done. `backend/voiceBrain.js` streams Haiku 4.5 with `buildVoiceSystemPrompt()` unchanged, splits the reply into sentences *as it arrives* via `sentences.js`, and aborts the in-flight turn when the caller speaks again (the `respondTo()` lesson). OpenRouter is the fallback and, since the Anthropic credits ran out on 2026-08-12, is what actually runs today — the switch cost one blank line in `.env` and no code edit, which is the first real test that "Switch providers by editing .env" was true rather than aspirational. It passed. **The "cache the system prompt" plan was wrong** — see the correction in "Own the voice stack" above; it is measured now, not assumed.
 - [x] ~~**4. Wire streaming TTS**~~ — done and **heard**. Cartesia Sonic over their TTS websocket, one socket per call rather than per sentence (opening one costs ~600ms, which would otherwise land on the front of every reply). Verified against the live account: raw `pcm_s16le` @ 44.1kHz, first chunk ~360ms after the request, **524ms from a real browser to first spoken audio**.
 - [x] ~~**5. Barge-in**~~ — implemented, **not yet observed** (it cannot fire without STT). When Deepgram reports speech during playback the relay aborts generation, advances the TTS context id so in-flight audio is dropped on arrival, and sends `clear` — which `voiceClient.js`'s existing regex already matches, so `flushPlayback()` runs untouched.
-- [ ] **6. Swap in Sarvam for Hindi** — the plumbing is in (`language` flows from `POST /api/voice/session` → the ticket → `makeTts()`), but **Sarvam itself is not implemented and there is no key**; asking for a non-English language throws a named error rather than quietly reading Hindi in an English voice. This is still the payoff no hosted English-first vendor gives us.
+- [x] ~~**6. Swap in Sarvam for Hindi**~~ — **done 2026-08-18, and for ten more languages than Hindi.** `backend/voiceSarvam.js` + `backend/voiceResample.js`; `saaras:v3-realtime` hears with `language_code=auto` and names the language on every final, `bulbul:v3` speaks eleven. Deepgram keeps English. The seam held again — `makeStt`/`makeTts` did not change shape, and `voiceClient.js` still has not been touched. `npm run voice:sarvam` proves it end to end. **What is left is not plumbing:** the prompt still tells the agent to refuse to switch, nothing sends a language from the browser, and detection is logged rather than acted on. See "UPSY speaks Indian languages now".
 - [ ] **7. Decide the Cartesia agent path's fate** — **deliberately kept**, not deleted, behind `VOICE_PROVIDER=cartesia`. It costs nothing to leave and it is the only fallback if our relay has a bad day. Revisit once the relay has carried real calls.
 
 **Still open, and honest about it:**

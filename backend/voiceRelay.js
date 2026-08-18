@@ -26,13 +26,13 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
-import { makeStt, sttConfigured, sttConfigError } from "./voiceStt.js";
+import { makeStt, sttConfigured, sttConfigError, sttStatusLine } from "./voiceStt.js";
 import { makeTts, ttsConfigured, ttsConfigError, ttsStatusLine, cacheablePhrases, prewarmPhrases, TTS_SAMPLE_RATE } from "./voiceTts.js";
 import { speakReply, brainConfigured, brainConfigError, brainStatusLine, MAX_HISTORY } from "./voiceBrain.js";
 import { pickAcknowledgement, allFixedPhrases } from "./voiceFillers.js";
 import { stretchGaps } from "./voicePacing.js";
 import { recordCall, mergeProfile } from "./voiceAccounts.js";
-import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
+import { buildIntroduction, buildVoiceSystemPrompt, fixedGreetings } from "./voicePrompt.js";
 import { fileCall, extractCallFacts, mergedProfile, fastAnswerPatch } from "./callExtract.js";
 import { agendaSnapshot, matchAgendaField, isConfidentMatch, deriveAll, getField } from "./callSchema.js";
 import { readAnswer } from "./fastAnswer.js";
@@ -44,7 +44,7 @@ import { verifyInstitute, claimKey } from "./instituteVerify.js";
 // caller and is deliberately left out. See the phrase cache in voiceTts.js.
 // Every fixed line, in every language, registered as cacheable so that whichever
 // ones actually get spoken are bought once rather than per call.
-cacheablePhrases([buildIntroduction(null), ...allFixedPhrases()]);
+cacheablePhrases([...fixedGreetings(), ...allFixedPhrases()]);
 
 /**
  * Buy the repeated English lines once, at boot, so no caller waits for them.
@@ -56,6 +56,13 @@ cacheablePhrases([buildIntroduction(null), ...allFixedPhrases()]);
  * bought all twelve Hindi lines.
  */
 export function warmVoiceCache() {
+  // English only, and now for a different reason than when this was written.
+  // The Hindi and Marathi lines ARE reachable — Sarvam speaks them — but buying
+  // them here would synthesise them through the English engine this prewarm
+  // builds, which is the exact mistake the comment above describes, just with a
+  // different provider on the other end. They are registered as cacheable, so
+  // the first call in each language buys them once and every later call in that
+  // language replays them.
   return prewarmPhrases([buildIntroduction(null), ...allFixedPhrases("en")]);
 }
 
@@ -67,6 +74,17 @@ export const RELAY_PATH = "/voice/stream";
 // time audio reaches us it is always 44.1kHz — no resampling anywhere in the
 // pipeline, in either direction.
 export const SAMPLE_RATE = 44100;
+
+// The three gates on switching language mid-call. See considerLanguage().
+//
+// Deliberately conservative, because the two failure modes are not symmetric:
+// staying in English for one extra turn is a small annoyance, while swapping
+// the voice back and forth mid-conversation is the thing a caller reports as
+// "it kept changing" and cannot be explained away. Loosen these against real
+// call logs — the relay logs every detection it declines to act on.
+const LANGUAGE_MIN_CONFIDENCE = Number(process.env.VOICE_LANG_MIN_CONFIDENCE || 0.75);
+const LANGUAGE_MIN_WORDS = Number(process.env.VOICE_LANG_MIN_WORDS || 3);
+const LANGUAGE_MIN_AGREEING = Number(process.env.VOICE_LANG_MIN_AGREEING || 2);
 
 // Echo mode is the roadmap's step 1 and stays in the file on purpose: it proves
 // the transport independently of every AI provider, so when a call is broken you
@@ -96,6 +114,41 @@ const SENTENCE_PAUSE_MS = Number(process.env.VOICE_SENTENCE_PAUSE_MS || 280);
 // reject stray echo without making a real interruption feel unresponsive; one
 // would let a leaked "yes" or "okay" from the agent's own speech cut it off.
 const BARGE_IN_MIN_WORDS = Number(process.env.VOICE_BARGE_IN_MIN_WORDS || 2);
+
+// ⚠️ A WORD COUNT ALONE DOES NOT TRANSFER TO INDIAN LANGUAGES, and this was
+// found on a real Marathi call, not reasoned out.
+//
+// The two-word rule exists because a caller on speakerphone leaks the agent's
+// own voice back into the mic, and echo-suppressed leakage rarely survives as
+// two clean ENGLISH words. Devanagari does not behave that way: its words are
+// short, and the recogniser happily splits mangled echo into two of them. The
+// call log has the agent cutting its own reply for `"वी कै"` — five characters
+// of nothing, which passed a two-word test comfortably.
+//
+// From the caller's side that is the agent breaking off mid-sentence, which is
+// exactly what "the voice is breaking" describes, and it is the same defect the
+// first real English calls hit ("she said yes, then stopped") arriving in a
+// language the original threshold was never measured against.
+//
+// So there is a character floor as well. A real interruption — "एक मिनट रुकिए",
+// "मला एक प्रश्न आहे" — clears it easily; echo debris does not.
+const BARGE_IN_MIN_CHARS = Number(process.env.VOICE_BARGE_IN_MIN_CHARS || 8);
+
+/**
+ * Is this transcript a real person interrupting, or the agent hearing itself?
+ *
+ * Deliberately conservative in the same direction as everything else here:
+ * missing a genuine interruption costs the caller one more sentence of talking
+ * over the agent, while acting on echo cuts the agent off mid-word and sounds
+ * broken. The second is much worse and much harder to explain.
+ */
+function looksLikeInterruption(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.split(/\s+/).length < BARGE_IN_MIN_WORDS) return false;
+  // Count letters, not the raw string: whitespace and punctuation are free.
+  return trimmed.replace(/[\s\p{P}]/gu, "").length >= BARGE_IN_MIN_CHARS;
+}
 
 // ⚠️ OFF (0). This shipped at 110ms and made the agent stutter mid-word on real
 // calls, on a laptop and a phone alike — the per-chunk gap detector cannot tell
@@ -224,22 +277,26 @@ function redeemTicket(token) {
   return ticket;
 }
 
-export function relayConfigured() {
-  return brainConfigured() && ttsConfigured();
+// Both take a language, because a deployment can be perfectly able to run an
+// English call and unable to run a Marathi one — one boolean stopped being able
+// to say that when a second provider arrived. No argument means English, which
+// is what every existing call site meant.
+export function relayConfigured(language = "en") {
+  return brainConfigured() && ttsConfigured(language);
 }
 
 // What is missing, specifically — the same reasoning as voiceCall.js's
 // voiceConfigError(): a bare "not configured" sends whoever hits this hunting
 // through the README.
-export function relayConfigError() {
+export function relayConfigError(language = "en") {
   if (relayMode() === "echo") return null; // echo needs no provider at all
-  return brainConfigError() || ttsConfigError();
+  return brainConfigError() || ttsConfigError(language);
 }
 
-export function relayStatusLine() {
+export function relayStatusLine(language = "en") {
   if (relayMode() === "echo") return "Voice relay: ECHO MODE (transport only, no AI)";
-  const hear = sttConfigured() ? "Deepgram" : "DEAF (no DEEPGRAM_API_KEY)";
-  const speak = ttsConfigured() ? ttsStatusLine() : "MUTE (no TTS key)";
+  const hear = sttConfigured(language) ? sttStatusLine(language) : "DEAF (no STT key)";
+  const speak = ttsConfigured(language) ? ttsStatusLine(language) : "MUTE (no TTS key)";
   return `Voice relay: ${hear} → ${brainStatusLine()} → ${speak}`;
 }
 
@@ -264,6 +321,14 @@ class RelayCall {
     this.stt = null;
     this.tts = null;
     this.history = [];
+    // What the agent is speaking RIGHT NOW, which is not the same as what the
+    // ticket asked for: a call that started in "auto" opens in English and
+    // moves once the caller has actually said something.
+    this.language = ticket.language === "auto" ? "en" : ticket.language || "en";
+    // Only meaningful on an auto call. Detections agreeing in a row, so one
+    // stray reading cannot move the call — see adoptLanguage().
+    this.detectionRun = { language: null, count: 0 };
+    this.languageLocked = false;
     // Turn serialisation, lifted from liveAssist.js's respondTo(): a caller who
     // speaks again mid-generation must abort the in-flight turn, not race it.
     // Two replies interleaving into one audio queue is unintelligible.
@@ -391,7 +456,7 @@ class RelayCall {
         // suppression in the browser mangles the leaked audio enough that it
         // rarely survives as clean multi-word text, while a person actually
         // interrupting always does.
-        if (this.speaking && text && text.trim().split(/\s+/).length >= BARGE_IN_MIN_WORDS) {
+        if (this.speaking && looksLikeInterruption(text)) {
           this.handleBargeIn(text);
         }
         // Always final:false, even for a Deepgram result marked is_final.
@@ -404,6 +469,8 @@ class RelayCall {
       },
       onEagerTurn: (text) => this.startSpeculation(text),
       onTurn: (text) => this.handleTurn(text),
+      // Only the Sarvam path reports this, and only on a language=auto call.
+      onLanguage: (short, confidence, text) => this.considerLanguage(short, confidence, text),
       onError: (m) => console.error(`[voice:relay] ${m}`),
     });
 
@@ -651,7 +718,10 @@ class RelayCall {
     // acknowledgement of it. Deliberately not awaited: the point is that this
     // plays while generation runs, and the speech queue keeps the ordering.
     if (!(adopt && spec.buffered.length)) {
-      const ack = pickAcknowledgement(text, this.ticket.language, this.lastAck);
+      // this.language, not the ticket's: after an auto call has switched, an
+      // English "Got it." in front of a Marathi answer is the agent audibly
+      // falling out of the caller's language for one beat.
+      const ack = pickAcknowledgement(text, this.language, this.lastAck);
       if (ack) {
         this.lastAck = ack;
         this.sendAgentText(ack);
@@ -749,10 +819,18 @@ class RelayCall {
 
   async speakSentence(text, signal) {
     if (!text || !this.tts || this.closed) return;
+    // Diagnostic for "she greeted me twice", reported from a real call and NOT
+    // yet explained: the saved transcript holds exactly one greeting turn, so
+    // whatever repeated was the AUDIO rather than the decision to speak. One
+    // line per spoken sentence with the bytes it produced makes that visible —
+    // the same sentence appearing twice, or once at double length, says which.
+    // Cheap enough to leave on; remove once the cause is known.
+    let spokenBytes = 0;
     await this.tts.speak(
       text,
       (pcm) => {
         if (signal?.aborted || this.closed) return;
+        spokenBytes += pcm.length;
         // Slow her down. Cartesia runs 195-222 wpm and its own speed control is
         // inert on sonic-2, so the pacing is fixed here by lengthening the gaps
         // she already leaves between words — no pitch change, speech untouched.
@@ -760,6 +838,9 @@ class RelayCall {
         send(this.ws, { event: "media_output", media: { payload: paced.toString("base64") } });
       },
       signal
+    );
+    this.log(
+      `spoke ${(spokenBytes / 2 / SAMPLE_RATE).toFixed(2)}s: "${String(text).slice(0, 60)}"`
     );
     // The pause goes into the audio stream rather than being a timer, so the
     // client's playback queue schedules it exactly like speech — a setTimeout
@@ -861,17 +942,111 @@ class RelayCall {
    * agent. A rebuild that throws must never take the call down, so the old
    * prompt simply stays in place.
    */
+  /**
+   * Decide whether the caller is speaking something other than what we opened in.
+   *
+   * ⚠️ THE HARD PART IS NOT DETECTING, IT IS NOT FLAPPING. Sarvam reports a
+   * language on every single final, and real callers here are code-mixed —
+   * "mujhe fifteen lakh ka loan chahiye" is one sentence with two languages in
+   * it, and consecutive finals from the same person genuinely come back as
+   * different languages. Acting on each one individually would swap the voice
+   * mid-conversation, repeatedly, which is far worse than simply staying in one
+   * language for the whole call.
+   *
+   * So three gates, and all three exist because of that:
+   *   · a confidence floor, because a low-confidence reading is a guess
+   *   · a minimum word count, because "haan" is not evidence of anything
+   *   · agreement across consecutive finals, so one reading cannot move a call
+   *
+   * And once it moves, IT MOVES ONCE. A caller who was detected as Marathi and
+   * then says an English sentence has not changed language — they have said an
+   * English sentence, which is completely normal here. The model is told to
+   * follow the caller turn by turn (see voicePrompt.js), so that case is
+   * handled where it should be, in the reply rather than in the voice.
+   */
+  considerLanguage(short, confidence, text) {
+    if (this.closed) return;
+    // A call that asked for a specific language asked for it. Detection on that
+    // call is information, not instruction.
+    if (this.ticket.language !== "auto" || this.languageLocked) return;
+    if (!short || short === this.language) {
+      this.detectionRun = { language: null, count: 0 };
+      return;
+    }
+    if (confidence < LANGUAGE_MIN_CONFIDENCE) return;
+    // Short utterances are where detection is least reliable and least
+    // meaningful — a one-word answer sounds like several languages at once.
+    if (String(text || "").trim().split(/\s+/).length < LANGUAGE_MIN_WORDS) return;
+
+    this.detectionRun =
+      this.detectionRun.language === short
+        ? { language: short, count: this.detectionRun.count + 1 }
+        : { language: short, count: 1 };
+
+    if (this.detectionRun.count < LANGUAGE_MIN_AGREEING) return;
+    this.adoptLanguage(short, confidence);
+  }
+
+  /**
+   * Move the call into a language. Prompt, then voice, then page.
+   *
+   * ⚠️ THE VOICE SWITCH GOES ON THE SPEECH CHAIN, and an earlier version of
+   * this method did not — it awaited tts.setLanguage() directly. That looked
+   * safe on the reasoning that switching only happens between turns, and it is
+   * wrong: this runs from the STT callback, which fires whenever the recogniser
+   * finalises a transcript, and that is completely independent of whether a
+   * sentence is currently being spoken. Changing the language replaces the TTS
+   * socket, so a sentence mid-flight found `this.ws` null underneath it. The
+   * test caught it as `speech failed: Cannot read properties of null` — the
+   * same shape as the respondTo() race that produced two spoken replies, and
+   * for the same underlying reason: a slow operation started off the queue that
+   * everything else is ordered by.
+   *
+   * Queued instead, so the switch lands between two sentences the way every
+   * other spoken thing on this call does.
+   */
+  adoptLanguage(short, confidence) {
+    this.languageLocked = true;
+    this.language = short;
+    this.log(`switching to ${short} (confidence ${confidence.toFixed(2)}, ${LANGUAGE_MIN_AGREEING} turns agreeing)`);
+
+    // The prompt first, and NOT on the chain: it is a pure rebuild with nothing
+    // to race, and doing it now means the very next turn is generated in the
+    // new language even if the voice is still catching up. The other order —
+    // voice first — gives the caller English sentences in a Marathi voice,
+    // which is worse than either on its own.
+    this.refreshPrompt(this.profile);
+
+    this.speechChain = this.speechChain
+      .catch(() => {})
+      .then(() => this.tts?.setLanguage(short))
+      .catch((e) => {
+        // A voice that will not switch is a degraded call, not a dead one: the
+        // agent carries on in the voice it already had rather than dropping
+        // the caller. The words are already right, which is the larger half.
+        console.error(`[voice:relay] could not switch the voice to ${short}:`, e.message);
+      });
+
+    // So the page can say so. A caller who is not told the machine noticed will
+    // often repeat themselves in English to be safe, which undoes the whole
+    // thing — and reads to them as detection having failed.
+    send(this.ws, { event: "language", language: short });
+  }
+
   refreshPrompt(profile) {
     if (this.closed) return;
     try {
       const before = this.ticket.systemPrompt;
       // An anonymous caller has no context object, but what this call has
       // established still narrows the agenda and the document list mid-call.
-      const rebuilt = buildVoiceSystemPrompt({
-        ...(this.ticket.context || {}),
-        priorFacts: profile,
-        alreadyAsked: [...this.askedThisCall],
-      });
+      const rebuilt = buildVoiceSystemPrompt(
+        {
+          ...(this.ticket.context || {}),
+          priorFacts: profile,
+          alreadyAsked: [...this.askedThisCall],
+        },
+        this.language
+      );
       if (rebuilt && rebuilt !== before) {
         this.ticket.systemPrompt = rebuilt;
         this.log("re-aimed: the agenda and the document list now match what this call has established");

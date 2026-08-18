@@ -37,8 +37,32 @@
 // provider has an Indian-accented voice worth using.
 
 import WebSocket from "ws";
+import {
+  SarvamTts,
+  sarvamConfigured,
+  sarvamConfigError,
+  sarvamStatusLine,
+  normalizeLanguage,
+} from "./voiceSarvam.js";
 
 const PROVIDER = (process.env.TTS_PROVIDER || "deepgram").toLowerCase();
+
+// Which engine speaks, given the language of the call.
+//
+// This is not a preference and it is not configurable away: Aura and Sonic do
+// not have an Indian-language voice between them, so anything that is not
+// English MUST be Sarvam or it cannot be spoken at all. English keeps whatever
+// TTS_PROVIDER says, which is Aura by default.
+//
+// `auto` goes to Sarvam even though the call opens in English, and that is a
+// deliberate trade. The greeting happens before the caller has said a word, so
+// there is nothing to detect from yet — but if English were spoken by Aura,
+// switching to Hindi on the first turn would mean swapping ENGINES mid-call
+// rather than changing one config field. Paying for Sarvam's English voice on
+// auto-detect calls buys a switch that is a reconnect instead of a rebuild.
+function ttsProviderFor(language) {
+  return normalizeLanguage(language) === "en" ? PROVIDER : "sarvam";
+}
 
 const DEEPGRAM_HOST = "api.deepgram.com";
 
@@ -110,14 +134,22 @@ const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "9626c31c-bec5-4cca-baa8
 // pause between sentences (VOICE_SENTENCE_PAUSE_MS in voiceRelay.js). Do not
 // re-add a `speed` field here expecting it to do something.
 
-export function ttsConfigured() {
-  if (PROVIDER === "cartesia") return Boolean(process.env.CARTESIA_API_KEY);
+// Language-aware for the same reason the STT ones are: a deployment can be
+// perfectly able to speak English and unable to speak Marathi, and one boolean
+// cannot say that. No argument means English, which is what every existing call
+// site meant.
+export function ttsConfigured(language = "en") {
+  const provider = ttsProviderFor(language);
+  if (provider === "sarvam") return sarvamConfigured();
+  if (provider === "cartesia") return Boolean(process.env.CARTESIA_API_KEY);
   return Boolean(process.env.DEEPGRAM_API_KEY);
 }
 
-export function ttsConfigError() {
-  if (ttsConfigured()) return null;
-  if (PROVIDER === "cartesia") {
+export function ttsConfigError(language = "en") {
+  if (ttsConfigured(language)) return null;
+  const provider = ttsProviderFor(language);
+  if (provider === "sarvam") return sarvamConfigError();
+  if (provider === "cartesia") {
     return "CARTESIA_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak.";
   }
   return "DEEPGRAM_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak. (The same key does the hearing.)";
@@ -125,8 +157,10 @@ export function ttsConfigError() {
 
 // For the boot line, so which voice is live is visible at a glance rather than
 // discovered on a call.
-export function ttsStatusLine() {
-  if (PROVIDER === "cartesia") return `Cartesia Sonic (${CARTESIA_MODEL})`;
+export function ttsStatusLine(language = "en") {
+  const provider = ttsProviderFor(language);
+  if (provider === "sarvam") return sarvamStatusLine(language);
+  if (provider === "cartesia") return `Cartesia Sonic (${CARTESIA_MODEL})`;
   return `Deepgram Aura (${DEEPGRAM_VOICE})`;
 }
 
@@ -176,6 +210,13 @@ class AuraTts {
     // and settleSocket() below drains it before the next Speak.
     this.dirty = false;
     this.clearedWaiter = null;
+  }
+
+  // Identifies the voice, not the engine: two engines that happen to produce
+  // identical audio could share a cache entry, and two voices from one provider
+  // must never share one. See the phrase cache below.
+  get voiceId() {
+    return `deepgram:${DEEPGRAM_VOICE}`;
   }
 
   connect() {
@@ -294,6 +335,35 @@ class AuraTts {
     }
   }
 
+  /**
+   * Cut a socket loose so nothing it says afterwards can be heard.
+   *
+   * ⚠️ DETACH THE LISTENERS, and close() alone does not do it. `close()` starts
+   * a closing HANDSHAKE: the socket stays open for a round trip and keeps
+   * delivering frames that were already generated. Those frames still reach
+   * handleMessage(), which — because Aura's audio carries no request id — hands
+   * them to whatever `pending` is current by then, i.e. the NEXT sentence.
+   *
+   * That is the same defect this class already documents at the top, arriving by
+   * a second route. The Clear/Cleared handshake protects the socket we KEEP;
+   * this protects against the socket we THROW AWAY. Reproduced on the Sarvam
+   * engine, which has identical framing: interrupt a long sentence, say a short
+   * one, and one run in three came back at 2.6x its length. The check in
+   * voice-sarvam-check.js holds both engines to it now.
+   */
+  discard(ws) {
+    if (!ws) return;
+    ws.removeAllListeners("message");
+    ws.removeAllListeners("close");
+    ws.removeAllListeners("error");
+    ws.removeAllListeners("open");
+    try {
+      ws.terminate();
+    } catch (e) {
+      /* already gone */
+    }
+  }
+
   // Drop the current socket and open a fresh one. Distinct from close(), which
   // ends the engine for good.
   async reconnect() {
@@ -301,13 +371,7 @@ class AuraTts {
     this.ws = null;
     this.ready = null;
     this.clearedWaiter = null;
-    if (ws && ws.readyState <= WebSocket.OPEN) {
-      try {
-        ws.close();
-      } catch (e) {
-        /* already gone */
-      }
-    }
+    this.discard(ws);
     if (!this.closed) await this.connect();
   }
 
@@ -398,13 +462,7 @@ class AuraTts {
     const ws = this.ws;
     this.ws = null;
     this.ready = null;
-    if (ws && ws.readyState <= WebSocket.OPEN) {
-      try {
-        ws.close();
-      } catch (e) {
-        /* already gone */
-      }
-    }
+    this.discard(ws);
   }
 }
 
@@ -420,6 +478,10 @@ class CartesiaTts {
     this.contextId = null;
     this.pending = null;
     this.closed = false;
+  }
+
+  get voiceId() {
+    return `cartesia:${CARTESIA_VOICE}`;
   }
 
   connect() {
@@ -562,19 +624,45 @@ class CartesiaTts {
 // Deliberately NOT a general-purpose cache. Only exact strings from a known
 // fixed set are stored, because a model's replies never repeat and caching them
 // would grow without bound while never being read.
-const phraseCache = new Map(); // text -> Buffer[]
+// Which texts are worth keeping, independent of who says them.
+const cacheableText = new Set();
+
+// ⚠️ KEYED BY VOICE, NOT BY TEXT, and that stopped being optional the day a
+// second engine could speak English.
+//
+// This map used to be `text -> Buffer[]`. That was correct while exactly one
+// engine existed: the same words always came back in the same voice. With
+// Sarvam on the same process — and `auto` calls deliberately routing English
+// through it so a mid-call switch is a reconnect rather than an engine swap —
+// a bare text key means the first call to synthesise "Got it." decides which
+// voice EVERY later call hears it in. The agent would answer in athena and
+// acknowledge in priya, on alternating turns, for the rest of the process's
+// life. Cheap to prevent, and near-impossible to diagnose from a bug report
+// that can only say "the voice keeps changing".
+const phraseCache = new Map(); // `${voiceId} ${text}` -> Buffer[]
+
+// NUL as the separator because it is the one character that cannot appear in
+// either half — not in a provider's voice id, and not in a sentence anyone says
+// out loud. A space or a colon works until the day a voice id contains one, and
+// then two different voices silently share an entry, which is the exact bug this
+// key exists to prevent.
+//
+// ⚠️ Written as an ESCAPE, never as a literal NUL byte in this file. One raw NUL
+// makes git classify the whole source as binary, and every later diff of this
+// file then shows as an unreviewable whole-file replacement. That happened once
+// while this very line was being written, and it is invisible in an editor.
+
+const cacheKey = (voiceId, text) => `${voiceId}\u0000${text}`;
 
 // A personalised greeting ("Hi Aarav, this is UPSY again") is unique per caller
 // and per call count, so it is not cacheable and is not worth trying to be.
 // Only the anonymous opener and the acknowledgements qualify.
 export function cacheablePhrases(phrases) {
-  for (const p of phrases) if (p && !phraseCache.has(p)) phraseCache.set(p, null);
+  for (const p of phrases) if (p) cacheableText.add(p);
 }
 
 export function phraseCacheStats() {
-  let ready = 0;
-  for (const v of phraseCache.values()) if (v) ready++;
-  return { known: phraseCache.size, ready };
+  return { known: cacheableText.size, ready: phraseCache.size };
 }
 
 /**
@@ -596,10 +684,17 @@ export function phraseCacheStats() {
  */
 export async function prewarmPhrases(phrases) {
   if (!ttsConfigured()) return { warmed: 0, skipped: "no TTS key" };
-  const wanted = phrases.filter((p) => p && !phraseCache.get(p));
-  if (!wanted.length) return { warmed: 0 };
 
+  // Built before the filter, because what is already warm now depends on WHICH
+  // VOICE is going to say it — a cache full of athena's acknowledgements warms
+  // nothing for a Sarvam call.
   const engine = makeTts({ language: "en", onError: () => {} });
+  const wanted = phrases.filter((p) => p && !phraseCache.has(cacheKey(engine.voiceId, p)));
+  if (!wanted.length) {
+    engine.close();
+    return { warmed: 0 };
+  }
+
   let warmed = 0;
   try {
     for (const phrase of wanted) {
@@ -625,8 +720,23 @@ class CachedTts {
     this.engine = engine;
   }
 
+  // Passed through so callers (and the prewarm) can ask what voice they are
+  // about to get without reaching inside the wrapper.
+  get voiceId() {
+    return this.engine.voiceId;
+  }
+
+  /** Only Sarvam can do this; the English-only engines simply have nothing to do. */
+  async setLanguage(language) {
+    if (typeof this.engine.setLanguage === "function") await this.engine.setLanguage(language);
+  }
+
   async speak(text, onAudio, signal) {
-    const key = text?.trim();
+    const phrase = text?.trim();
+    // Read the voice id per sentence rather than once per engine: Sarvam's
+    // changes under setLanguage(), and a stale id would serve Hindi audio for
+    // an English line after a switch.
+    const key = phrase && cacheableText.has(phrase) ? cacheKey(this.engine.voiceId, phrase) : null;
     const cached = key ? phraseCache.get(key) : undefined;
 
     if (cached) {
@@ -641,7 +751,7 @@ class CachedTts {
     }
 
     // Not cached, but worth keeping? Capture on the way past.
-    const collecting = key && phraseCache.has(key) ? [] : null;
+    const collecting = key ? [] : null;
     await this.engine.speak(
       text,
       (pcm) => {
@@ -665,22 +775,29 @@ class CachedTts {
 /**
  * Build the TTS engine for a call.
  *
- * The language argument is the seam for Hindi: Sarvam speaks it well and neither
- * Deepgram nor Cartesia has an Indian-accented voice worth using. Swapping here
- * changes nothing above this function — the relay only knows "give me PCM for
- * this sentence".
+ * This function used to throw for every language but English, on the reasoning
+ * that an honest error beats an English voice reading Hindi text — which was
+ * right, and stayed right for as long as there was nothing behind the seam.
+ * There is now: voiceSarvam.js. Swapping here still changes nothing above this
+ * function, because the relay only knows "give me PCM for this sentence".
+ *
+ * The seam held, which was the thing actually being tested when it was written.
  */
 export function makeTts({ language = "en", onError } = {}) {
-  if (language !== "en") {
-    // Deliberately not implemented rather than silently falling through to an
-    // English voice reading Hindi text, which sounds worse than an honest error.
-    throw new Error(
-      "Hindi TTS (Sarvam) is not implemented yet — the relay accepts a language so " +
-        "this swap is a one-file change, but nobody has written or tested it. Use language=en."
-    );
+  const lang = normalizeLanguage(language);
+  const provider = ttsProviderFor(lang);
+
+  if (provider === "sarvam") {
+    if (!sarvamConfigured()) {
+      // Still a throw, and for the original reason: falling back to an English
+      // voice would produce a call that sounds like it is working and is not.
+      throw new Error(sarvamConfigError());
+    }
+    return new CachedTts(new SarvamTts({ language: lang, onError }));
   }
+
   const engine =
-    PROVIDER === "cartesia"
+    provider === "cartesia"
       ? new CartesiaTts({ language: "en", onError })
       : new AuraTts({ onError });
   return new CachedTts(engine);

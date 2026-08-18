@@ -55,8 +55,8 @@ export const SAMPLE_RATE = 44100;
 // this process. Ten minutes covers a normal call; a longer one reconnects.
 const TOKEN_TTL_SECONDS = 600;
 
-export function voiceConfigured() {
-  if (PROVIDER === "upsy") return !relayConfigError();
+export function voiceConfigured(language = "en") {
+  if (PROVIDER === "upsy") return !relayConfigError(language);
   if (PROVIDER === "cartesia") {
     return Boolean(process.env.CARTESIA_API_KEY && process.env.CARTESIA_AGENT_ID);
   }
@@ -66,8 +66,8 @@ export function voiceConfigured() {
 // What is missing, specifically — a bare "not configured" sends whoever hits
 // this hunting through the README, which is the failure mode the startup
 // reader-priority log was added to avoid elsewhere in this repo.
-export function voiceConfigError() {
-  if (PROVIDER === "upsy") return relayConfigError();
+export function voiceConfigError(language = "en") {
+  if (PROVIDER === "upsy") return relayConfigError(language);
   if (PROVIDER !== "cartesia") {
     return `VOICE_PROVIDER is "${PROVIDER}", but only "upsy" and "cartesia" are implemented.`;
   }
@@ -279,8 +279,14 @@ function createRelaySession({ leadId, accountId, context, origin, language }) {
     // must not be able to name the account a transcript gets filed under.
     accountId,
     language,
-    systemPrompt: buildVoiceSystemPrompt(context),
-    introduction: buildIntroduction(context),
+    // "auto" is not a language anything can be written in, so both of these are
+    // built for what the call actually OPENS in — English — and the relay
+    // rebuilds them the moment detection names something else. The greeting for
+    // auto is not plain English though: it invites the caller to use their own
+    // language, because detection cannot do anything until they say something,
+    // and someone who assumes the machine only speaks English will speak English.
+    systemPrompt: buildVoiceSystemPrompt(context, language === "auto" ? "en" : language),
+    introduction: buildIntroduction(context, language),
     // Kept so the relay can REBUILD the prompt mid-call once it has read new
     // facts out of the conversation. Without it the document list and the
     // agenda would be frozen at whatever was known when the phone rang, and a
@@ -324,11 +330,17 @@ function createRelaySession({ leadId, accountId, context, origin, language }) {
  *   or neither may be present. See mergeCallerContext().
  * @param {string|null} opts.origin - this server's own origin, used to build
  *   the relay URL on the "upsy" path. Ignored by the Cartesia path.
- * @param {string} opts.language - "en" today; the seam for Hindi via Sarvam.
+ * @param {string} opts.language - "en", any language voiceSarvam.js carries, or
+ *   "auto" to let the recogniser name it from the caller's first words.
  * @returns {Promise<object>} everything the browser needs to open the socket.
  */
 export async function createVoiceSession({ leadId = null, account = null, origin = null, language = "en" } = {}) {
-  const err = voiceConfigError();
+  // Checked for THIS call's language, not in general. A deployment with a
+  // Deepgram key and no Sarvam key can run English calls perfectly well, and
+  // the Marathi request is the only one that should be refused — refused HERE,
+  // with a sentence naming the missing key, rather than by makeTts throwing
+  // after the caller's socket has already opened and they are listening to it.
+  const err = voiceConfigError(language);
   if (err) throw Object.assign(new Error(err), { code: "NOT_CONFIGURED" });
 
   const context = mergeCallerContext(await loadCallerContext(leadId), account);

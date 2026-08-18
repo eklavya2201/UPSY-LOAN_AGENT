@@ -18,8 +18,20 @@
 //    a mis-picked line has to read as a harmless "let me look at that", never as
 //    a claim about their case.
 //
-// Hindi lines are written and ready but unreachable until Sarvam lands (see
-// voiceTts.js) — kept here so that swap is a data change, not a rewrite.
+// ── Which languages are here, and why not all eleven ────────────────────────
+// English, Hindi and Marathi. The agent can CONVERSE in all eleven Sarvam
+// carries, because those replies are written by the model — but these lines are
+// written copy, and writing customer-facing copy in a language you cannot read
+// back is how the voice got picked wrong twice.
+//
+// A language with no bucket here gets SILENCE rather than an English line. See
+// pickAcknowledgement for why that is the safer failure.
+//
+// Note the deliberate English loan words inside the Hindi and Marathi lines
+// ("documents", "loan", "repayment", "case"). That is not laziness — it is how
+// these conversations are actually held, and it matches the instruction the
+// system prompt gives the model in voicePrompt.js. Pure translated vocabulary
+// reads as a form being recited.
 
 const BUCKETS = [
   {
@@ -30,8 +42,12 @@ const BUCKETS = [
       "Right, let me go through the documents with you.",
     ],
     hi: [
-      "Achha, to aap jaanna chahte hain ki kaun se documents lagenge.",
-      "Theek hai, main aapko documents ke baare mein batata hoon.",
+      "अच्छा, तो आप जानना चाहते हैं कि कौन से documents लगेंगे।",
+      "ठीक है, मैं आपको documents के बारे में बताती हूँ।",
+    ],
+    mr: [
+      "बरं, तुम्हाला कोणते documents लागतील हे जाणून घ्यायचं आहे.",
+      "ठीक आहे, मी तुम्हाला documents बद्दल सांगते.",
     ],
   },
   {
@@ -42,8 +58,12 @@ const BUCKETS = [
       "Right, let me think about what that would look like for you.",
     ],
     hi: [
-      "Achha, to aap jaanna chahte hain ki kitna loan mil sakta hai.",
-      "Theek hai, main dekhta hoon ki aapke case mein kya ho sakta hai.",
+      "अच्छा, तो आप जानना चाहते हैं कि कितना loan मिल सकता है।",
+      "ठीक है, मैं देखती हूँ कि आपके case में क्या हो सकता है।",
+    ],
+    mr: [
+      "बरं, तुम्हाला किती loan मिळू शकतं हे जाणून घ्यायचं आहे.",
+      "ठीक आहे, मी बघते तुमच्या case मध्ये काय होऊ शकतं.",
     ],
   },
   {
@@ -54,8 +74,12 @@ const BUCKETS = [
       "Right, let me walk you through how the repayment works.",
     ],
     hi: [
-      "Achha, to baat repayment ki hai.",
-      "Theek hai, main aapko batata hoon ki repayment kaise hota hai.",
+      "अच्छा, तो बात repayment की है।",
+      "ठीक है, मैं आपको बताती हूँ कि repayment कैसे होता है।",
+    ],
+    mr: [
+      "बरं, हा प्रश्न repayment चा आहे.",
+      "ठीक आहे, मी सांगते repayment कसं होतं ते.",
     ],
   },
   {
@@ -66,8 +90,12 @@ const BUCKETS = [
       "Right, let me think about the co-applicant side of it.",
     ],
     hi: [
-      "Achha, to baat aapke co-applicant ki hai.",
-      "Theek hai, main co-applicant ke baare mein sochta hoon.",
+      "अच्छा, तो बात आपके co-applicant की है।",
+      "ठीक है, मैं co-applicant के बारे में सोचती हूँ।",
+    ],
+    mr: [
+      "बरं, हा प्रश्न तुमच्या co-applicant चा आहे.",
+      "ठीक आहे, मी co-applicant बद्दल बघते.",
     ],
   },
   {
@@ -78,8 +106,12 @@ const BUCKETS = [
       "Right, let me take you through it.",
     ],
     hi: [
-      "Achha, to aap jaanna chahte hain ki yeh kaise hota hai.",
-      "Theek hai, main aapko poora process batata hoon.",
+      "अच्छा, तो आप जानना चाहते हैं कि यह कैसे होता है।",
+      "ठीक है, मैं आपको पूरा process बताती हूँ।",
+    ],
+    mr: [
+      "बरं, तुम्हाला हे कसं होतं ते जाणून घ्यायचं आहे.",
+      "ठीक आहे, मी तुम्हाला पूर्ण process सांगते.",
     ],
   },
 ];
@@ -102,7 +134,15 @@ const BUCKETS = [
 // enough that the caller is never waiting on the filler itself.
 const RECEIPTS = {
   en: ["Got it.", "Right.", "Okay.", "Sure.", "Understood.", "Okay, got it."],
-  hi: ["Theek hai.", "Achha.", "Samajh gaya.", "Haan, theek hai."],
+  // Devanagari, not the romanised "Theek hai" these started as. bulbul is given
+  // target_language_code=hi-IN and expects the script that goes with it; Latin
+  // Hindi is a different input and not the one it was built for.
+  //
+  // Feminine verb forms, because the voice is female. The line these replace was
+  // "Samajh gaya" — masculine, and wrong out of the mouth it was always going to
+  // come out of.
+  hi: ["ठीक है।", "अच्छा।", "समझ गई।", "जी, ठीक है।", "हाँ जी।"],
+  mr: ["ठीक आहे.", "बरं.", "समजलं.", "हो, ठीक आहे."],
 };
 
 // Neither a question nor a real answer — "yes", "okay", "hmm". Says nothing at
@@ -133,7 +173,21 @@ function pickFresh(options, lastUsed) {
  * @returns {string|null}
  */
 export function pickAcknowledgement(question, language = "en", lastUsed = null) {
-  const lang = language === "hi" ? "hi" : "en";
+  // ⚠️ SILENCE IS THE FALLBACK, NOT ENGLISH.
+  //
+  // This used to be `language === "hi" ? "hi" : "en"`, which was right when
+  // those were the only two languages that could ever be asked for. Now that
+  // eleven can be, that line would answer a Telugu caller's Telugu sentence
+  // with "Got it." — the agent audibly dropping out of their language for one
+  // beat, on most turns, which reads as broken rather than as a filler.
+  //
+  // The cost of returning null is a ~1.5s silence while the model writes, which
+  // is the gap this module exists to hide and is the one the agent lived with
+  // for months. That is a much smaller failure than sounding broken. Writing
+  // these lines in a language nobody here can read back is the larger risk, so
+  // a language earns its bucket when a speaker adds one.
+  const lang = RECEIPTS[language] ? language : null;
+  if (!lang) return null;
   const text = String(question || "").trim();
   if (!text) return null;
 
@@ -174,9 +228,14 @@ export function allFixedPhrases(language) {
   // sent a dozen Hindi lines to an English voice to be synthesised and paid for.
   // The buckets already know which is which; guessing from the text was never
   // necessary.
-  const langs = language ? [language] : ["en", "hi"];
+  const langs = language ? [language] : Object.keys(RECEIPTS);
   const out = [];
   for (const bucket of BUCKETS) for (const l of langs) out.push(...(bucket[l] || []));
   for (const l of langs) out.push(...(RECEIPTS[l] || []));
   return out;
+}
+
+/** Which languages have acknowledgements written, so callers can check rather than guess. */
+export function fillerLanguages() {
+  return Object.keys(RECEIPTS);
 }

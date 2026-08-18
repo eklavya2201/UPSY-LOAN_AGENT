@@ -533,7 +533,11 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
     const res = await fetch("/api/voice/session", {
       method: "POST",
       headers: headers,
-      body: JSON.stringify({ leadId: opts.leadId || null }),
+      // language is the one field in here that changes what the CALL is rather
+      // than who it is with. Still opaque to this file — it is passed to the
+      // server and never inspected, which keeps the "knows nothing about loans"
+      // rule intact and means adding a language needs no change here.
+      body: JSON.stringify({ leadId: opts.leadId || null, language: opts.language || null }),
     });
     const session = await res.json().catch(() => ({}));
     if (!res.ok) {

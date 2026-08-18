@@ -34,6 +34,7 @@
     briefSub: $("briefSub"),
     briefMsg: $("briefMsg"),
     devices: $("devices"),
+    langSelect: $("langSelect"),
     micSelect: $("micSelect"),
     spkWrap: $("spkWrap"),
     spkSelect: $("spkSelect"),
@@ -793,6 +794,23 @@
     error: "Couldn't connect",
   };
 
+  // For the "Speaking in …" line when detection moves the call. Names only —
+  // the picker in the HTML is the source of truth for what can be chosen, and
+  // duplicating that list here would be two places to forget.
+  const LANGUAGE_NAMES = {
+    en: "English",
+    hi: "Hindi",
+    mr: "Marathi",
+    te: "Telugu",
+    ta: "Tamil",
+    kn: "Kannada",
+    ml: "Malayalam",
+    bn: "Bengali",
+    gu: "Gujarati",
+    pa: "Punjabi",
+    od: "Odia",
+  };
+
   function startTimer() {
     clearInterval(timerId);
     timerId = setInterval(function () {
@@ -821,6 +839,11 @@
         // against it. Absent for someone who skipped sign-in, which is a
         // supported call, just not a remembered one.
         authToken: storedToken(),
+        // "auto" lets the recogniser name the language from the caller's first
+        // words; anything else pins it for the whole call. The server
+        // normalises and falls back to English on anything it does not know, so
+        // a stale cached page cannot break a call by sending a dead value.
+        language: (el.langSelect && el.langSelect.value) || "auto",
         deviceId: el.micSelect.value || null,
         sinkId: el.spkWrap.hidden ? null : el.spkSelect.value || null,
         onStatus: function (state, detail) {
@@ -857,6 +880,15 @@
           // The relay matched the agent's sentence to a question — light it.
           if (msg && msg.event === "focus" && typeof msg.branch === "string") {
             focusField(msg.branch + (msg.field ? "." + msg.field : ""));
+            return;
+          }
+          // Detection heard the caller's own language and the agent has moved
+          // to it. Worth saying on screen: a caller who is not told the machine
+          // noticed will often repeat themselves in English to be safe, which
+          // is exactly the behaviour that makes detection look like it failed.
+          if (msg && msg.event === "language" && typeof msg.language === "string") {
+            var named = LANGUAGE_NAMES[msg.language];
+            if (named) el.callStatus.textContent = "Speaking in " + named;
             return;
           }
           // The relay tells us what it is doing — listening / thinking /

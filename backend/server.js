@@ -28,6 +28,7 @@ import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
+import { normalizeLanguage } from "./voiceSarvam.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { recordReview, listReviews, reviewSummary, parseRating, isPoorRating, reviewOpsMessage } from "./reviews.js";
 import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail, mergeProfile } from "./voiceAccounts.js";
@@ -1078,7 +1079,15 @@ app.post("/api/voice/session", async (req, res) => {
       // is for it never to be in the object that builds it.
       account: publicAccount(account),
       origin: `${proto}://${req.get("host")}`,
-      language: req.body?.language === "hi" ? "hi" : "en",
+      // Anything Sarvam can carry, plus "auto" to let the recogniser decide from
+      // the caller's first words. Normalised rather than compared, so "hi-IN",
+      // "HI" and "hi" all land in the same place — the value arrives from a
+      // browser and eventually from an institute's own link, and neither is
+      // going to be careful about case.
+      //
+      // Unknown values fall back to English rather than erroring: a caller whose
+      // page sent a typo should get a call in English, not no call.
+      language: normalizeLanguage(req.body?.language),
     });
     const who = session.caller.known
       ? `lead ${leadId}`

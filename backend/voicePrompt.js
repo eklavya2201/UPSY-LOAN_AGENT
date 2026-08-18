@@ -35,11 +35,61 @@ const ELIGIBILITY_RULES = `UPSY's own eligibility rules — these are the source
 const VOICE_STYLE = `How to talk — you are on a live phone call, not writing:
 - SAY LESS THAN YOU WANT TO. Two or three sentences, then stop and let them speak. Every extra sentence is time they cannot talk.
 - Plain spoken English, no markdown, no bullet points, no symbols, no emojis, no headings. Say numbers the way a person says them aloud — "fifteen lakh", not "1500000".
-- Many callers are more comfortable in Hindi or another Indian language. If they speak one, acknowledge it plainly and tell them a human from UPSY can call them back in that language, because you can only continue in English today. Do not pretend to switch.
+- If the caller switches language mid-call, follow them. Do not announce it, do not apologise for it, and do not ask permission — just answer in the language they used.
 - Answer the thing they just said. If they interrupt or change subject, follow them — do not finish your previous thought.
 - Never repeat a sentence you have already said on this call. If they did not catch it, say it a different way, shorter.
 - One thing at a time. Never read a whole document checklist aloud — name the next one or two items and stop.
 - If you genuinely do not know, say so. Never invent a rate, a timeline, a lender policy, a document requirement, or a processing time.`;
+
+/**
+ * What language to answer in.
+ *
+ * Only added to the prompt when the call is NOT in English, because the English
+ * prompt has worked for months and adding "answer in English" to it is a change
+ * with no upside and a nonzero chance of the model starting to talk about
+ * language instead of loans.
+ *
+ * ── The rule that stops this sounding ridiculous ────────────────────────────
+ * DO NOT TRANSLATE THE LOAN VOCABULARY. Nobody in India asks for a "शिक्षा ऋण
+ * की मासिक किस्त" — they say "loan" and "EMI" in English in the middle of a
+ * Hindi sentence, and every real conversation this product exists to have is
+ * code-mixed. A model told simply to "reply in Hindi" produces textbook
+ * Hindi that reads as a translation of a form, and a caller hears it as a
+ * machine. This block is the difference between an agent that speaks Hindi and
+ * one that speaks the way its callers do.
+ */
+function languageRules(language) {
+  const lang = SPOKEN_LANGUAGES[language];
+  if (!lang || language === "en") return null;
+  return `Language — you are speaking ${lang.english} with this caller:
+- Reply in ${lang.english}, in ${lang.script}. Every reply, including the short ones.
+- KEEP THE LOAN WORDS IN ENGLISH, the way people actually say them: loan, EMI, interest rate, documents, co-applicant, PAN, Aadhaar, bank statement, moratorium, collateral, sanction. Mixing English terms into a ${lang.english} sentence is how your callers talk. Translating them into formal ${lang.english} sounds like a form being read aloud and is wrong here.
+- Say amounts the way they are said out loud in ${lang.english} — "पंद्रह लाख" style, never digits and never "1500000".
+- If the caller speaks English, or switches to it, answer in English. Follow the caller; never correct them and never comment on which language they chose.
+- Everything else in these instructions still applies exactly as written — the eligibility numbers, the privacy rules and the honesty rules do not change with the language.`;
+}
+
+/**
+ * The languages the agent can hold a conversation in.
+ *
+ * Kept next to the prompt rather than imported from voiceSarvam.js on purpose:
+ * that file lists what the PROVIDER can transcribe and synthesise, which is a
+ * different question from what this agent has been told how to behave in. A
+ * language belongs here once someone has heard a real call in it.
+ */
+const SPOKEN_LANGUAGES = {
+  en: { english: "English", script: "Latin script" },
+  hi: { english: "Hindi", script: "Devanagari script" },
+  mr: { english: "Marathi", script: "Devanagari script" },
+  te: { english: "Telugu", script: "Telugu script" },
+  ta: { english: "Tamil", script: "Tamil script" },
+  kn: { english: "Kannada", script: "Kannada script" },
+  ml: { english: "Malayalam", script: "Malayalam script" },
+  bn: { english: "Bengali", script: "Bengali script" },
+  gu: { english: "Gujarati", script: "Gujarati script" },
+  pa: { english: "Punjabi", script: "Gurmukhi script" },
+  od: { english: "Odia", script: "Odia script" },
+};
 
 const PRIVACY_RULES = `Privacy — absolute, no exceptions. This is a voice call, so the risk runs the other way from a form:
 - NEVER ask the caller to say a PAN number, Aadhaar number, bank account number, card number, OTP or password out loud, and never repeat one back if they say it anyway.
@@ -292,11 +342,16 @@ function agendaBlock(priorFacts, alreadyAsked = []) {
  * @param {object|null} context - the same shape liveAssistManager.buildContext()
  *   produces, or null/empty for an anonymous caller from the public page.
  */
-export function buildVoiceSystemPrompt(context) {
+export function buildVoiceSystemPrompt(context, language = "en") {
   const hasContext = context && Object.values(context).some((v) => v != null && v !== "");
   return [
     `You are UPSY, an AI loan assistant for Indian education loans, speaking to someone who has just called you from their phone browser. You help students and their parents understand education loan eligibility, what documents are needed, and roughly what an EMI would look like.`,
     VOICE_STYLE,
+    // Early, and right after the style block, because it changes how every
+    // other instruction below comes out of the model's mouth. Null on an
+    // English call, which leaves that prompt byte-for-byte what it has always
+    // been — worth keeping, since it is the one that has carried real calls.
+    languageRules(language),
     ELIGIBILITY_RULES,
     // The document list, narrowed by what this caller has already said.
     //
@@ -315,7 +370,11 @@ export function buildVoiceSystemPrompt(context) {
     agendaBlock(context?.priorFacts, context?.alreadyAsked),
     PRIVACY_RULES,
     HONESTY_RULES,
-  ].join("\n\n");
+    // languageRules() is null on an English call, and a null joined into this
+    // list would leave a stray blank paragraph in the middle of the prompt.
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -324,17 +383,85 @@ export function buildVoiceSystemPrompt(context) {
  * longer opening makes the caller sit through a speech before they can talk
  * (see the greeting.prompt comment there).
  */
-export function buildIntroduction(context) {
+/**
+ * The greeting, per language.
+ *
+ * ⚠️ WRITTEN COPY, NOT MODEL OUTPUT, and that is why this table is short. Every
+ * reply after the greeting is generated, so the model handles all eleven
+ * languages the moment languageRules() tells it to. The greeting is fixed text
+ * spoken before anyone has said a word, so it has to be WRITTEN, and writing
+ * customer-facing copy in a language you cannot read back is the same mistake
+ * as picking a voice from a catalogue description — which this repo has already
+ * made twice.
+ *
+ * So: English, Hindi and Marathi are here. A caller in Telugu or Tamil gets the
+ * `other` line — English, but naming that they may speak their own language —
+ * and the agent then answers in Telugu from the very next turn, because that
+ * part is the model's job. Degraded for one sentence, never wrong.
+ *
+ * ADDING A LANGUAGE IS ONE LINE, and it should be added by someone who speaks
+ * it. `{name}` is substituted, or the sentence without it is used.
+ */
+const GREETINGS = {
+  en: {
+    new: "Hi, this is UPSY. Tell me what you are studying and what you need, and I will tell you where you stand.",
+    named: "Hi {name}, this is UPSY. What would you like help with today?",
+    back: "Hi {name}, this is UPSY again. Where would you like to pick up?",
+  },
+  hi: {
+    new: "नमस्ते, मैं UPSY हूँ। बताइए आप क्या पढ़ना चाहते हैं और कितना loan चाहिए, मैं बताती हूँ कि आपको क्या मिल सकता है।",
+    named: "नमस्ते {name} जी, मैं UPSY हूँ। बताइए, आज मैं आपकी क्या मदद कर सकती हूँ?",
+    back: "नमस्ते {name} जी, मैं UPSY फिर से। हम कहाँ से आगे बढ़ें?",
+  },
+  mr: {
+    new: "नमस्कार, मी UPSY. तुम्ही काय शिकणार आहात आणि किती loan हवं आहे ते सांगा, मी सांगते तुम्हाला काय मिळू शकतं.",
+    named: "नमस्कार {name}, मी UPSY. आज मी तुमची काय मदत करू?",
+    back: "नमस्कार {name}, मी पुन्हा UPSY. आपण कुठून पुढे सुरू करूया?",
+  },
+  // The caller asked for a language nobody here can write. Say hello in English,
+  // tell them plainly that their language is fine, and let the model take over.
+  other: {
+    new: "Hi, this is UPSY. Tell me what you are studying and what you need — and please speak in whichever language is easiest for you.",
+    named: "Hi {name}, this is UPSY. What would you like help with today? Please speak in whichever language is easiest for you.",
+    back: "Hi {name}, this is UPSY again. Where would you like to pick up?",
+  },
+  // A caller who has not chosen a language and has not spoken yet. The invitation
+  // is the whole point: detection cannot do anything until they say something,
+  // and a caller who assumes the machine only speaks English will speak English.
+  auto: {
+    new: "Hi, this is UPSY. Tell me what you are studying and what you need — you can speak in Hindi, Marathi or any Indian language you prefer.",
+    named: "Hi {name}, this is UPSY. What would you like help with today? Feel free to speak in Hindi, Marathi or whichever language suits you.",
+    back: "Hi {name}, this is UPSY again. Where would you like to pick up?",
+  },
+};
+
+/**
+ * The first thing the agent says when the call connects. Kept to two short
+ * sentences on purpose — backend/liveAssist.js learned the hard way that a
+ * longer opening makes the caller sit through a speech before they can talk
+ * (see the greeting.prompt comment there).
+ */
+/**
+ * Every greeting that is the same on every call, so the phrase cache can buy
+ * each one once instead of per caller.
+ *
+ * The `named` and `back` lines are excluded because they interpolate a name and
+ * are therefore unique per caller — caching those would grow without bound and
+ * never be read, which is the same reason a personalised greeting was left out
+ * of the cache when it was built.
+ */
+export function fixedGreetings() {
+  return Object.values(GREETINGS).map((g) => g.new);
+}
+
+export function buildIntroduction(context, language = "en") {
+  const set = GREETINGS[language] || (SPOKEN_LANGUAGES[language] ? GREETINGS.other : GREETINGS.en);
   const name = context?.name ? context.name.split(/\s+/)[0] : null;
-  if (!name) {
-    return `Hi, this is UPSY. Tell me what you are studying and what you need, and I will tell you where you stand.`;
-  }
+  if (!name) return set.new;
   // Someone who has called before should not be greeted as a new enquiry —
   // being asked your own name twice is the fastest way to make an agent feel
   // like a phone tree. Still two sentences: the opening is not the place to
   // recite what we remember.
-  if (context.callCount > 0) {
-    return `Hi ${name}, this is UPSY again. Where would you like to pick up?`;
-  }
-  return `Hi ${name}, this is UPSY. What would you like help with today?`;
+  const line = context.callCount > 0 ? set.back : set.named;
+  return line.replace("{name}", name);
 }

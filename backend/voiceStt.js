@@ -18,8 +18,42 @@
 // exercised by the fake engine at the bottom of this file.
 
 import WebSocket from "ws";
+import {
+  SarvamStt,
+  sarvamConfigured,
+  sarvamConfigError,
+  normalizeLanguage,
+} from "./voiceSarvam.js";
 
 const DEEPGRAM_HOST = "api.deepgram.com";
+
+// Which recogniser hears the caller.
+//
+// `auto` (the default) is not a hedge — it is the specific claim that Deepgram
+// stays the English path. Every measured decision in this file was tuned against
+// Deepgram's behaviour: the 800ms endpointing, the keyterm list, the fragment
+// accumulation, and the relay's two-word barge-in rule downstream. Sarvam runs a
+// different VAD with a different event shape, so routing English through it
+// would quietly invalidate all of that in exchange for nothing — Deepgram's
+// en-IN is good and already paid for.
+//
+// Anything that is not English has to be Sarvam, because Deepgram Aura cannot
+// speak a single Indian language and an agent that understands Marathi but
+// answers in English is not a Marathi agent.
+//
+// Set `sarvam` to force one recogniser for every language, which is the honest
+// way to A/B them; `deepgram` pins the old behaviour and makes non-English fail
+// loudly rather than silently degrade.
+const STT_PROVIDER = (process.env.STT_PROVIDER || "auto").toLowerCase();
+
+function sttProviderFor(language) {
+  if (STT_PROVIDER === "sarvam") return "sarvam";
+  if (STT_PROVIDER === "deepgram") return "deepgram";
+  // "auto" resolves to Sarvam: detection has to start before anyone has spoken,
+  // so the recogniser that can detect must be the one on the socket from turn
+  // zero. There is no way to pick after the fact.
+  return normalizeLanguage(language) === "en" ? "deepgram" : "sarvam";
+}
 
 // nova-3 with explicit endpointing, rather than Deepgram's newer turn-detection
 // model: this protocol is stable and well documented, and we cannot A/B them
@@ -66,16 +100,32 @@ const KEYTERMS = (process.env.DEEPGRAM_KEYTERMS ||
 const ENDPOINTING_MS = Number(process.env.DEEPGRAM_ENDPOINTING_MS || 800);
 const UTTERANCE_END_MS = Number(process.env.DEEPGRAM_UTTERANCE_END_MS || 1000);
 
-export function sttConfigured() {
+// Both take a language because "is hearing configured" stopped being one
+// question the moment there were two recognisers: a deployment can be perfectly
+// able to hear English and unable to hear Marathi. No argument means English,
+// which is what every existing call site meant.
+export function sttConfigured(language = "en") {
+  if (sttProviderFor(language) === "sarvam") return sarvamConfigured();
   return Boolean(process.env.DEEPGRAM_API_KEY);
 }
 
-export function sttConfigError() {
-  if (process.env.DEEPGRAM_API_KEY) return null;
+export function sttConfigError(language = "en") {
+  if (sttConfigured(language)) return null;
+  if (sttProviderFor(language) === "sarvam") return sarvamConfigError();
   return (
     "DEEPGRAM_API_KEY is not set, so the relay cannot hear the caller. " +
     "Deepgram ships $200 of free credit (~45,000 streaming minutes) — sign up and put the key in .env."
   );
+}
+
+/** Which recogniser a call in this language will actually use, for the boot log. */
+export function sttStatusLine(language = "en") {
+  if (sttProviderFor(language) === "sarvam") {
+    return `Sarvam ${process.env.SARVAM_STT_MODEL || "saaras:v3-realtime"} (${
+      normalizeLanguage(language) === "auto" ? "auto-detect" : normalizeLanguage(language)
+    })`;
+  }
+  return `Deepgram ${DEEPGRAM_MODEL} (${DEEPGRAM_LANGUAGE})`;
 }
 
 class DeepgramStt {
@@ -239,7 +289,13 @@ class DeafStt {
 }
 
 export function makeStt(options) {
-  if (!sttConfigured()) return new DeafStt();
+  const language = options?.language || "en";
+  // DeafStt rather than a throw, in both branches: an agent that greets the
+  // caller, says out loud that its hearing is not switched on, and then listens
+  // politely is a far better failure than a call that will not connect. The
+  // relay reads .deaf and says exactly that.
+  if (!sttConfigured(language)) return new DeafStt();
+  if (sttProviderFor(language) === "sarvam") return new SarvamStt(options).start();
   return new DeepgramStt(options).start();
 }
 

@@ -35,6 +35,13 @@ services:
         sync: false
       - key: CARTESIA_API_KEY
         sync: false
+      # Hindi, Marathi, Telugu, Tamil, Kannada, Malayalam, Bengali, Gujarati,
+      # Punjabi, Odia. NOT interchangeable with the Deepgram key: Aura has no
+      # Indian-language voice at all, so without this a non-English call cannot
+      # be spoken and POST /api/voice/session refuses it with a named error.
+      # Deepgram still carries English. See `npm run voice:sarvam`.
+      - key: SARVAM_API_KEY
+        sync: false
       # Only used when VOICE_PROVIDER=cartesia (the hosted agent path).
       - key: CARTESIA_AGENT_ID
         sync: false

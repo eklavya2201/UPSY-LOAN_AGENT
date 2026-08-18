@@ -849,6 +849,37 @@
     <div class="actions">
       <p class="msg" id="briefMsg" role="status"></p>
 
+      <!-- Language sits ABOVE the device pickers and is visible from the start,
+           unlike them: it is the one choice here that changes the call rather
+           than the hardware, and a caller who cannot see it will assume the
+           agent only speaks English and speak English — which makes automatic
+           detection detect nothing. The greeting says the same thing out loud
+           for the same reason. -->
+      <div class="devices">
+        <span class="select-wrap grow">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-2.95a15.7 15.7 0 0 0-1.38-3.56A8.03 8.03 0 0 1 18.9 8zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14a7.98 7.98 0 0 1 0-4h3.38a16.5 16.5 0 0 0 0 4H4.26zm.84 2h2.95c.32 1.25.78 2.45 1.38 3.56A7.99 7.99 0 0 1 5.1 16zm2.95-8H5.1a7.99 7.99 0 0 1 4.33-3.56A15.7 15.7 0 0 0 8.05 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66a14.7 14.7 0 0 1 0-4h4.68a14.7 14.7 0 0 1 0 4zm.23 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95a8.03 8.03 0 0 1-4.33 3.56zM16.36 14a16.5 16.5 0 0 0 0-4h3.38a7.98 7.98 0 0 1 0 4h-3.38z"/></svg>
+          <select id="langSelect" aria-label="Language for this call">
+            <!-- Default. The headline of this whole feature, and the honest
+                 default for a caller UPSY knows nothing about yet. -->
+            <option value="auto" selected>Detect my language</option>
+            <option value="en">English</option>
+            <!-- Each language in its own script first, so someone scanning for
+                 their own language finds it without reading English. -->
+            <option value="hi">हिंदी · Hindi</option>
+            <option value="mr">मराठी · Marathi</option>
+            <option value="te">తెలుగు · Telugu</option>
+            <option value="ta">தமிழ் · Tamil</option>
+            <option value="kn">ಕನ್ನಡ · Kannada</option>
+            <option value="ml">മലയാളം · Malayalam</option>
+            <option value="bn">বাংলা · Bengali</option>
+            <option value="gu">ગુજરાતી · Gujarati</option>
+            <option value="pa">ਪੰਜਾਬੀ · Punjabi</option>
+            <option value="od">ଓଡ଼ିଆ · Odia</option>
+          </select>
+          <svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>
+        </span>
+      </div>
+
       <!-- Shown only after permission is granted: before that the browser
            reports devices with no labels. -->
       <div class="devices" id="devices" hidden>
