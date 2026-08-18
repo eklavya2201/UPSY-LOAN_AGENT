@@ -34,7 +34,7 @@ import { stretchGaps } from "./voicePacing.js";
 import { recordCall, mergeProfile } from "./voiceAccounts.js";
 import { buildIntroduction, buildVoiceSystemPrompt } from "./voicePrompt.js";
 import { fileCall, extractCallFacts, mergedProfile, fastAnswerPatch } from "./callExtract.js";
-import { agendaSnapshot, matchAgendaField, deriveAll, getField } from "./callSchema.js";
+import { agendaSnapshot, matchAgendaField, isConfidentMatch, deriveAll, getField } from "./callSchema.js";
 import { readAnswer } from "./fastAnswer.js";
 import { verifyInstitute, claimKey } from "./instituteVerify.js";
 
@@ -450,7 +450,16 @@ class RelayCall {
     // spotlight where it was, which is why a cheap word match is enough.
     const hit = matchAgendaField(text, this.profile);
     if (hit) {
+      // The spotlight takes ANY match: a wrongly lit dot costs nothing, and a
+      // dark map costs the caller their sense of the call going somewhere.
       send(this.ws, { event: "focus", branch: hit.branch, field: hit.field });
+
+      // Everything below acts on the match rather than decorating with it, so
+      // it needs a real one. One shared word is a coincidence in a domain where
+      // "card", "loan", "income" and "year" are in half the questions — that is
+      // how "You'll need your PAN card and Aadhaar card" came to be filed as
+      // the applicant having a credit history.
+      if (!isConfidentMatch(hit)) return;
       // ...and remember that we asked, which is NOT cosmetic. The extractor
       // runs behind the conversation, so between passes the agenda still lists
       // a field the caller just answered and the agent asks a second time —

@@ -325,11 +325,21 @@ export function validate(raw, turns) {
 
       facts[branchId] = facts[branchId] || {};
       facts[branchId][fieldId] = value;
+      const verbatim = Boolean(said) && haystack.includes(normalize(said));
+      // Say WHICH quote failed, not just that one did. Reported from a real
+      // call as "/team shows unmatched for all docs", and the dashboard badge
+      // alone cannot tell you whether the model is paraphrasing, quoting the
+      // agent instead of the caller, or writing digits where the transcript
+      // had words ("1.5 lakhs" against "one point five lakhs"). Those have
+      // different fixes and the quote itself distinguishes them at a glance.
+      if (said && !verbatim) {
+        console.warn(`[voice:extract] quote not found in transcript for ${branchId}.${fieldId}: ${JSON.stringify(said.slice(0, 120))}`);
+      }
       evidence[`${branchId}.${fieldId}`] = {
         said,
         // false ⇒ the officer should read the transcript before acting on this
         // one. Shown in the dashboard rather than hidden in a log.
-        verbatim: Boolean(said) && haystack.includes(normalize(said)),
+        verbatim,
         at: new Date().toISOString(),
       };
     }

@@ -571,6 +571,7 @@ export function matchAgendaField(text, profile = {}) {
   if (!said.size) return null;
 
   let best = null;
+  let runnerUp = 0;
   for (const branch of BRANCHES) {
     const values = profile[branch.id] || {};
     for (const field of callFields(branch, values)) {
@@ -582,10 +583,42 @@ export function matchAgendaField(text, profile = {}) {
       const v = values[field.id];
       const pending = v === null || v === undefined || v === "";
       const rank = score + (pending ? 0.5 : 0);
-      if (!best || rank > best.rank) best = { branch: branch.id, field: field.id, rank };
+      if (!best || rank > best.rank) {
+        if (best) runnerUp = best.rank;
+        best = { branch: branch.id, field: field.id, rank, score };
+      } else if (rank > runnerUp) {
+        runnerUp = rank;
+      }
     }
   }
-  return best ? { branch: best.branch, field: best.field } : null;
+  if (!best) return null;
+  // `score` and `margin` are reported so each caller can pick its own bar. They
+  // are not decoration: this function is a bag-of-words overlap, and the three
+  // things reading it have wildly different tolerance for being wrong. See
+  // CONFIDENT_MATCH below.
+  return { branch: best.branch, field: best.field, score: best.score, margin: best.rank - runnerUp };
+}
+
+/**
+ * Is this match strong enough to act on, rather than merely to light a dot?
+ *
+ * Written after a real call went wrong. The agent said *"You'll need your PAN
+ * card and Aadhaar card. Do you have it?"*, the caller said "Yes", and the
+ * single shared word **card** matched `applicant.hasCreditHistory` ("Has any
+ * card or loan already") with a score of 1 — so a yes about ID documents was
+ * filed as the applicant having a credit history.
+ *
+ * Two tokens, and a clear win over the runner-up. One shared word is a
+ * coincidence in a domain where "card", "loan", "income" and "year" appear in
+ * half the questions; two overlapping words that beat every other field is a
+ * question actually being asked.
+ *
+ * The spotlight deliberately does NOT use this — a wrongly lit dot costs
+ * nothing and a dark map costs the caller their sense of progress. Suppressing
+ * a question and writing a value are the two that must be sure.
+ */
+export function isConfidentMatch(hit) {
+  return Boolean(hit) && hit.score >= 2 && hit.margin > 0;
 }
 
 // ── The derived branch ──────────────────────────────────────────────────────

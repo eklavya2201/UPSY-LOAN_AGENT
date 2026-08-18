@@ -76,7 +76,17 @@ export function readAnswer(field, text) {
     case "percent":
       return readNumeric(field, said);
     case "boolean":
-      return readBoolean(field, said);
+      // ⚠️ DELIBERATELY DISABLED. A bare "yes" or "no" fits every boolean field
+      // in the schema equally well, so it carries no evidence of WHICH question
+      // it answers — if the match is wrong, nothing in the answer itself can
+      // catch it. That is exactly how a "Yes" to "you'll need your PAN and
+      // Aadhaar, do you have it?" was filed as the applicant having a credit
+      // history. A number at least has to be plausible for its field before
+      // coerce() accepts it; a boolean has no such floor.
+      //
+      // Booleans are cheap for the extractor to get right, because it reads the
+      // question and the answer together. Left to it on purpose.
+      return null;
     case "enum":
       return readEnum(field, said);
     default:

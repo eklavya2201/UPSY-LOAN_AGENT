@@ -18,7 +18,7 @@
 // having a bad run — which is itself the finding, and why it prints what it got.
 
 import "dotenv/config";
-import { coverage, computeUnderwriting, deriveFlags, coerce, parseRupees, getField, accountIdentityFacts } from "./callSchema.js";
+import { coverage, computeUnderwriting, deriveFlags, coerce, parseRupees, getField, accountIdentityFacts, matchAgendaField, isConfidentMatch } from "./callSchema.js";
 import { pickAcknowledgement, allFixedPhrases, ACKNOWLEDGEMENT_BUCKETS } from "./voiceFillers.js";
 import { extractCallFacts, extractorConfigured, extractorStatusLine, validate } from "./callExtract.js";
 import { profilePatch, fastAnswerPatch } from "./callExtract.js";
@@ -457,7 +457,11 @@ console.log("\n── Answering the question we just asked (no model) ───�
   check("Indian grouping '1,50,000'", v(income, "1,50,000"), 150000);
   check("'we need around 20 lakhs' → 20L", v(amount, "we need around 20 lakhs"), 2000000);
   check("'he is salaried' → salaried", v(category, "he is salaried"), "salaried");
-  check("'no, twelve years there' → false", v(jobChange, "no, he has been there twelve years"), false);
+  // Booleans were filed here until a real call showed why they cannot be: a
+  // bare yes/no fits every boolean field equally, so a wrong match has nothing
+  // in the answer itself to catch it. Left to the extractor, which reads the
+  // question and the answer together.
+  check("a clear 'no' is still left to the model", v(jobChange, "no, he has been there twelve years"), null);
 
   // The refusals. Each one is a real sentence that must NOT become a value.
   check("a range is refused", v(amount, "between 20 and 25 lakhs"), null);
@@ -465,7 +469,7 @@ console.log("\n── Answering the question we just asked (no model) ───�
   check("a stray number is refused", v(income, "I have 2 brothers and he earns 95000"), null);
   check("'I don't know' is not an answer", v(income, "I don't know exactly"), null);
   check("'pata nahi' is not an answer", v(income, "pata nahi"), null);
-  check("a 'no' inside a sentence is not a no", v(jobChange, "my brother has no loans"), null);
+  check("and so is a 'no' inside a sentence", v(jobChange, "my brother has no loans"), null);
   check("an ambiguous enum is refused", v(category, "salaried or self-employed?"), null);
   check("names are always left to the model", v(fullName, "Akhilesh Kumar"), null);
 
@@ -478,6 +482,24 @@ console.log("\n── Answering the question we just asked (no model) ───�
   check("an occupied field is never overwritten", fastAnswerPatch(w.profile, "coApplicant", "monthlyIncome", 999999, "no I meant ten lakhs"), null);
   const wasDeclined = { ...before, _declined: ["coApplicant.monthlyIncome"] };
   check("answering clears a declined marker", fastAnswerPatch(wasDeclined, "coApplicant", "monthlyIncome", 150000, "1.5 lakhs").patch._declined, []);
+}
+
+
+// The matcher serves three jobs with very different tolerance for being wrong:
+// it lights a dot (harmless), it suppresses a question (annoying), and it files
+// a value into a loan file (serious). These guard the last two.
+console.log("\n── The matcher only ACTS when it is sure ────────────────────");
+{
+  const acts = (text) => isConfidentMatch(matchAgendaField(text, {}));
+  // The real call that made this necessary: one shared word, 'card'.
+  check("'PAN card and Aadhaar card' does NOT write a credit history", acts("You will need your PAN card and Aadhaar card. Do you have it?"), false);
+  check("a genuine income question does act", acts("And roughly what does your father take home in a month?"), true);
+  check("a genuine amount question does act", acts("How much of that fee do you need to borrow?"), true);
+  check("the credit question, asked properly, still acts", acts("Do you already have a credit card or any loan in your own name?"), true);
+  check("small talk matches nothing", acts("Okay, got it."), false);
+  // A bare yes/no fits every boolean equally, so it can never self-check.
+  const jobChange = getField("coApplicant", "recentJobChange");
+  check("booleans are never filed without a model", readAnswer(jobChange, "yes"), null);
 }
 
 if (process.argv.includes("--seed")) await seed();
