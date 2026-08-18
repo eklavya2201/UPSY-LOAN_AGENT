@@ -101,7 +101,7 @@ export const BRANCHES = [
         note: "Provisional until the marksheets are read." },
       { id: "gapYears", label: "Gap years since that qualification", type: "number", source: "call", unit: "years",
         ask: "whether there has been any gap after that, and how long" },
-      { id: "hasCreditHistory", label: "Has any card or loan already", type: "boolean", source: "call",
+      { id: "hasCreditHistory", label: "Has any card or loan already", type: "boolean", source: "call", keywords: ["credit","history","cibil","bureau","cards","loan"],
         // The proxy for the bureau pull that is not built. The flowchart's own
         // note — "NTC is good to go" — means a caller with no credit history is
         // not a problem, so the useful question is the yes/no, not the score.
@@ -137,7 +137,7 @@ export const BRANCHES = [
         // stated without it — eligibility.js has always computed course duration
         // + 9 months, and today it falls back to a guess of 24.
         ask: "how long the course runs" },
-      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call", essential: true,
+      { id: "totalFee", label: "Total fee quoted", type: "money", source: "call", essential: true, keywords: ["fee","fees","cost","costs","tuition","total","charge","charges"],
         ask: "roughly what the total fee comes to" },
       { id: "hostelFeeIncluded", label: "Hostel fee inside that figure", type: "boolean", source: "call",
         // Straight off the flowchart: inclusive → treat as tuition; exclusive →
@@ -156,7 +156,7 @@ export const BRANCHES = [
     title: "The loan itself",
     blurb: "What they actually need from us, as opposed to what the course costs.",
     fields: [
-      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call", essential: true,
+      { id: "amountNeeded", label: "Amount needed", type: "money", source: "call", essential: true, keywords: ["borrow","borrowing","need","require","loan","amount","much"],
         ask: "how much of that fee they need to borrow, as opposed to what the family can put in" },
       { id: "type", label: "Secured or unsecured", type: "enum", source: "call", essential: true,
         options: ["secured", "unsecured"],
@@ -188,12 +188,12 @@ export const BRANCHES = [
         // the same list for the lead path, and the two must not drift.
         options: ["father", "mother", "brother", "sister", "spouse", "other"],
         ask: "how that person is related to them" },
-      { id: "category", label: "Income category", type: "enum", source: "call", essential: true,
+      { id: "category", label: "Income category", type: "enum", source: "call", essential: true, keywords: ["salaried","self","employed","business","pensioner","farmer","profession","does","work"],
         options: ["salaried", "self-employed", "pensioner", "farmer"],
         ask: "whether that person is salaried, self-employed, a pensioner or a farmer" },
-      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true,
+      { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true, keywords: ["earn","earns","earning","salary","salaried","take","home","pay","paid","income","month","monthly","bring"],
         ask: "roughly what they take home in a month" },
-      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call", essential: true,
+      { id: "annualItr", label: "Latest ITR — annual income", type: "money", source: "call", essential: true, keywords: ["itr","return","returns","filed","annual","yearly"],
         appliesWhen: { category: ["self-employed", "farmer"] },
         ask: "what the latest ITR shows as annual income" },
       { id: "itrYearsAvailable", label: "Years of ITR available", type: "number", source: "call", unit: "years",
@@ -210,7 +210,7 @@ export const BRANCHES = [
       { id: "recentJobChange", label: "Changed job recently", type: "boolean", source: "call",
         appliesWhen: { category: ["salaried"] },
         ask: "whether they have changed jobs recently — that decides whether we need the joining letter too" },
-      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call", essential: true,
+      { id: "existingEmiMonthly", label: "Existing EMIs, per month", type: "money", source: "call", essential: true, keywords: ["emi","emis","repay","repaying","instalment","installment","existing","loans","borrowings","outgo"],
         // The number the whole underwriting branch turns on, which is why it is
         // asked of every category rather than sitting under one of them.
         ask: "what they are already paying every month across all their existing loans" },
@@ -575,8 +575,14 @@ export function matchAgendaField(text, profile = {}) {
   for (const branch of BRANCHES) {
     const values = profile[branch.id] || {};
     for (const field of callFields(branch, values)) {
+      // `keywords` matter more than they look. The agent is told to ask in its
+      // own words, so it says "what does your father earn?" where the schema
+      // says "roughly what they take home in a month" — no overlap at all, so
+      // the question went unrecognised and got asked a second time. That was
+      // the complaint from a real call. The label and ask text are how WE write
+      // a field; keywords are how a person says it out loud.
       let score = 0;
-      for (const w of matchTokens(`${field.label} ${field.ask || ""}`)) {
+      for (const w of matchTokens(`${field.label} ${field.ask || ""} ${(field.keywords || []).join(" ")}`)) {
         if (said.has(w)) score++;
       }
       if (!score) continue;

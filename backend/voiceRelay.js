@@ -129,6 +129,29 @@ const PACE_EXTRA_MS = Number(process.env.VOICE_PACE_EXTRA_MS || 0);
 // captureFacts(). Set to 0 to extract at teardown and nowhere else.
 const EXTRACT_EVERY_TURNS = Number(process.env.VOICE_EXTRACT_EVERY_TURNS ?? 1);
 
+// ── Filing an answer with no model: OFF by default ──────────────────────────
+// Built on the premise that matchAgendaField could tell us which field a
+// question was about. It cannot, and two real calls proved it from both sides:
+//
+//   too loose — "You'll need your PAN card and Aadhaar card. Do you have it?"
+//               shares the word "card" with "Has any card or loan already", so
+//               a "Yes" about ID documents was filed as a credit history.
+//   too tight — the agent is told to ask in its own words, so "What does your
+//               father earn?" and "And his salary?" match nothing at all. The
+//               question went unrecognised and was asked a second time.
+//
+// There is no threshold that fixes both: raising it loses the paraphrases,
+// lowering it files wrong data. Attribution from free text is a language
+// problem, and the extractor — which reads the question and the answer
+// together — is the thing already good at it.
+//
+// The code stays because the mechanism is sound the moment attribution is:
+// the reviewer's original suggestion was a FAST model classifying "which field
+// was that?", which would make this safe. Until then it writes nothing.
+//
+// VOICE_FAST_ANSWER=1 turns it on for anyone measuring that work.
+const FAST_ANSWER_ENABLED = process.env.VOICE_FAST_ANSWER === "1";
+
 // ── "That's everything, thanks" ─────────────────────────────────────────────
 // A caller who is finished should not have to hunt for the End button, and a
 // call left open bills for silence. Only unmistakable sign-offs count: a bare
@@ -787,6 +810,7 @@ class RelayCall {
    * path is: a live call must never wait on a disk.
    */
   fileFastAnswer(text) {
+    if (!FAST_ANSWER_ENABLED) return;
     const ask = this.pendingAsk;
     if (!ask) return;
     // One shot per question. If they answer, we have it; if they said
