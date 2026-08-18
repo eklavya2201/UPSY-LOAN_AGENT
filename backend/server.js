@@ -1090,9 +1090,19 @@ app.get("/api/voice/status", (_req, res) => {
     languages[lang] = problem ? { ready: false, reason: problem } : { ready: true };
   }
   res.json({
+    // Which commit is actually serving this request. Render sets
+    // RENDER_GIT_COMMIT on every build, and without it "is my fix live yet?" is
+    // unanswerable from outside for any change that does not add a route —
+    // which is most of them. That question came up on every single deploy of
+    // the multilingual work, and each time the honest answer was "I cannot
+    // tell", which is a poor way to debug a live call.
+    build: (process.env.RENDER_GIT_COMMIT || "local").slice(0, 7),
     provider: voiceProvider(),
     relay: relayStatusLine("en"),
     relayNonEnglish: relayStatusLine("hi"),
+    // The turn-taking number, because it is the one people tune by hand on the
+    // dashboard and then cannot confirm took effect.
+    endOfTurnSilenceMs: Number(process.env.SARVAM_SILENCE_MS || 800),
     languages,
   });
 });
