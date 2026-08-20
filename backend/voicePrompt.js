@@ -374,6 +374,23 @@ export function buildVoiceSystemPrompt(context, language = "en") {
     // After the context block, so "still needed" is read against what is
     // already known rather than contradicting it two paragraphs later.
     agendaBlock(context?.priorFacts, context?.alreadyAsked),
+    // ⚠️ A RULE THE MODEL KEEPS BREAKING NEEDS A FACT, NOT A LOUDER RULE.
+    //
+    // DOCUMENT_TELL_DONT_ASK already forbids quizzing the caller on whether
+    // they have a document, and it is in the prompt on both paths. The model
+    // asked anyway — "PAN and Aadhaar ready?" answered yes, then the same
+    // question again minutes later, answered no. Reported on an ENGLISH call,
+    // so this is not the language degradation that broke the one-question rule.
+    //
+    // The reason it recurs is that the answer has nowhere to be recorded:
+    // aadhaarOnFile and panOnFile are source:"document", so they never enter
+    // the agenda, nothing marks them covered, and every turn looks like the
+    // first time. Restating the prohibition would not change that; stating
+    // what has ALREADY HAPPENED does, because it is a fact about this call
+    // rather than an instruction to be weighed against others.
+    context?.documentsCovered
+      ? `You have ALREADY told this caller which documents they will need, on this call. Do not raise documents again, and do not ask whether they have any of them ready. If they bring it up themselves, answer their question and stop. Their answers about documents cannot be recorded anywhere — only an upload settles it — so asking twice gains nothing and reads as though you were not listening the first time.`
+      : null,
     PRIVACY_RULES,
     HONESTY_RULES,
     // languageRules() is null on an English call, and a null joined into this

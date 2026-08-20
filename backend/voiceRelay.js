@@ -134,6 +134,21 @@ const BARGE_IN_MIN_WORDS = Number(process.env.VOICE_BARGE_IN_MIN_WORDS || 2);
 // "मला एक प्रश्न आहे" — clears it easily; echo debris does not.
 const BARGE_IN_MIN_CHARS = Number(process.env.VOICE_BARGE_IN_MIN_CHARS || 8);
 
+// Has the agent just talked about documents?
+//
+// Names of documents rather than the word "document", because that is what
+// actually gets said — "you'll need your PAN and Aadhaar" never contains it.
+// The English names carry across languages unchanged, since the prompt keeps
+// this vocabulary in English inside an Indian-language sentence, so this works
+// in all three without a per-language list. The native words for "documents"
+// are included for the sentences that do use them.
+//
+// A false positive costs one topic going unmentioned when the caller could have
+// asked about it — recoverable, and they can always ask. A false negative costs
+// the loop this exists to break. So it is deliberately broad.
+const DOCUMENT_TOPIC =
+  /\b(?:pan|aadhaar|aadhar|itr|form\s?16|marksheet|mark\s?sheet|payslip|pay\s?slip|salary slip|bank statement|offer letter|admit letter|passport|documents?|paperwork)\b|दस्तावेज|कागज|कागदपत्र|कागदपत्रे/i;
+
 /**
  * Is this transcript a real person interrupting, or the agent hearing itself?
  *
@@ -377,6 +392,9 @@ class RelayCall {
     // Whether the previous turn already got one. Never twice running — see
     // shouldAcknowledge().
     this.ackedLastTurn = false;
+    // Set once the agent has named a document out loud. Feeds the prompt so it
+    // stops circling back — see DOCUMENT_TOPIC.
+    this.documentsCovered = false;
     // What is known about this caller so far, growing as extraction reads the
     // call. Starts from earlier calls (or empty for a stranger) and is what the
     // live agenda on /m is drawn from — for an account holder it tracks the
@@ -617,6 +635,16 @@ class RelayCall {
   commitAgentText(text) {
     if (!text) return;
     this.turns.push({ role: "agent", text, at: new Date().toISOString() });
+
+    // Documents have now been covered on this call, so the prompt can say so
+    // and stop the agent circling back to them. Only counts a sentence it
+    // actually SPOKE — this runs after speak(), so a question abandoned by a
+    // barge-in does not silence a topic the caller never heard.
+    if (!this.documentsCovered && DOCUMENT_TOPIC.test(text)) {
+      this.documentsCovered = true;
+      this.log("documents covered — the prompt will stop raising them");
+      this.refreshPrompt(this.profile);
+    }
 
     // Spotlight the field this sentence is about, so the page lights the dot
     // for the question actually being asked. Cosmetic — a miss just leaves the
@@ -1166,6 +1194,7 @@ class RelayCall {
           ...(this.ticket.context || {}),
           priorFacts: profile,
           alreadyAsked: [...this.askedThisCall],
+          documentsCovered: this.documentsCovered,
         },
         this.language
       );
