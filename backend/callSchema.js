@@ -112,6 +112,7 @@ export const BRANCHES = [
         // not a problem, so the useful question is the yes/no, not the score.
         ask: "whether they already have a credit card or any loan in their own name" },
       { id: "aadhaarCity", label: "City on their Aadhaar", type: "text", source: "call",
+        keywords: ["आधार","पता","पत्ता","पत्ते","पत्त्यावर","रहते","राहता","aadhaar","address"],
         // Deliberately a spoken question, not a document read. The flowchart
         // says "Check if city of residence by student is same as aadhaar address
         // — else flag as threat (Ask in conversation)". The mismatch is the
@@ -690,13 +691,71 @@ function matchTokens(text) {
  * drives the spotlight on /m, never a lending decision — so a miss returns null
  * and a near-tie landing on the neighbouring dot is acceptable.
  */
+// Words that say a sentence is about the CO-APPLICANT rather than the student.
+// Third person and kinship terms, in the three languages the agent speaks well.
+const CO_APPLICANT_MARKERS = [
+  "father", "fathers", "mother", "mothers", "dad", "mum", "mom", "papa", "parent",
+  "parents", "guardian", "spouse", "husband", "wife", "brother", "sister",
+  "coapplicant", "coborrower", "guarantor", "his", "hers", "him",
+  "पिता", "पिताजी", "पापा", "माता", "माँ", "मम्मी", "भाई", "बहन", "पति", "पत्नी",
+  "उनका", "उनकी", "उनके", "उन्होंने", "उनको",
+  "वडील", "वडिलांचा", "वडिलांची", "आई", "भाऊ", "बहीण", "पती", "पत्नी",
+  "त्यांचा", "त्यांची", "त्यांचे", "त्यांच्या", "त्यांना",
+];
+
+// Words that say it is addressed to the STUDENT. Second person, and only used
+// to RULE OUT the co-applicant — never to restrict to one branch, because
+// "how much do you need to borrow?" is second person and belongs to `loan`.
+const STUDENT_MARKERS = [
+  "you", "your", "yours", "yourself",
+  "आप", "आपका", "आपकी", "आपके", "आपको", "तुम", "तुम्हारा", "तुम्हें",
+  "तुम्ही", "तुमचा", "तुमची", "तुमचे", "तुमच्या", "तुम्हाला",
+];
+
+/**
+ * Who is this question about — the student, or the co-applicant?
+ *
+ * ⚠️ THE SCHEMA HAS NEAR-DUPLICATE FIELDS FOR TWO DIFFERENT PEOPLE. Both have a
+ * name, both have a city, both have a CIBIL score, and the student's "City on
+ * their Aadhaar" and the co-applicant's "Lives at the KYC address" are the same
+ * question asked of different people. A bag of words cannot tell them apart, so
+ * it did not: reported from a real call, the agent asked the STUDENT "do you
+ * still live at the address on your Aadhaar?" and the answer was filed against
+ * the FATHER, leaving the student's own field showing as never asked.
+ *
+ * This is the same class of bug the repo already fixed once for documents,
+ * where a consistency check was comparing two different people's papers against
+ * each other — solved there by scoping to an identityGroup(). Same idea here.
+ *
+ * Deliberately asymmetric, and only acts on explicit evidence:
+ *   · a kinship or third-person word  → the co-applicant, and ONLY those fields
+ *   · second person and no kinship    → not the co-applicant (but any other
+ *                                        branch is fair game — "how much do you
+ *                                        need?" is second person and is a loan
+ *                                        field)
+ *   · neither                         → no scoping at all, exactly as before
+ *
+ * That last case matters: a follow-up like "and the monthly income?" carries no
+ * marker, and guessing there would be worse than the bag of words already is.
+ */
+function personScope(said) {
+  for (const w of CO_APPLICANT_MARKERS) if (said.has(w)) return "coApplicant";
+  for (const w of STUDENT_MARKERS) if (said.has(w)) return "notCoApplicant";
+  return null;
+}
+
 export function matchAgendaField(text, profile = {}) {
   const said = matchTokens(text);
   if (!said.size) return null;
+  const scope = personScope(said);
 
   let best = null;
   let runnerUp = 0;
   for (const branch of BRANCHES) {
+    // Who the sentence is about wins over how many words it happens to share.
+    // Without this the two people's parallel fields are indistinguishable.
+    if (scope === "coApplicant" && branch.id !== "coApplicant") continue;
+    if (scope === "notCoApplicant" && branch.id === "coApplicant") continue;
     const values = profile[branch.id] || {};
     for (const field of callFields(branch, values)) {
       // `keywords` matter more than they look. The agent is told to ask in its

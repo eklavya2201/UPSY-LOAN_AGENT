@@ -93,6 +93,19 @@ const RULES = `Rules, in order of importance:
    record it.
 4. Prefer what the CALLER said. A line from UPSY only counts when the caller
    confirmed it ("yes, fifteen lakh").
+4b. TWO DIFFERENT PEOPLE, and several fields exist once for each. "applicant" is
+   the STUDENT — the person on the call. "coApplicant" is whoever is supporting
+   the loan, usually a parent. Decide which one a fact belongs to from WHO the
+   question was about, not from which field the words resemble:
+   - "do you still live at the address on your Aadhaar?" is about the STUDENT.
+     It goes to applicant.aadhaarCity, never to coApplicant.livesAtKycAddress.
+   - "does your father still live at his KYC address?" is the CO-APPLICANT's.
+   - "आप"/"तुम्ही"/"you" is the student. "पिताजी"/"वडील"/"उनका"/"त्यांचा"/"his"
+     /"her"/"their" is the co-applicant.
+   If you cannot tell which person a fact is about, leave it out. A fact filed
+   against the wrong person is worse than a missing one: it shows an officer a
+   value that was never true of that person, and it leaves the real question
+   looking as though it was already answered.
 5. Numbers as plain digits, no words, no symbols, no separators: fifteen lakh is
    1500000, ninety-five thousand a month is 95000, seventy-six percent is 76.
 6. If the caller corrected themselves, record the correction, not the first answer.
