@@ -211,7 +211,8 @@ const FAST_ANSWER_ENABLED = process.env.VOICE_FAST_ANSWER === "1";
 // "no" or "nahi" is an ANSWER to whatever was just asked, not the end of a
 // call, and treating it as one would hang up on people mid-conversation.
 // Everything here has to be a phrase somebody says when they are leaving.
-const CLOSING_INTENT = new RegExp(
+// Exported so the sign-off phrases can be tested per language without a call.
+export const CLOSING_INTENT = new RegExp(
   [
     "\\bnothing (?:from my side|else|more)\\b",
     "\\bno (?:more|further|other) (?:questions?|doubts?)\\b",
@@ -234,6 +235,39 @@ const CLOSING_INTENT = new RegExp(
     "\\bbas (?:itna|itni) hi\\b",
     "\\bho gaya\\b",
     "\\bkuch nahi(?: chahiye)?\\b",
+    // ── The same sign-offs in the script they actually arrive in ────────────
+    // Every romanised phrase above was written when the recogniser returned
+    // Latin text for Hindi. Sarvam returns DEVANAGARI, so "theek hai" never
+    // matches "ठीक है" and not one of those patterns can fire on an
+    // Indian-language call — reported by the team as "hang-up doesn't work in
+    // any Indian-script language". The romanised forms stay: a Hinglish caller
+    // on the Deepgram path still produces them.
+    //
+    // Held to the same bar as the English list: only phrases somebody says when
+    // they are LEAVING. A bare "नाही"/"नहीं" is an answer to whatever was just
+    // asked, and hanging up on it would be far worse than staying on the line.
+    "धन्यवाद",           // thank you (hi/mr)
+    "शुक्रिया",          // thank you (hi)
+    "आभारी आहे",         // thank you (mr)
+    "बस इतना ही",        // that's all (hi)
+    "एवढंच",             // that's all (mr)
+    "इतकंच",             // that's all (mr)
+    "हो गया",            // it's done (hi)
+    "झालं",              // it's done (mr)
+    "कुछ नहीं चाहिए",    // nothing else needed (hi)
+    "और कुछ नहीं",       // nothing more (hi)
+    "बाकी काही नाही",    // nothing more (mr)
+    "अलविदा",            // goodbye (hi)
+    "नमस्ते जी",         // used as a sign-off, not a greeting, when it ends a turn
+    "फिर मिलते हैं",     // see you again (hi)
+    "भेटू",              // see you (mr)
+    // Telugu, Tamil, Kannada, Bengali, Gujarati — thanks, which is the one
+    // sign-off that generalises across all of them.
+    "ధన్యవాదాలు",        // te
+    "நன்றி",             // ta
+    "ಧನ್ಯವಾದ",           // kn
+    "ধন্যবাদ",           // bn
+    "આભાર",              // gu
   ].join("|"),
   "i"
 );

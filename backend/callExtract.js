@@ -223,8 +223,44 @@ function parseJsonLoose(text) {
 // I live in Pune" once the comma has become a space. Both sides get the same
 // treatment, so "1.5 lakh" becomes "1 5 lakh" on both and still matches — the
 // only thing this function decides is whether one string contains the other.
+// ⚠️ `\p{M}` MATTERS AS MUCH AS `\p{L}`, and leaving both out made this check
+// worthless in every Indian language rather than merely wrong.
+//
+// This was `[^a-z0-9 ]`, which deletes every Devanagari, Telugu and Tamil
+// character. A Hindi quote therefore normalised to the EMPTY STRING — and
+// `haystack.includes("")` is true, always. So every value in a Hindi call was
+// stamped as quote-verified without a single character ever being compared.
+// Not a missing check: a check that reported success unconditionally, which is
+// the worst of the three possible states and is invisible on the dashboard.
+//
+// The marks half is the same trap as in callSchema.js: Devanagari vowel signs
+// and the virama are Unicode marks, not letters, so `[^\p{L}\p{N}]` keeps the
+// consonants and throws the vowels away, matching text against a mangled
+// version of itself.
 function normalize(text) {
-  return String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Drop a speaker label the model copied out of the transcript we handed it.
+ *
+ * The transcript is rendered for the model as `CALLER: …` / `UPSY: …` (see
+ * where turns are formatted), and the instruction says to quote from it
+ * EXACTLY — so a well-behaved model returns "CALLER: I'm planning to attend
+ * Manipal University." The haystack is built from the raw text with no labels,
+ * so that quote could never be found in it.
+ *
+ * Reported from a real call as 14 of 17 facts showing "unmatched" on /team,
+ * and the three that passed were exactly the three the model happened to store
+ * without the prefix. The model was quoting perfectly; the comparison was
+ * asking it to do two contradictory things at once.
+ */
+function stripSpeaker(quote) {
+  return String(quote || "").replace(/^\s*(?:caller|upsy|agent|user|student|speaker)\s*[:：\-–—]\s*/i, "");
 }
 
 // Does this (normalized) quote actually contain a refusal? A declined marker's
@@ -292,7 +328,12 @@ export function validate(raw, turns) {
       // while an invented one would bury a question forever.
       if (entry && typeof entry === "object" && entry.declined === true) {
         const saidDecl = String(entry.said || "").slice(0, 300);
-        const normalized = normalize(saidDecl);
+        // Same speaker-label strip as the value quotes above: the model is
+        // reading the same labelled transcript here, so a refusal quote arrives
+        // as "CALLER: I don't know" and would never be found in the haystack.
+        // This one fails SAFE (an unverified refusal is dropped, so the question
+        // is asked once more), which is why it hid behind the louder bug.
+        const normalized = normalize(stripSpeaker(saidDecl));
         if (!normalized || !callerHaystack.includes(normalized) || !soundsLikeRefusal(normalized)) {
           dropped.push(`${branchId}.${fieldId} (declined without the caller's own refusal to show for it)`);
           continue;
@@ -325,7 +366,12 @@ export function validate(raw, turns) {
 
       facts[branchId] = facts[branchId] || {};
       facts[branchId][fieldId] = value;
-      const verbatim = Boolean(said) && haystack.includes(normalize(said));
+      // Boolean(quoted) is load-bearing, not defensive: a quote that normalises
+      // to nothing must never count as found, because `includes("")` is true of
+      // every string. That is how an entire Hindi call came back fully
+      // "verified" while nothing had been compared.
+      const quoted = normalize(stripSpeaker(said));
+      const verbatim = Boolean(quoted) && haystack.includes(quoted);
       // Say WHICH quote failed, not just that one did. Reported from a real
       // call as "/team shows unmatched for all docs", and the dashboard badge
       // alone cannot tell you whether the model is paraphrasing, quoting the
