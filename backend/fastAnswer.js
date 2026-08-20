@@ -41,7 +41,7 @@ import { coerce } from "./callSchema.js";
 // "I don't know" contains no digits so money is safe by construction, but a
 // boolean field would happily read the "no" in "no idea" as false.
 const NON_ANSWER =
-  /\b(?:i (?:don'?t|do not) know|no idea|not sure|can'?t say|cannot say|pata nahi|maloom nahi|nahi pata|let me check|i'?ll have to check|not right now|later)\b/i;
+  /\b(?:i (?:don'?t|do not) know|no idea|not sure|can'?t say|cannot say|pata nahi|maloom nahi|nahi pata|पता नहीं|मालूम नहीं|माहीत नाही|मला माहीत नाही|let me check|i'?ll have to check|not right now|later)\b/i;
 
 // A number with an Indian magnitude word attached — "1.5 lakhs", "20L", "3 cr".
 // The unit is what makes it unambiguous: somebody saying a money figure out
@@ -52,8 +52,17 @@ const SCALED_NUMBER = /\d+(?:\.\d+)?\s*(?:cr|crore|crores|l\b|lac|lakh|lakhs|k\b
 // Any bare number, used only to detect ambiguity.
 const ANY_NUMBER = /\d+(?:\.\d+)?/g;
 
-const AFFIRMATIVE = /^(?:yes|yeah|yep|yup|haan|ha|ji|correct|right|true|of course|sure)\b/i;
-const NEGATIVE = /^(?:no|nope|nah|nahi|never|none|not really|negative)\b/i;
+// ⚠️ The Devanagari alternatives sit OUTSIDE the \b group on purpose.
+// JavaScript defines \b against [A-Za-z0-9_], so it never fires between two
+// Indic characters — a pattern ending in \b can never match "हाँ", however many
+// Devanagari words are added to the list. Same shape and same reason as
+// BACKCHANNEL in voiceFillers.js.
+//
+// This module is dormant (VOICE_FAST_ANSWER is unset), so nothing was reading
+// yes/no wrongly in Hindi — it would simply have read nothing. Fixed now rather
+// than left as a landmine for whoever switches it on.
+const AFFIRMATIVE = /^(?:(?:yes|yeah|yep|yup|haan|ha|ji|correct|right|true|of course|sure)\b|(?:हाँ|हां|हा|जी|बिल्कुल|सही|हो|होय|बरोबर))/i;
+const NEGATIVE = /^(?:(?:no|nope|nah|nahi|never|none|not really|negative)\b|(?:नहीं|नही|ना|नाही|नको))/i;
 
 /**
  * The answer to `field`, read out of what the caller just said — or null.

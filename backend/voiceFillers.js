@@ -147,7 +147,13 @@ const RECEIPTS = {
 
 // Neither a question nor a real answer — "yes", "okay", "hmm". Says nothing at
 // all: acknowledging an acknowledgement is how two people talk past each other.
-const BACKCHANNEL = /^(yes|yeah|yep|no|nope|ok|okay|sure|hmm+|uh huh|right|thanks|thank you|correct|exactly)\b[.! ]*$/i;
+// ⚠️ `\b` DOES NOT WORK ON DEVANAGARI in JavaScript — it is defined against
+// [A-Za-z0-9_], so it never fires between two Indic characters. Hence the
+// separate alternation below rather than adding words to the list above: a bare
+// "हाँ" would otherwise fall through and collect a receipt, which is the exact
+// "acknowledging an acknowledgement" this constant exists to prevent.
+const BACKCHANNEL =
+  /^(?:(?:yes|yeah|yep|no|nope|ok|okay|sure|hmm+|uh huh|right|thanks|thank you|correct|exactly)\b|(?:हाँ|हां|हा|जी|नहीं|नही|अच्छा|ठीक|ओके|हो|नाही|बरं|बरोबर|होय))[.।!\s]*$/i;
 
 // Does this read as a question? Cheap and wrong sometimes, which is fine —
 // getting it wrong costs a receipt where a restatement would have been slightly

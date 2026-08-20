@@ -154,7 +154,19 @@ export function extractDob(text) {
 // Do two names refer to the same person, tolerant of OCR noise / word order?
 // Returns true/false, or null if we can't tell.
 export function namesMatch(a, b) {
-  const norm = (s) => s.toUpperCase().replace(/[^A-Z\s]/g, "").replace(/\s+/g, " ").trim();
+  // ⚠️ NOT [^A-Z\s] — Aadhaar and PAN cards are BILINGUAL, and a vision model
+  // reading the Devanagari side returns a Devanagari name. The Latin-only class
+  // deleted it entirely, so the comparison degraded to "can't tell" on exactly
+  // the documents this product is built for.
+  //
+  // The half-and-half case was worse than the empty one. "राहुल SHARMA" reduced
+  // to the single token "SHARMA", and one shared surname clears the 0.5
+  // threshold — so two different people could be reported as the same person on
+  // the strength of a surname the comparison never should have been left alone
+  // with. \p{M} is included for the same reason as everywhere else: Devanagari
+  // vowel signs are marks, and dropping them mangles the word into a different
+  // one. toUpperCase() is a harmless no-op on scripts without case.
+  const norm = (s) => s.toUpperCase().replace(/[^\p{L}\p{M}\s]/gu, "").replace(/\s+/g, " ").trim();
   const ta = new Set(norm(a).split(" ").filter(Boolean));
   const tb = new Set(norm(b).split(" ").filter(Boolean));
   if (!ta.size || !tb.size) return null;
@@ -169,7 +181,11 @@ export function namesMatch(a, b) {
 // low threshold) — addresses vary in how they're written far more than names,
 // so we'd rather miss a real mismatch than spam false conflicts.
 export function addressesMatch(a, b) {
-  const norm = (s) => s.toUpperCase().replace(/[^A-Z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  // Same reasoning as namesMatch above: an Aadhaar address is very often in the
+  // regional script, and the Latin-only class threw all of it away. Digits stay
+  // in, because a house or PIN number is often the most distinguishing token an
+  // address has.
+  const norm = (s) => s.toUpperCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
   const ta = new Set(norm(a).split(" ").filter(Boolean));
   const tb = new Set(norm(b).split(" ").filter(Boolean));
   if (ta.size < 2 || tb.size < 2) return null;

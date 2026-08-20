@@ -236,16 +236,26 @@ step("Interrupted speech (the 'voice is breaking' check)");
   };
 
   try {
-    let clean;
+    // ⚠️ SAMPLE THE BASELINE MORE THAN ONCE. Synthesis length is not
+    // deterministic — the same "ठीक है।" measured 0.94s and 1.11s on
+    // consecutive runs, ±20% — so a single baseline plus a tight bar produces
+    // failures that are just variance. Take the longest of several and judge
+    // against that. The defect this exists to catch ran 2.58x, so there is
+    // ample room between real contamination and natural spread.
+    const samples = [];
     {
       const tts = new SarvamTts({ language: "hi", onError: () => {} });
-      await say(tts, LONG, null);
-      clean = await say(tts, SHORT, null);
+      await say(tts, LONG, null); // warm the socket, as a real call would be
+      for (let i = 0; i < 3; i++) samples.push(await say(tts, SHORT, null));
       tts.close();
     }
-    info(`"${SHORT}" on its own is ${clean.toFixed(2)}s`);
+    const clean = Math.max(...samples);
+    info(
+      `"${SHORT}" on its own: ${samples.map((s) => s.toFixed(2)).join("s, ")}s — judging against the longest`
+    );
 
     let contaminated = 0;
+    let short = 0;
     for (let i = 0; i < RUNS; i++) {
       const tts = new SarvamTts({ language: "hi", onError: () => {} });
       const ac = new AbortController();
@@ -254,11 +264,22 @@ step("Interrupted speech (the 'voice is breaking' check)");
       const after = await say(tts, SHORT, null);
       tts.close();
       const drift = clean > 0 ? after / clean : 0;
-      if (drift > 1.6 || drift < 0.4) {
+      // ⚠️ ONLY THE UPPER BOUND MEANS CONTAMINATION. Splicing ADDS audio, so a
+      // leak always makes the sentence longer — this check once flagged a run
+      // at 0.38x and called it contaminated, which was the check crying wolf,
+      // not a defect. Synthesis length genuinely varies between identical
+      // requests (the same "ठीक है।" measured 1.11s and 0.94s on consecutive
+      // runs), so a short result is variance or truncation, which is a
+      // different fault and must not be reported as this one.
+      if (drift > 1.8) {
         contaminated++;
         info(`  run ${i + 1}: ${after.toFixed(2)}s — ${drift.toFixed(2)}x, abandoned audio leaked in`);
+      } else if (drift < 0.35) {
+        short++;
+        info(`  run ${i + 1}: ${after.toFixed(2)}s — ${drift.toFixed(2)}x, came back short (truncation, not a splice)`);
       }
     }
+    if (short) warn(`${short}/${RUNS} follow-up sentences came back unusually short — worth a listen, but it is not the splice`);
     if (contaminated === 0) {
       ok(`${RUNS} interruptions, none of them leaked audio into the following sentence`);
     } else {
