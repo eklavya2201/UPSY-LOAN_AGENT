@@ -412,7 +412,8 @@ function send(ws, message) {
  * One live call. Owns the STT socket, the TTS socket, the conversation history
  * and the turn lifecycle, and tears all of it down exactly once.
  */
-class RelayCall {
+// Exported so the turn-gating rules can be tested without a socket.
+export class RelayCall {
   constructor(ws, ticket) {
     this.ws = ws;
     this.ticket = ticket;
@@ -445,6 +446,9 @@ class RelayCall {
     // Set once the agent has named a document out loud. Feeds the prompt so it
     // stops circling back — see DOCUMENT_TOPIC.
     this.documentsCovered = false;
+    // When the agent's audio will have finished playing in the caller's
+    // browser. Used to tell a real turn from the agent hearing itself.
+    this.speechEndsAt = 0;
     // What is known about this caller so far, growing as extraction reads the
     // call. Starts from earlier calls (or empty for a stranger) and is what the
     // live agenda on /m is drawn from — for an account holder it tracks the
@@ -798,6 +802,12 @@ class RelayCall {
     this.abortTurn();
     this.discardSpeculation();
     send(this.ws, { event: "clear" });
+    // The browser has just thrown away everything it had buffered, so the agent
+    // is silent from this instant — whatever the cursor said a moment ago. Not
+    // clearing it would make agentAudible() keep returning true for the rest of
+    // the abandoned sentence's duration and swallow the caller's next words,
+    // turning an echo guard into a deafness bug.
+    this.speechEndsAt = 0;
     this.setState("listening");
   }
 
@@ -809,8 +819,48 @@ class RelayCall {
     this.speaking = false;
   }
 
+  /**
+   * Is the caller's speaker still playing the agent's voice right now?
+   *
+   * `this.speaking` is not the answer: it goes false when SYNTHESIS finishes,
+   * and the browser is still draining its buffer for a second or two after
+   * that — the server sends audio at roughly twice real time. So track when the
+   * audio actually runs out, the same cursor arithmetic voiceClient.js uses to
+   * schedule playback.
+   */
+  agentAudible() {
+    return Date.now() < (this.speechEndsAt || 0);
+  }
+
   async handleTurn(text) {
     if (!text || this.closed) return;
+
+    // ⚠️ ECHO ARRIVES AS A TURN, NOT ONLY AS A BARGE-IN, and only one of those
+    // two paths was guarded.
+    //
+    // handleBargeIn already refuses anything that does not look like a real
+    // interruption, because a caller on speakerphone leaks the agent's own
+    // voice back into the mic. Nothing applied that test HERE — so the leak,
+    // once the recogniser finalised it, became a caller turn: recorded in the
+    // transcript, counted as a turn, and answered. The agent then rephrased the
+    // question it was already asking, which leaked again.
+    //
+    // Reported exactly that way: "I said nothing, background voice detects UPSY
+    // and it says the next sentence" — the same question twice in different
+    // words, with the caller silent throughout. Sarvam makes it easier to hit
+    // than Deepgram did, because Devanagari fragments split into words readily.
+    //
+    // The bar is deliberately the SAME one barge-in uses: anything not
+    // substantial enough to interrupt the agent is not substantial enough to be
+    // a turn while the agent is still audible. And if it WAS substantial,
+    // barge-in has already fired and stopped the audio, so this check is not
+    // reached. A genuine short answer landing in the gap is the cost, and it is
+    // the smaller one — the caller repeats a word, rather than the agent
+    // talking to itself in a loop.
+    if (this.agentAudible() && !looksLikeInterruption(text)) {
+      this.log(`ignored "${String(text).slice(0, 40)}" — the agent was still audible, so this is echo`);
+      return;
+    }
     send(this.ws, { event: "transcript", role: "caller", text, final: true });
     // Recorded here and not in onTranscript: a turn is one finished thought,
     // whereas Deepgram's interim fragments are the same words several times
@@ -995,6 +1045,13 @@ class RelayCall {
       (pcm) => {
         if (signal?.aborted || this.closed) return;
         spokenBytes += pcm.length;
+        // When this audio will have finished PLAYING, not when we finished
+        // sending it. Same cursor arithmetic as voiceClient.js's playback
+        // queue: each chunk extends the end from wherever the last one landed,
+        // never from "now", or a burst of chunks would all collapse onto the
+        // same instant. Read by agentAudible() to tell echo from a caller.
+        const chunkMs = (pcm.length / 2 / SAMPLE_RATE) * 1000;
+        this.speechEndsAt = Math.max(Date.now(), this.speechEndsAt || 0) + chunkMs;
         // Slow her down. Cartesia runs 195-222 wpm and its own speed control is
         // inert on sonic-2, so the pacing is fixed here by lengthening the gaps
         // she already leaves between words — no pitch change, speech untouched.
