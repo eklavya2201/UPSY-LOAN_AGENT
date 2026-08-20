@@ -780,6 +780,9 @@
 
   // ── Call lifecycle ────────────────────────────────────────────────────────
   let call = null;
+  // True from the instant beginCall() is entered until it settles. `call` alone
+  // cannot do this job — see the comment there.
+  let starting = false;
   let timerId = null;
   let closingSelf = false;
   // How much of a call there was to have an opinion about. Counted here rather
@@ -822,7 +825,21 @@
   }
 
   async function beginCall() {
-    if (call) return;
+    // ⚠️ `call` IS NOT A RE-ENTRY GUARD, because it is assigned at the BOTTOM of
+    // this function — after an await that spans a network round trip for the
+    // session, the WebSocket open, the microphone permission prompt and the
+    // AudioContext. That is seconds, and for all of them `call` is still null.
+    //
+    // A second entry in that window starts a SECOND session and a SECOND
+    // socket. Both connect, both are greeted, and when one is torn down the
+    // caller hears the line drop. Reported as "she greeted me twice and then it
+    // auto disconnected", and the server log showed the signature exactly: two
+    // `session started` lines against a single `call started`.
+    //
+    // `starting` is set synchronously, before anything can yield, which is the
+    // only kind of guard that works against a double tap.
+    if (call || starting) return;
+    starting = true;
     el.joinBtn.disabled = true;
     el.callError.hidden = true;
     el.callStatus.textContent = "";
@@ -922,6 +939,9 @@
       el.callError.hidden = false;
       el.callStatus.textContent = STATUS_TEXT.error;
     } finally {
+      // Cleared only here, so it covers the success path, the throw, and the
+      // case where the caller hangs up while still connecting.
+      starting = false;
       el.joinBtn.disabled = false;
     }
   }

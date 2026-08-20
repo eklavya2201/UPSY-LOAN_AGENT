@@ -250,6 +250,17 @@ export const CLOSING_INTENT = new RegExp(
     "\\bbas (?:itna|itni) hi\\b",
     "\\bho gaya\\b",
     "\\bkuch nahi(?: chahiye)?\\b",
+    // Asked for explicitly after real calls: people say these and expect the
+    // line to end. "cut the call" is an instruction, not a hint, so it is the
+    // one phrase here that needs no anchoring at all.
+    "\\bcall (?:cut|kaat|katt|band)(?: ?(?:kar|kr))? ?(?:do|dijiye|de)?\\b",
+    "\\b(?:cut|kaato?|disconnect) (?:the )?call\\b",
+    "\\bphone (?:rakh|rakho|rakhta|band kar) ?(?:do|dijiye)?\\b",
+    "\\bho gaya sab\\b",
+    "\\bsab ho gaya\\b",
+    "\\bhat?[ao] gaya\\b",
+    "\\bthik hai bas\\b",
+    "\\bbas (?:ho gaya|itna)\\b",
     // ── The same sign-offs in the script they actually arrive in ────────────
     // Every romanised phrase above was written when the recogniser returned
     // Latin text for Hindi. Sarvam returns DEVANAGARI, so "theek hai" never
@@ -276,6 +287,20 @@ export const CLOSING_INTENT = new RegExp(
     "नमस्ते जी",         // used as a sign-off, not a greeting, when it ends a turn
     "फिर मिलते हैं",     // see you again (hi)
     "भेटू",              // see you (mr)
+    // The same explicit instructions in Devanagari, since that is the script
+    // they will actually arrive in on a Sarvam call.
+    "सब हो गया",         // everything's done (hi)
+    "हो गया सब",         // ...either order
+    "कॉल काट",           // cut the call (hi) — matches काटो / काट दो / काटिए
+    "कॉल बंद",           // end the call (hi)
+    "फोन रखता",          // hanging up (hi)
+    "फोन रख",            // hang up (hi)
+    "कॉल कट",            // cut the call, as commonly transcribed
+    "सगळं झालं",         // everything's done (mr)
+    "झालं सगळं",         // ...either order
+    "कॉल कट कर",         // cut the call (mr/hi mix)
+    "बस झालं",           // that's enough (mr)
+    "बस इतकंच",          // that's all (mr)
     // Telugu, Tamil, Kannada, Bengali, Gujarati — thanks, which is the one
     // sign-off that generalises across all of them.
     "ధన్యవాదాలు",        // te
@@ -286,6 +311,31 @@ export const CLOSING_INTENT = new RegExp(
   ].join("|"),
   "i"
 );
+
+/**
+ * Is the caller signing off, or asking a question that happens to contain a
+ * sign-off phrase?
+ *
+ * ⚠️ A QUESTION IS NEVER A GOODBYE, and the patterns above cannot tell on their
+ * own. "ho gaya kya?" means "is it done?" — someone checking whether their
+ * application went through — and `\bho gaya\b` matched it, which would have hung
+ * up on a caller mid-enquiry. That pattern is older than this function; the bug
+ * was simply never triggered while the list stayed short.
+ *
+ * Cheapest correct rule: if the turn ends in a question mark, it is a question.
+ * Applied once here rather than as a lookahead bolted onto each pattern, so a
+ * phrase added later inherits the protection instead of having to remember it.
+ *
+ * The asymmetry that makes this the right way round: leaving a finished call
+ * open for a few more seconds costs nothing, while hanging up on someone
+ * mid-sentence is the single rudest thing this agent can do.
+ */
+function soundsLikeGoodbye(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  if (/[?？]\s*$/.test(trimmed)) return false;
+  return CLOSING_INTENT.test(trimmed);
+}
 
 // How long to let the goodbye actually reach the caller before the socket goes.
 // The speech chain settles when SYNTHESIS finishes, which is not when playback
@@ -785,7 +835,7 @@ class RelayCall {
     // Heard as they say it, acted on after the reply has been spoken — so the
     // agent still gets to answer and sign off rather than the line simply
     // dying on them. The flag is checked in the turn's `finally`.
-    if (CLOSING_INTENT.test(text)) {
+    if (soundsLikeGoodbye(text)) {
       this.callerSaidDone = true;
       this.log("caller signalled they were finished — will end the call after this reply");
     }
