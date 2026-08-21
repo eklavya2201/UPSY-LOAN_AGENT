@@ -1470,6 +1470,14 @@ export class RelayCall {
  * the same origin as the page, because Render gives us exactly one port and a
  * second listener would not survive deployment.
  */
+// Live calls right now. Read by the shutdown handler, which waits for a
+// caller mid-sentence rather than dropping the line on them - but only when
+// there is actually someone on, so an idle deploy is not delayed.
+const liveCalls = new Set();
+export function activeCallCount() {
+  return liveCalls.size;
+}
+
 export function attachVoiceRelay(server) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
 
@@ -1497,10 +1505,13 @@ export function attachVoiceRelay(server) {
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       const call = new RelayCall(ws, ticket);
+      liveCalls.add(call);
+      const forget = () => liveCalls.delete(call);
       ws.on("message", (raw) => call.handleMessage(raw));
-      ws.on("close", () => call.stop("socket closed"));
+      ws.on("close", () => { forget(); call.stop("socket closed"); });
       ws.on("error", (e) => {
         console.error("[voice:relay] socket error:", e.message);
+        forget();
         call.stop("socket error");
       });
     });

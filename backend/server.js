@@ -27,7 +27,13 @@ import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
-import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
+import { attachVoiceRelay, relayStatusLine, warmVoiceCache, activeCallCount } from "./voiceRelay.js";
+import { flushAllStores, sweepTempFiles } from "./jsonFile.js";
+
+// How long a caller mid-sentence gets before the process goes. Long enough to
+// finish a thought, short enough that a deploy is not held hostage by one
+// forgotten open tab.
+const SHUTDOWN_GRACE_MS = Number(process.env.SHUTDOWN_GRACE_MS || 8000);
 import { normalizeLanguage } from "./voiceSarvam.js";
 import {
   signIn, signOut, sessionFrom, tokenFromRequest, setSessionCookie, clearSessionCookie,
@@ -90,7 +96,7 @@ async function sendNudge(a) {
 
 // Background sweep: periodically check for applicants who started but went
 // quiet, and nudge them automatically (respecting the cooldown above).
-setInterval(async () => {
+const sweepTimer = setInterval(async () => {
   const apps = await listApplications();
   for (const a of apps) {
     if (isStale(a)) await sendNudge(a);
@@ -1407,6 +1413,10 @@ server.listen(PORT, () => {
   }
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
+  // Temp files from a process that died mid-write. Harmless - the rename
+  // never happened, so the real file is intact - but they pile up on a box
+  // that crashes repeatedly. Best-effort, never blocks the boot.
+  sweepTempFiles(path.join(__dirname, "..", "data"));
   console.log(teamAuthStatusLine());
   console.log(voiceStatusLine());
   if (voiceProvider() === "upsy") {
@@ -1439,3 +1449,55 @@ server.on("error", (err) => {
   }
   throw err;
 });
+
+// ── Shutdown ────────────────────────────────────────────────────────────────
+//
+// Nothing stopped this process cleanly, so every deploy and every restart could
+// cut a write in half. Paired with the whole-file writes the stores used to do,
+// that was a corruption path on a schedule — it fired on deploys, which is
+// exactly when nobody is watching the data. The stores are atomic now; this is
+// the other half, and neither is much use without the other.
+//
+// Order matters. Stop taking new work first, so nothing new is queued while we
+// are draining; then let what is already in flight finish; then go.
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  // Container runtimes often send SIGTERM more than once, and a second pass
+  // through here would race the first.
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n${signal} — shutting down.`);
+
+  // Stops accepting new connections. Existing ones, including live voice
+  // sockets, are left to finish on their own.
+  server.close();
+
+  // The reminder sweep writes to the application store on a timer. Letting it
+  // fire mid-drain would queue a write after we stopped waiting for writes.
+  if (sweepTimer) clearInterval(sweepTimer);
+
+  // A caller mid-sentence gets a moment to finish rather than the line simply
+  // dying on them. Skipped entirely when no call is up, so an idle deploy is
+  // not slowed down by a timer nobody needs.
+  const live = activeCallCount();
+  if (live > 0) {
+    console.log(`  waiting up to ${SHUTDOWN_GRACE_MS / 1000}s for ${live} live call(s)…`);
+    await new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS));
+  }
+
+  try {
+    await flushAllStores();
+    console.log("  all stores flushed to disk.");
+  } catch (e) {
+    console.error("  could not flush every store:", e.message);
+  }
+
+  process.exit(0);
+}
+
+// SIGTERM is what a container runtime and systemd send. SIGINT is Ctrl-C, and
+// it goes through the same path so local development exercises the code that
+// production depends on rather than a second, untested one.
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

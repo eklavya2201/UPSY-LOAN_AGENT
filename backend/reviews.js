@@ -20,6 +20,7 @@
 // lives on a real disk.
 
 import fs from "fs/promises";
+import { makeJsonWriter } from "./jsonFile.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -44,9 +45,13 @@ async function load() {
   return cache;
 }
 
-async function save() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(FILE, JSON.stringify(cache, null, 2));
+// Atomic (temp file + fsync + rename) and serialised against itself, so a
+// crash cannot truncate the file and two concurrent callers cannot discard
+// each other's change. See backend/jsonFile.js for why both matter.
+const writer = makeJsonWriter(FILE, () => JSON.stringify(cache, null, 2));
+
+function save() {
+  return writer.save();
 }
 
 /**

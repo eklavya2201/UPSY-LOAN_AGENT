@@ -18,7 +18,8 @@
     "voice:sarvam": "node backend/voice-sarvam-check.js",
     "eval:voice": "node backend/eval-voice-latency.js",
     "eval:extract": "node backend/eval-extract.js",
-    "team:hash": "node backend/team-hash.js"
+    "team:hash": "node backend/team-hash.js",
+    "check:store": "node backend/store-check.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
