@@ -29,6 +29,10 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache } from "./voiceRelay.js";
 import { normalizeLanguage } from "./voiceSarvam.js";
+import {
+  signIn, signOut, sessionFrom, tokenFromRequest, setSessionCookie, clearSessionCookie,
+  requireTeamAuth, teamAuthConfigured, teamAuthStatusLine,
+} from "./teamAuth.js";
 import { recordCallback, listCallbacks, normalizePhone, callbackOpsMessage } from "./callbacks.js";
 import { recordReview, listReviews, reviewSummary, parseRating, isPoorRating, reviewOpsMessage } from "./reviews.js";
 import { createAccount, authenticate, resolveSession, endSession, publicAccount, listAccounts, getAccountDetail, mergeProfile } from "./voiceAccounts.js";
@@ -117,6 +121,56 @@ app.get("/team.html", (req, res) => {
   const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
   res.redirect(301, "/team" + qs);
 });
+
+// ── Team sign-in ────────────────────────────────────────────────────────────
+// Registered BEFORE express.static, so team-login.html is only ever reachable
+// through the route below and the guard cannot be walked around by asking for
+// the file by name.
+app.get("/team/login", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "frontend", "team-login.html"));
+});
+app.get("/team-login.html", (_req, res) => res.redirect(301, "/team/login"));
+
+app.post("/api/team/login", async (req, res) => {
+  const result = await signIn({
+    email: req.body?.email,
+    password: req.body?.password,
+    ip: req.ip || req.socket?.remoteAddress || "unknown",
+  });
+  if (!result.ok) {
+    // Logged without the email: a failed attempt is worth seeing, and the thing
+    // someone typed into an email box on a failed login is very often a password.
+    console.warn("[team] failed sign-in attempt");
+    return res.status(401).json({ error: result.error });
+  }
+  // Secure only behind TLS — setting it on plain http://localhost would make
+  // the cookie silently never arrive.
+  const proto = req.get("x-forwarded-proto") || req.protocol || "http";
+  setSessionCookie(res, result.token, proto === "https");
+  console.log(`[team] signed in (${process.env.TEAM_EMAIL})`);
+  res.json({ ok: true });
+});
+
+app.post("/api/team/logout", (req, res) => {
+  signOut(tokenFromRequest(req));
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/api/team/me", (req, res) => {
+  const session = sessionFrom(tokenFromRequest(req));
+  res.json({ configured: teamAuthConfigured(), email: session?.email || null });
+});
+
+// Everything an officer can reach. `/api/applications` covers the list, every
+// per-lead detail route, the lender drafts and the document files — 16 routes
+// that all read or change applicant data, guarded in one place rather than one
+// decorator per route, because the failure mode of that pattern is the route
+// somebody forgets to decorate.
+app.use("/api/applications", requireTeamAuth);
+app.use("/api/voice/callbacks", requireTeamAuth);
+app.use("/api/voice/accounts", requireTeamAuth);
+app.use("/api/voice/reviews", requireTeamAuth);
 
 app.use(express.static(path.join(__dirname, "..", "frontend")));
 
@@ -1317,7 +1371,7 @@ app.get(["/login", "/intake", "/docs", "/docs/*"], (_req, res) => {
 // Team dashboard's clean URL. team.js reads/writes ?lead=&tab= via
 // history.pushState against location.pathname, so this works unchanged for
 // deep links like /team?lead=LD-1001&tab=lenders.
-app.get("/team", (_req, res) => {
+app.get("/team", requireTeamAuth, (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "frontend", "team.html"));
 });
 
@@ -1353,6 +1407,7 @@ server.listen(PORT, () => {
   }
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
+  console.log(teamAuthStatusLine());
   console.log(voiceStatusLine());
   if (voiceProvider() === "upsy") {
     console.log(relayStatusLine());

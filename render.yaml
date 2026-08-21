@@ -53,5 +53,12 @@ services:
       # the course a caller names. With this set it uses Serper; without it,
       # DuckDuckGo's keyless endpoint — which has already answered with a
       # bot-check (HTTP 202) from a dev machine. Treat Serper as the real path.
+      # Team dashboard sign-in. Without BOTH, /team and every
+      # /api/applications route are open to anyone with the URL.
+      # Hash from: npm run team:hash -- "<password>"
+      - key: TEAM_EMAIL
+        sync: false
+      - key: TEAM_PASSWORD_HASH
+        sync: false
       - key: SERPER_API_KEY
         sync: false
