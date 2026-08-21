@@ -29,6 +29,8 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache, activeCallCount } from "./voiceRelay.js";
 import { flushAllStores, sweepTempFiles } from "./jsonFile.js";
+// PII never reaches a log line in the first place — see backend/redact.js.
+import * as redact from "./redact.js";
 
 // How long a caller mid-sentence gets before the process goes. Long enough to
 // finish a thought, short enough that a deploy is not held hostage by one
@@ -72,11 +74,41 @@ const source = getActiveSource();
 const notifier = getActiveNotifier();
 
 // Drop-off detection: how long an in-progress application can go untouched
-// before we consider it "stalled" and worth nudging, and how long to wait
-// before nudging the same applicant again. Shortened for this demo — a real
-// deployment would use hours/days (e.g. 24h stale, 48h cooldown), not minutes.
-const STALE_AFTER_MS = 3 * 60 * 1000;
-const NUDGE_COOLDOWN_MS = 5 * 60 * 1000;
+// before it counts as "stalled" and worth nudging, and how long before nudging
+// the same person again.
+//
+// These were 3 and 5 MINUTES — demo values, so a sweep could be watched working
+// inside one sitting. Harmless only because NOTIFY_CHANNEL was mock, which made
+// them a loaded gun with the safety on: switching Exotel on without also
+// changing these would have sent every paused applicant an SMS *and* a WhatsApp
+// every five minutes, and DLT complaints are not a thing you undo.
+//
+// Now real values, and env-overridable so a demo does not need a code edit —
+// which is what made the old arrangement dangerous in the first place.
+const STALE_AFTER_MS = Number(process.env.STALE_AFTER_MS || 24 * 60 * 60 * 1000);
+const NUDGE_COOLDOWN_MS = Number(process.env.NUDGE_COOLDOWN_MS || 48 * 60 * 60 * 1000);
+
+// ⚠️ LIVE MESSAGING AND DEMO TIMINGS MUST NOT COEXIST, and a comment saying so
+// is what failed last time. Changing the defaults fixes today; this fixes the
+// next person who sets STALE_AFTER_MS=180000 for a demo and forgets to put it
+// back before switching Exotel on.
+//
+// Fatal rather than a warning, for the same reason EADDRINUSE is fatal here: a
+// warning scrolls past, and the cost of getting this wrong is every paused
+// applicant receiving an SMS and a WhatsApp every few minutes, from a DLT-
+// registered sender, with no way to recall them.
+if (process.env.NOTIFY_CHANNEL && process.env.NOTIFY_CHANNEL !== "mock") {
+  const MIN_SAFE_MS = 60 * 60 * 1000; // an hour is already aggressive for a nudge
+  if (STALE_AFTER_MS < MIN_SAFE_MS || NUDGE_COOLDOWN_MS < MIN_SAFE_MS) {
+    console.error(
+      `FATAL: NOTIFY_CHANNEL=${process.env.NOTIFY_CHANNEL} sends real messages, but the reminder ` +
+        `timings are still demo-short (stale ${Math.round(STALE_AFTER_MS / 1000)}s, cooldown ` +
+        `${Math.round(NUDGE_COOLDOWN_MS / 1000)}s). Every paused applicant would be messaged on that ` +
+        `cycle. Raise STALE_AFTER_MS and NUDGE_COOLDOWN_MS to at least an hour, or set NOTIFY_CHANNEL=mock.`
+    );
+    process.exit(1);
+  }
+}
 
 function isStale(a) {
   if (a.status !== "in_progress" || !a.updatedAt) return false;
@@ -370,7 +402,7 @@ app.post("/api/extract", upload.single("file"), async (req, res) => {
 
   // Vision-first read (falls back to OCR inside readCard).
   const card = await readCard(req.file.buffer, doc);
-  console.log(`[capture:${card.source}] ${doc.id}: number=${card.number || "-"} name="${card.name || "-"}" dob="${card.dob || "-"}"`);
+  console.log(`[capture:${card.source}] ${doc.id}: number=${redact.idNumber(card.number)} name="${redact.personName(card.name)}" dob="${redact.dob(card.dob)}"`);
   res.json({ found: !!card.number, value: card.number, name: doc.identifier.name, holderName: card.name, dob: card.dob, source: card.source });
 });
 
@@ -506,7 +538,7 @@ app.post("/api/validate", upload.single("file"), async (req, res) => {
             label: `Co-applicant phone ${bank.phoneNumber} read from bank statement${bank.accountHolderName ? ` · name on document: ${bank.accountHolderName}` : ""}`,
           });
         }
-        console.log(`[bankstatement:${bank.source}] ${leadId}: name="${bank.accountHolderName || "-"}" phone="${bank.phoneNumber || "-"}"`);
+        console.log(`[bankstatement:${bank.source}] ${leadId}: name="${redact.personName(bank.accountHolderName)}" phone="${redact.phone(bank.phoneNumber)}"`);
       } else {
         console.log(`[bankstatement] ${leadId}: couldn't read identity details off the statement`);
       }
@@ -556,7 +588,7 @@ app.post("/api/validate", upload.single("file"), async (req, res) => {
       }
       if (conflicts.length) extra.crossDocConflicts = conflicts;
 
-      console.log(`[identity:${identity.source}] ${doc.id} (${group}): name="${nameOnDoc || "-"}" dob="${dobOnDoc || "-"}" address="${addressOnDoc || "-"}" match=${extra.nameMatch ?? "-"} conflicts=${conflicts.length}`);
+      console.log(`[identity:${identity.source}] ${doc.id} (${group}): name="${redact.personName(nameOnDoc)}" dob="${redact.dob(dobOnDoc)}" address="${redact.address(addressOnDoc)}" match=${extra.nameMatch ?? "-"} conflicts=${conflicts.length}`);
     }
 
     const saved = await saveFile(leadId, doc.id, req.file);
