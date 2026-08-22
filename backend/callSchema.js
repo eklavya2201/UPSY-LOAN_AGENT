@@ -83,12 +83,18 @@ export const BRANCHES = [
     title: "Student",
     blurb: "Who is studying, and whether their own profile holds up.",
     fields: [
-      { id: "name", label: "Full name", type: "text", source: "call",
-        keywords: ["नाम","नाव","पूरा","पूर्ण","name"],
-        ask: "their full name, as it reads on their ID" },
-      { id: "age", label: "Age", type: "number", source: "call", unit: "years",
-        keywords: ["उम्र","वय","age"],
-        ask: "how old they are" },
+      { id: "name", label: "Full name", type: "text", source: "call", askOnCall: false,
+        // NEVER ASKED ALOUD. It is printed on the PAN and the Aadhaar, it is
+        // what they typed at signup, and a name is the single worst thing to
+        // put through speech recognition — arbitrary proper nouns with no
+        // language model behind them. A real call went "Hi eklavya" and then
+        // asked his name three times.
+        note: "From the ID document, or from signup. Never spoken on a call." },
+      { id: "age", label: "Age", type: "number", source: "call", askOnCall: false, unit: "years",
+        // The date of birth is on the Aadhaar and the 10th marksheet, both of
+        // which are collected anyway. Spending a turn of a five-minute call on
+        // it is the kind of question that makes an agent feel like a form.
+        note: "Derived from the date of birth on the ID. Never spoken on a call." },
       { id: "city", label: "City they live in", type: "text", source: "call",
         keywords: ["शहर","गाव","गांव","राहता","रहते","city"],
         ask: "which city they currently live in" },
@@ -96,7 +102,7 @@ export const BRANCHES = [
         options: ["10th", "12th", "diploma", "undergraduate", "postgraduate"],
         keywords: ["शिक्षण","पढ़ाई","डिग्री","पदवी","qualification"],
         ask: "what they have most recently completed or are completing — 12th, a diploma, a degree" },
-      { id: "marksPercent", label: "Marks (average %)", type: "percent", source: "call",
+      { id: "marksPercent", label: "Marks (average %)", type: "percent", source: "call", askOnCall: false,
         keywords: ["मार्क्स","गुण","टक्के","प्रतिशत","परसेंट","marks","percent","percentage"],
         ask: "roughly what percentage they scored in that qualification",
         // The flowchart says to average this off the marksheets. What the caller
@@ -202,7 +208,7 @@ export const BRANCHES = [
         options: ["father", "mother", "brother", "sister", "spouse", "other"],
         keywords: ["रिश्ता","नाते","relation"],
         ask: "how that person is related to them" },
-      { id: "category", label: "Income category", type: "enum", source: "call", essential: true, keywords: ["salaried","self","employed","business","pensioner","farmer","profession","does","work","नौकरी","नोकरी","व्यवसाय","धंदा","काम","करते","करतात","शेती","पेन्शन"],
+      { id: "category", label: "Income category", type: "enum", source: "call", essential: true, keywords: ["salaried","self","employed","business","pensioner","farmer","profession","नौकरी","नोकरी","व्यवसाय","धंदा","काम","करते","करतात","शेती","पेन्शन"],
         options: ["salaried", "self-employed", "pensioner", "farmer"],
         ask: "whether that person is salaried, self-employed, a pensioner or a farmer" },
       { id: "monthlyIncome", label: "Monthly income (net in-hand)", type: "money", source: "call", essential: true, keywords: ["earn","earns","earning","salary","salaried","take","home","pay","paid","income","month","monthly","bring","सैलरी","पगार","कमाई","आमदनी","उत्पन्न","महीना","महिना","मिळतात","कमाते"],
@@ -363,7 +369,18 @@ export function conditionText(field) {
 
 /** Only the fields a conversation is allowed to fill. */
 export function callFields(branch, branchValues) {
-  return branch.fields.filter((f) => f.source === "call" && fieldApplies(f, branchValues));
+  // ⚠️ `askOnCall: false` IS NOT THE SAME AS `source: "document"`, and
+  // conflating them cost five eval checks. A name, an age and a marks
+  // percentage are printed on documents the applicant uploads anyway, so the
+  // agent must never spend a turn of a five-minute call asking for them — but
+  // if the caller VOLUNTEERS one ("I'm Rohan, I'm 24"), it should still be
+  // recorded. Changing `source` removed them from the extractor's contract as
+  // well as the agenda, so the agent stopped listening as well as asking.
+  //
+  // So: `source` says where a value may come from, and callExtract.js still
+  // reads these. `askOnCall` says whether the agent may put the question, and
+  // only the agenda honours it.
+  return branch.fields.filter((f) => f.source === "call" && f.askOnCall !== false && fieldApplies(f, branchValues));
 }
 
 // ── Coercion ────────────────────────────────────────────────────────────────
@@ -524,7 +541,7 @@ export function agendaSnapshot(profile = {}) {
   const branches = BRANCHES.map((branch) => {
     const values = profile[branch.id] || {};
     const fields = branch.fields
-      .filter((f) => f.source === "call")
+      .filter((f) => f.source === "call" && f.askOnCall !== false)
       .map((f) => {
         const v = values[f.id];
         const filled = !(v === null || v === undefined || v === "");
@@ -744,6 +761,44 @@ function personScope(said) {
   return null;
 }
 
+/**
+ * How much one word is worth, by how many fields use it.
+ *
+ * ⚠️ THE FIX FOR THE WRONG DOT ON THE MAP, and a better one than a stoplist.
+ *
+ * Reported from a real call: asking about the college lit the income field, and
+ * asking about the EMI lit "City they live in". Both are the same shape — a
+ * word that means almost nothing here appearing in a field it does not belong
+ * to. "live" is in the LABEL "City they live in"; "month" and "pay" are in
+ * several income fields at once. Weighted equally with a real term, one of them
+ * is enough to light a dot.
+ *
+ * Rather than blacklisting them one at a time — which is endless and only ever
+ * catches the ones already seen — weight every token by how many fields use it.
+ * A word in exactly one field identifies it; a word in six identifies nothing,
+ * and gets a sixth of the weight. That is standard IDF logic, and it handles
+ * the words nobody has thought of yet.
+ *
+ * Built once, lazily, because BRANCHES is a module constant and this never
+ * changes at runtime.
+ */
+let tokenSpread = null;
+
+function fieldWeight(token) {
+  if (!tokenSpread) {
+    tokenSpread = new Map();
+    for (const branch of BRANCHES) {
+      for (const field of branch.fields) {
+        const seen = matchTokens(
+          `${field.label} ${field.ask || ""} ${(field.keywords || []).join(" ")}`
+        );
+        for (const w of seen) tokenSpread.set(w, (tokenSpread.get(w) || 0) + 1);
+      }
+    }
+  }
+  return 1 / (tokenSpread.get(token) || 1);
+}
+
 export function matchAgendaField(text, profile = {}) {
   const said = matchTokens(text);
   if (!said.size) return null;
@@ -764,9 +819,35 @@ export function matchAgendaField(text, profile = {}) {
       // the question went unrecognised and got asked a second time. That was
       // the complaint from a real call. The label and ask text are how WE write
       // a field; keywords are how a person says it out loud.
+      // ⚠️ PROSE IS WORTH LESS THAN A KEYWORD, and weighting them the same is
+      // what put the wrong dot on the map.
+      //
+      // `ask` is a written sentence, not a term list — "which city they
+      // currently live in", "if it is different from where they live now". Its
+      // filler words are generic, so ANY reply containing "live" or "currently"
+      // scored against `applicant.city` exactly as hard as the word "city"
+      // did. That is how a sentence about the EMI lit "City they live in", and
+      // a sentence about the college lit the income field: a coincidence in
+      // prose outranking nothing at all, and the spotlight lights on any hit.
+      //
+      // Keywords and the label are how the field is NAMED, so they carry full
+      // weight; the ask sentence is supporting evidence at 0.4, which means it
+      // takes three coincidental prose words to equal one real keyword. Enough
+      // to keep helping when a field has no keywords, never enough to win on
+      // its own.
+      const kw = matchTokens((field.keywords || []).join(" "));
+      const lbl = matchTokens(field.label || "");
       let score = 0;
-      for (const w of matchTokens(`${field.label} ${field.ask || ""} ${(field.keywords || []).join(" ")}`)) {
-        if (shares(said, w)) score++;
+      for (const w of kw) if (shares(said, w)) score += fieldWeight(w);
+      // The label sits between the two: it names the field, but it is written as
+      // a phrase for an officer to read, so it carries incidental words a
+      // keyword list would never include. "Has any card or loan already"
+      // contributes "card" — which is why a sentence about PAN and Aadhaar CARDS
+      // once got filed as the applicant having a credit history. At 0.6 a label
+      // word alone no longer clears the bar; paired with anything else it does.
+      for (const w of lbl) if (!kw.has(w) && shares(said, w)) score += 0.6 * fieldWeight(w);
+      for (const w of matchTokens(field.ask || "")) {
+        if (!kw.has(w) && !lbl.has(w) && shares(said, w)) score += 0.4 * fieldWeight(w);
       }
       if (!score) continue;
       const v = values[field.id];
@@ -807,7 +888,22 @@ export function matchAgendaField(text, profile = {}) {
  * a question and writing a value are the two that must be sure.
  */
 export function isConfidentMatch(hit) {
-  return Boolean(hit) && hit.score >= 2 && hit.margin > 0;
+  // ⚠️ RECALIBRATED WHEN SCORING BECAME WEIGHTED. The old bar was `score >= 2`,
+  // and under the old counting that meant "two shared words" — the right bar,
+  // because one shared word was a coincidence in a domain where "card", "loan"
+  // and "income" appear in half the questions.
+  //
+  // Scores are no longer counts. Every token is now weighted by how many fields
+  // use it, so 1.0 means "a word unique to this field matched" — which is
+  // STRONGER evidence than two shared common words ever was, and a word in six
+  // fields contributes 0.17 rather than a whole point. Keeping the bar at 2
+  // after that change would have quietly stopped suppressing re-asks: measured,
+  // only 3 of 10 real questions still cleared it, including "what is the total
+  // fee for the course?".
+  //
+  // 1.0 is the same standard expressed in the new units. The margin requirement
+  // is unchanged and does the rest of the work.
+  return Boolean(hit) && hit.score >= 1 && hit.margin > 0;
 }
 
 // ── The derived branch ──────────────────────────────────────────────────────

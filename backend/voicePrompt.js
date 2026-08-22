@@ -296,7 +296,20 @@ function agendaBlock(priorFacts, alreadyAsked = []) {
     ? `GET THESE FIRST, in whatever order the conversation allows. Without them nobody can tell this caller anything useful about their loan, and a call that ends early having got only these is a good call:\n${essentials.map((a) => `    · ${a}`).join("\n")}`
     : `You already have everything the decision needs from this caller. Anything below is filling in the picture — take it only if the conversation goes there naturally, and let them lead.`;
 
-  const lines = BRANCHES.map((branch) => {
+  // ⚠️ THE ORDER THE AGENT ASKS IN MUST MATCH THE ORDER THE MAP SHOWS, and
+  // "Student" leading was what broke that. Its remaining questions — the city
+  // they live in, their qualification, whether they already hold a card — are
+  // the least useful things on the call, and listing them first invited the
+  // agent to open with them while the map was lit on the institute branch.
+  //
+  // The chain that matters is the flowchart's: the institute sets the fee, the
+  // fee sets the amount, and the amount is what the co-applicant's income gets
+  // tested against. So that chain runs first and the student's leftovers come
+  // last. The essentials block above is already in this order, because the
+  // student branch has no essentials left in it at all.
+  const ASK_ORDER = ["institute", "loan", "coApplicant", "applicant"];
+  const ordered = ASK_ORDER.map((id) => BRANCHES.find((b) => b.id === id)).filter(Boolean);
+  const lines = ordered.map((branch) => {
     const c = byId.get(branch.id);
     if (!c || !c.missing.length) {
       return `- ${branch.title}: nothing outstanding — you already have this.`;

@@ -135,7 +135,10 @@ console.log("\n── Coverage ────────────────�
 const cov = coverage({});
 check("an empty profile has captured nothing", cov.captured, 0);
 check("and every branch is listed", cov.branches.length, 5 - 1); // four collected; underwriting is derived
-const partial = coverage({ applicant: { name: "Rohan", age: 24 } });
+// Fields the agent actually asks for. `applicant.name` and `age` used to be
+// used here and no longer count, because they are no longer asked — they are
+// read off the documents instead. See askOnCall in callSchema.js.
+const partial = coverage({ applicant: { city: "Pune" }, institute: { course: "MBA" } });
 check("two answers count as two", partial.captured, 2);
 // Form 16 is meaningless for a self-employed co-applicant and an ITR count is
 // meaningless for a salaried one. Neither should sit on the dashboard as a
@@ -210,8 +213,15 @@ check("so the agent is never told to ask for it",
   coverage(accountIdentityFacts({ name: "Eklavya Pandey" }))
     .branches.find((b) => b.id === "applicant").missing.some((m) => m.id === "name"),
   false);
-check("an anonymous caller is still asked",
-  coverage({}).branches.find((b) => b.id === "applicant").missing.some((m) => m.id === "name"), true);
+// ⚠️ THIS ASSERTION IS THE REVERSE OF WHAT IT USED TO BE, deliberately. It read
+// "an anonymous caller is still asked" and expected true — the agent putting the
+// question when nothing had seeded it. That is now wrong on purpose: a name is
+// printed on the PAN and the Aadhaar, it is the single worst thing to put
+// through speech recognition, and asking for it burns a turn of a five-minute
+// call. It is still RECORDED if a caller volunteers it; it is simply never
+// asked for.
+check("nobody is asked their name, seeded or not",
+  coverage({}).branches.find((b) => b.id === "applicant").missing.some((m) => m.id === "name"), false);
 check("a nameless account contributes nothing", accountIdentityFacts({}), {});
 
 console.log("\n── Acknowledgements sound like answering, not stalling ─────");
