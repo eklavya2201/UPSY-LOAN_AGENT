@@ -52,6 +52,7 @@
     hangupBtn: $("hangupBtn"),
     sheet: $("scheduleSheet"),
     reviewSheet: $("reviewSheet"),
+    docsSheet: $("docsSheet"),
     reviewForm: $("reviewForm"),
     reviewDone: $("reviewDone"),
     reviewDoneLine: $("reviewDoneLine"),
@@ -90,11 +91,21 @@
 
   function showView(name) {
     Object.keys(el.views).forEach((k) => el.views[k].classList.toggle("on", k === name));
-    // The way back to /docs belongs to the screens where the caller is still
-    // deciding. Once they are connecting or on a call it disappears: a live
-    // call is not a place to offer someone a link out of the page, and the
-    // call view's own controls own that corner of the screen.
-    document.getElementById("docCta")?.classList.toggle("on", name === "brief" || name === "auth");
+    // ⚠️ THE STANDING UPLOAD LINK IS GONE, on purpose. It used to sit on the
+    // brief and sign-in screens as a permanent way into /docs and its full
+    // checklist. The team's call: the upload option should appear AFTER the
+    // conversation and reflect it — "since a business profile was mentioned,
+    // ITR is required" — rather than handing a fixed list to someone the agent
+    // has just spent five minutes learning about.
+    //
+    // It is shown only on the way BACK. Someone who arrived from /docs came
+    // here mid-upload and still needs the door home; everybody else meets the
+    // document list once the call has decided what it should contain, in the
+    // sheet below.
+    const returning = /^\/docs(\/|$)/.test(sessionStorage.getItem("upsy_return") || "");
+    document
+      .getElementById("docCta")
+      ?.classList.toggle("on", returning && (name === "brief" || name === "auth"));
   }
 
   // ── The account ───────────────────────────────────────────────────────────
@@ -783,6 +794,9 @@
   // True from the instant beginCall() is entered until it settles. `call` alone
   // cannot do this job — see the comment there.
   let starting = false;
+  // The latest document plan the relay sent for THIS call. Reset per call, so a
+  // second call never shows the first one's list.
+  let docPlan = null;
   let timerId = null;
   let closingSelf = false;
   // How much of a call there was to have an opinion about. Counted here rather
@@ -899,6 +913,14 @@
             focusField(msg.branch + (msg.field ? "." + msg.field : ""));
             return;
           }
+          // The documents this conversation has narrowed the catalogue down to.
+          // Arrives at call start and again after every extraction pass, so the
+          // last one received is the answer — nothing has to land at teardown,
+          // which is the least reliable moment there is.
+          if (msg && msg.event === "documents" && msg.plan) {
+            docPlan = msg.plan;
+            return;
+          }
           // Detection heard the caller's own language and the agent has moved
           // to it. Worth saying on screen: a caller who is not told the machine
           // noticed will often repeat themselves in English to be safe, which
@@ -980,7 +1002,100 @@
       closingSelf = true;
       history.back();
     }
-    maybeAskForReview(seconds, turns);
+    // What the call decided they need, before the rating prompt — the useful
+    // thing first, the favour second. Falls through to the review when there is
+    // no plan worth showing, so a mis-tap that never became a conversation does
+    // not get a document list.
+    if (!showDocumentPlan(turns)) maybeAskForReview(seconds, turns);
+  }
+
+  /**
+   * Show what this conversation established the caller will need.
+   *
+   * Returns true if the sheet was shown, so the caller can decide whether to
+   * ask for a rating as well — two sheets at once would be a pile-on.
+   *
+   * ⚠️ REQUIRES AN ACTUAL CONVERSATION. planDocuments() always returns the
+   * mandatory set (PAN, Aadhaar, photo, bank statement) even for an empty
+   * profile, so showing it after a four-second mis-tap would be a generic
+   * checklist wearing the words "based on what we just talked about" — exactly
+   * the thing this replaced. Two caller turns is the same bar the review uses.
+   */
+  function showDocumentPlan(turns) {
+    const asked = (docPlan && docPlan.asked) || [];
+    if (!asked.length || turns < 2) return false;
+
+    // Grouped by whose document it is, because the list is long — a real plan
+    // runs to fifteen items, and an undifferentiated column of fifteen is a
+    // wall. "Six from you, nine from your co-applicant" is also the shape of
+    // the job as the caller will actually do it: they go and find their own
+    // papers, then ring their father.
+    const STAGE_LABELS = { student: "From you", coapplicant: "From your co-applicant", collateral: "For the security" };
+    const list = document.getElementById("docsList");
+    list.textContent = "";
+
+    const groups = new Map();
+    for (const doc of asked) {
+      const stage = doc.stage || "other";
+      if (!groups.has(stage)) groups.set(stage, []);
+      groups.get(stage).push(doc);
+    }
+
+    for (const [stage, docs] of groups) {
+      // Only worth a heading when there is more than one group to tell apart.
+      if (groups.size > 1) {
+        const head = document.createElement("li");
+        head.className = "doc-group";
+        head.textContent = `${STAGE_LABELS[stage] || "Also"} · ${docs.length}`;
+        list.appendChild(head);
+      }
+      for (const doc of docs) {
+        const li = document.createElement("li");
+        const name = document.createElement("b");
+        name.textContent = doc.label;
+        li.appendChild(name);
+        // The reason is the whole point of this screen — it is what makes the
+        // list read as coming from the conversation rather than from a form.
+        if (doc.because) {
+          const why = document.createElement("span");
+          why.textContent = doc.because;
+          li.appendChild(why);
+        }
+        list.appendChild(li);
+      }
+    }
+
+    // Ruled-out documents, collapsed. Being told what you do NOT have to find
+    // is genuinely useful, and it is why the plan carries a reason for every
+    // exclusion instead of silently dropping them.
+    const skipped = (docPlan && docPlan.skipped) || [];
+    const wrap = document.getElementById("docsSkippedWrap");
+    const skipList = document.getElementById("docsSkipped");
+    skipList.textContent = "";
+    if (skipped.length) {
+      for (const doc of skipped) {
+        const li = document.createElement("li");
+        const name = document.createElement("b");
+        name.textContent = doc.label;
+        li.appendChild(name);
+        if (doc.because) {
+          const why = document.createElement("span");
+          why.textContent = doc.because;
+          li.appendChild(why);
+        }
+        skipList.appendChild(li);
+      }
+      document.getElementById("docsSkippedCount").textContent =
+        `${skipped.length} document${skipped.length === 1 ? "" : "s"}`;
+      wrap.open = false;
+    }
+    wrap.hidden = !skipped.length;
+
+    document.getElementById("docsIntro").textContent =
+      `Based on what we just talked about — ${asked.length} document${asked.length === 1 ? "" : "s"}.`;
+
+    openSheet("docsSheet");
+    return true;
   }
 
   // ── How was that call? ────────────────────────────────────────────────────
@@ -1025,6 +1140,23 @@
   function selectedRating() {
     const picked = el.reviewSheet.querySelector('input[name="rvRating"]:checked');
     return picked ? Number(picked.value) : null;
+  }
+
+  // Same reflow-not-rAF reason as the other sheets: rAF does not fire in a tab
+  // that is not compositing, so the sheet would never appear.
+  function openSheet(id) {
+    const sheet = document.getElementById(id);
+    if (!sheet) return;
+    sheet.hidden = false;
+    void sheet.offsetHeight;
+    sheet.classList.add("open");
+  }
+
+  function closeSheet(id) {
+    const sheet = document.getElementById(id);
+    if (!sheet) return;
+    sheet.classList.remove("open");
+    setTimeout(function () { sheet.hidden = true; }, 240);
   }
 
   function openReview() {
@@ -1188,6 +1320,31 @@
 
   // The stars are radios, so one delegated change handler covers taps, clicks
   // and arrow keys alike — there is no separate keyboard path to maintain.
+  // ── The document sheet ──────────────────────────────────────────────────
+  // "Later" is a real option, not a soft no. Someone who has just spent five
+  // minutes on the phone should not be made to feel they have failed a step by
+  // not uploading immediately - the list has been filed against their account
+  // either way, and the next call knows it.
+  document.getElementById("docsLater")?.addEventListener("click", function () {
+    closeSheet("docsSheet");
+  });
+
+  // Tapping the dimmed backdrop dismisses it, the way every other sheet here
+  // behaves. The card itself must not, or a tap on the list would close it.
+  el.docsSheet?.addEventListener("click", function (e) {
+    if (e.target === el.docsSheet) closeSheet("docsSheet");
+  });
+
+  // The upload link carries the caller back to /docs on the SAME origin, so
+  // the session and the lead id survive the hop - the property the whole
+  // handoff depends on, and the reason both halves must stay on one hostname.
+  document.getElementById("docsUpload")?.addEventListener("click", function () {
+    try {
+      sessionStorage.setItem("upsy_return", "/upsy-voice-agent");
+    } catch (e) {
+      /* private mode; the link still works, it just will not offer a way back */
+    }
+  });
   el.reviewSheet.addEventListener("change", function (e) {
     if (e.target.name !== "rvRating") return;
     const rating = selectedRating();

@@ -34,6 +34,7 @@ import { stretchGaps } from "./voicePacing.js";
 import { recordCall, mergeProfile } from "./voiceAccounts.js";
 import { buildIntroduction, buildVoiceSystemPrompt, fixedGreetings } from "./voicePrompt.js";
 import { fileCall, extractCallFacts, mergedProfile, fastAnswerPatch } from "./callExtract.js";
+import { planDocuments } from "./docPlan.js";
 import { agendaSnapshot, matchAgendaField, isConfidentMatch, deriveAll, getField } from "./callSchema.js";
 import { readAnswer } from "./fastAnswer.js";
 import { verifyInstitute, claimKey } from "./instituteVerify.js";
@@ -736,6 +737,29 @@ export class RelayCall {
   // every extraction pass, so the page draws the file filling in live.
   sendAgenda() {
     send(this.ws, { event: "agenda", agenda: agendaSnapshot(this.profile) });
+
+    // The documents THIS conversation has narrowed the catalogue down to, sent
+    // on the same cadence as the agenda — call start, then after every
+    // extraction pass.
+    //
+    // Sent continuously rather than once at the end, deliberately. A single
+    // message at teardown would have to land in the moment the socket is
+    // closing, which is the least reliable moment there is; sending it all the
+    // way through means the page always holds the current answer and needs
+    // nothing to arrive at the end. It also covers the anonymous caller, who
+    // has no account for the page to look the plan up from afterwards.
+    //
+    // This is the join the team asked for: the upload list is no longer a fixed
+    // checklist on the site, it is what the call established — a caller who
+    // mentioned a business profile gets asked for ITR, and one whose
+    // co-applicant is salaried never is.
+    try {
+      send(this.ws, { event: "documents", plan: planDocuments(this.profile || {}) });
+    } catch (e) {
+      // Never let a document plan take a live call down. The agenda above is
+      // the load-bearing one; this is an addition to it.
+      console.error("[voice:relay] could not build the document plan:", e.message);
+    }
   }
 
   // ── Speculative thinking ──────────────────────────────────────────────────
