@@ -517,6 +517,11 @@ export class SarvamTts {
     return `sarvam:${TTS_SPEAKER}:${this.language}`;
   }
 
+  // Which language the brand name should be respelled for. Tracks setLanguage().
+  get speechLanguage() {
+    return this.language;
+  }
+
   /**
    * Switch the voice's language mid-call.
    *

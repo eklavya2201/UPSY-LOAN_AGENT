@@ -29,6 +29,8 @@ import {
   SARVAM_LANGUAGES,
 } from "./voiceSarvam.js";
 import { Resampler, resampleBuffer } from "./voiceResample.js";
+import { forSpeech } from "./pronounce.js";
+import { buildIntroduction } from "./voicePrompt.js";
 
 const ok = (m) => console.log(`✅ ${m}`);
 const bad = (m) => console.log(`❌ ${m}`);
@@ -146,6 +148,44 @@ step("Sample-rate conversion (offline, free)");
   }
   if (worst > -1.5) ok(`speech band passes untouched (worst loss ${worst.toFixed(2)}dB at 300/1k/3kHz)`);
   else fail(`the filter is eating speech: ${worst.toFixed(2)}dB lost in the 300-3000Hz band`);
+}
+
+// ── 2b. Is the brand name spelled or said? (offline, free) ──────────────────
+//
+// Every engine read "UPSY" as four letters, in every language — all-caps is how
+// acronyms are written, so this is correct behaviour on the wrong word. Proved
+// by playing the synthesis back through the recogniser: "मैं UPSY हूँ" came back
+// as "मैं यूपीएसवाई हूँ", which is literally yoo-pee-ess-vai.
+//
+// The substitution itself is a pure function, so it is asserted here for free.
+// The audio proof is in the doc comment on pronounce.js — re-running it costs
+// API calls and the thing that would actually regress is this table.
+step("Brand name pronunciation (offline, free)");
+{
+  const cases = [
+    ["Hi, this is UPSY.", "en", "Upsee"],
+    ["Hi, this is Upsy.", "en", "Upsee"],
+    ["नमस्ते, मैं UPSY हूँ।", "hi", "अप्सी"],
+    ["मी UPSY आहे.", "mr", "अप्सी"],
+    ["నేను UPSY", "te", "Upsee"],
+  ];
+  const wrong = cases.filter(([t, l, want]) => {
+    const out = forSpeech(t, l);
+    return !out.includes(want) || /\bupsy\b/i.test(out);
+  });
+  if (!wrong.length) ok(`the name is respelled for speech in all ${cases.length} cases`);
+  else fail(`${wrong.length}/${cases.length} not respelled — the agent will spell "U-P-S-Y" out loud`);
+
+  // It must not maul words that merely contain the letters.
+  const safe = forSpeech("The upsystem is fine", "en");
+  if (safe.includes("upsystem")) ok("words that merely contain 'upsy' are left alone");
+  else fail(`word-boundary leak: ${safe}`);
+
+  // And it must never reach anything written down — the transcript, the stored
+  // turns and /team all have to keep the company's actual name.
+  const intro = buildIntroduction(null, "en");
+  if (/UPSY/.test(intro) && !/Upsee/.test(intro)) ok("written text still says UPSY (speech-only substitution)");
+  else fail("the respelling leaked into the greeting text, which is stored and displayed");
 }
 
 // ── 3. Does it speak? ───────────────────────────────────────────────────────

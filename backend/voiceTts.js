@@ -37,6 +37,7 @@
 // provider has an Indian-accented voice worth using.
 
 import WebSocket from "ws";
+import { forSpeech } from "./pronounce.js";
 import {
   SarvamTts,
   sarvamConfigured,
@@ -752,8 +753,13 @@ class CachedTts {
 
     // Not cached, but worth keeping? Capture on the way past.
     const collecting = key ? [] : null;
+    // ⚠️ THE ONE PLACE THE BRAND NAME IS RESPELLED, and it is deliberately below
+    // the cache key. The key is computed from the real text above, so a phrase
+    // has one cache entry regardless of how it ends up being pronounced — and
+    // nothing outside this call ever sees the substitution. The transcript, the
+    // stored turns and /team all keep "UPSY".
     await this.engine.speak(
-      text,
+      forSpeech(text, this.engine.speechLanguage || "en"),
       (pcm) => {
         if (collecting) collecting.push(pcm);
         onAudio(pcm);
