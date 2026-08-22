@@ -27,6 +27,20 @@ import { makeJsonWriter } from "./jsonFile.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
+import { dbEnabled } from "./db.js";
+import * as pgStore from "./voiceAccountsPg.js";
+
+// ── Which store is live ─────────────────────────────────────────────────────
+// Checked per call rather than captured at import, so a test can set
+// DATABASE_URL and get Postgres without reloading the module — and so a
+// deployment that loses its database URL degrades to the files instead of
+// throwing on every request.
+//
+// Everything below keeps its JSON implementation. Nothing is deleted, because
+// the fallback IS the rollback: unset one variable and the old path runs
+// untouched. The password hashing, the validation and the error messages are
+// shared by both — only the reads and writes differ.
+const usePg = () => dbEnabled();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -140,6 +154,7 @@ async function issueSession(db, accountId) {
  *   return this to a browser MUST shape it with publicAccount() first.
  */
 export async function resolveSession(token) {
+  if (usePg()) return pgStore.resolveSession(token);
   if (!token) return null;
   const db = await load();
   const session = db.sessions[String(token)];
@@ -153,6 +168,7 @@ export async function resolveSession(token) {
 }
 
 export async function endSession(token) {
+  if (usePg()) return pgStore.endSession(token);
   if (!token) return;
   const db = await load();
   if (db.sessions[String(token)]) {
@@ -207,6 +223,20 @@ export async function createAccount({ name, phone, password }) {
     throw Object.assign(new Error("That password is too long."), { code: "INVALID" });
   }
 
+  if (usePg()) {
+    const accountId = `VA-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const inserted = await pgStore.insertAccount({
+      accountId, name: cleanName, phone, passwordHash: await hashPassword(pw),
+    });
+    // Null means the unique index on phone rejected it — which is the same
+    // "already taken" case below, decided by the database rather than by a
+    // read-then-write that two signups can both win.
+    if (!inserted) {
+      throw Object.assign(new Error("There's already an account on this number. Log in instead."), { code: "TAKEN" });
+    }
+    return { token: await pgStore.createSession(accountId), account: publicAccount(inserted) };
+  }
+
   const db = await load();
   if (findByPhone(db, phone)) {
     // Safe to be specific: the person typing already knows whether this number
@@ -236,6 +266,19 @@ export async function createAccount({ name, phone, password }) {
  * accounts.
  */
 export async function authenticate({ phone, password }) {
+  if (usePg()) {
+    const found = phone ? await pgStore.findByPhone(phone) : null;
+    // The same deliberate vagueness as the JSON path: a wrong number and a
+    // wrong password must be indistinguishable, or this endpoint enumerates
+    // which mobile numbers have accounts. Both branches still run the hash so
+    // the timing does not give it away either.
+    const good = found ? await verifyPassword(String(password || ""), found.passwordHash) : false;
+    if (!found || !good) {
+      throw Object.assign(new Error("That number and password don't match."), { code: "INVALID" });
+    }
+    return { token: await pgStore.createSession(found.accountId), account: publicAccount(found) };
+  }
+
   const db = await load();
   const account = phone ? findByPhone(db, phone) : null;
   const pw = String(password || "");
@@ -278,6 +321,7 @@ export async function authenticate({ phone, password }) {
  *   what they mean.
  */
 export async function mergeProfile(accountId, facts, { replace = [] } = {}) {
+  if (usePg()) return pgStore.mergeProfile(accountId, facts, { replace });
   if (!accountId || !facts || typeof facts !== "object") return null;
   const db = await load();
   const account = db.accounts[accountId];
@@ -313,6 +357,7 @@ function mergeInto(target, key, value) {
  * @param {Array<{role: string, text: string, at: string}>} [call.turns]
  */
 export async function recordCall(accountId, call) {
+  if (usePg()) return pgStore.recordCall(accountId, call);
   if (!accountId) return null;
   const db = await load();
   const account = db.accounts[accountId];
@@ -344,18 +389,21 @@ export async function recordCall(accountId, call) {
  * read one key is the kind of thing that becomes a habit.
  */
 export async function getProfile(accountId) {
+  if (usePg()) return pgStore.getProfile(accountId);
   const db = await load();
   return db.accounts[accountId]?.profile || {};
 }
 
 /** Newest call first. */
 export async function listCalls(accountId) {
+  if (usePg()) return pgStore.listCalls(accountId);
   const db = await load();
   return (db.accounts[accountId]?.calls || []).slice();
 }
 
 /** Every account, for the team dashboard. Shaped, so no hash can escape. */
 export async function listAccounts() {
+  if (usePg()) return pgStore.listAccounts().then((rows) => rows.map(publicAccount));
   const db = await load();
   return Object.values(db.accounts)
     .map(publicAccount)
@@ -364,6 +412,11 @@ export async function listAccounts() {
 
 /** One account with its calls, for the team dashboard's detail view. */
 export async function getAccountDetail(accountId) {
+  if (usePg()) {
+    const account = await pgStore.findById(accountId);
+    if (!account) return null;
+    return { ...publicAccount(account), calls: await pgStore.listCalls(accountId) };
+  }
   const db = await load();
   const account = db.accounts[accountId];
   if (!account) return null;

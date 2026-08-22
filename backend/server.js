@@ -29,6 +29,7 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache, activeCallCount } from "./voiceRelay.js";
 import { flushAllStores, sweepTempFiles } from "./jsonFile.js";
+import { dbStatusLine, ensureSchema, dbEnabled, closePool } from "./db.js";
 // PII never reaches a log line in the first place — see backend/redact.js.
 import * as redact from "./redact.js";
 
@@ -1449,6 +1450,13 @@ server.listen(PORT, () => {
   // never happened, so the real file is intact - but they pile up on a box
   // that crashes repeatedly. Best-effort, never blocks the boot.
   sweepTempFiles(path.join(__dirname, "..", "data"));
+  // Which store is live, and create the tables if this is a fresh database.
+  // Both are best-effort: a database that is briefly unreachable must not stop
+  // the server booting, because every store falls back to the files on its own.
+  if (dbEnabled()) {
+    ensureSchema().catch((e) => console.warn(`⚠️  Could not apply the schema: ${e.message}`));
+  }
+  dbStatusLine().then((line) => console.log(line)).catch(() => {});
   console.log(teamAuthStatusLine());
   console.log(voiceStatusLine());
   if (voiceProvider() === "upsy") {
@@ -1520,7 +1528,8 @@ async function shutdown(signal) {
 
   try {
     await flushAllStores();
-    console.log("  all stores flushed to disk.");
+    await closePool();
+    console.log("  all stores flushed, database pool closed.");
   } catch (e) {
     console.error("  could not flush every store:", e.message);
   }
