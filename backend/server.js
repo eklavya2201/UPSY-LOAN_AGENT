@@ -29,7 +29,7 @@ import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as 
 import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache, activeCallCount } from "./voiceRelay.js";
 import { flushAllStores, sweepTempFiles } from "./jsonFile.js";
-import { dbStatusLine, ensureSchema, dbEnabled, closePool } from "./db.js";
+import { dbStatusLine, ensureSchema, dbEnabled, closePool, query } from "./db.js";
 // PII never reaches a log line in the first place — see backend/redact.js.
 import * as redact from "./redact.js";
 
@@ -1176,7 +1176,24 @@ const voiceLimiter = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
  * a key. "Which languages work" is not sensitive; anything that narrows a
  * credential is. Keep it that way if this grows.
  */
-app.get("/api/voice/status", (_req, res) => {
+/**
+ * Is the database really answering, or did it quietly fall back to files?
+ *
+ * A round trip, not a check of the env var: DATABASE_URL being set proves
+ * nothing if the password is wrong or the host is unreachable, and both of
+ * those degrade to the JSON files without a single error a caller would see.
+ */
+async function storageStatus() {
+  if (!dbEnabled()) return { kind: "json-files", persistent: false, note: "DATABASE_URL is not set — data is lost on every deploy" };
+  try {
+    const { rows } = await query("select count(*)::int as accounts from voice_accounts");
+    return { kind: "postgres", persistent: true, voiceAccounts: rows[0].accounts };
+  } catch (e) {
+    return { kind: "json-files", persistent: false, note: `DATABASE_URL is set but unreachable: ${e.message}` };
+  }
+}
+
+app.get("/api/voice/status", async (_req, res) => {
   const languages = {};
   for (const lang of ["en", "hi", "mr", "te", "ta", "kn", "ml", "bn", "gu", "pa", "od", "auto"]) {
     const problem = voiceConfigError(lang);
@@ -1190,6 +1207,13 @@ app.get("/api/voice/status", (_req, res) => {
     // the multilingual work, and each time the honest answer was "I cannot
     // tell", which is a poor way to debug a live call.
     build: (process.env.RENDER_GIT_COMMIT || "local").slice(0, 7),
+    // Which store is actually serving, checked live rather than reported from
+    // config. The whole point of moving to Postgres was that a caller who rings
+    // back is remembered, and the failure mode is silent: a missing DATABASE_URL
+    // falls back to files that Render wipes, and nothing about a working call
+    // reveals it. This was unanswerable from outside for one deploy, which is
+    // one deploy too many for the thing the migration existed to guarantee.
+    storage: await storageStatus(),
     provider: voiceProvider(),
     relay: relayStatusLine("en"),
     relayNonEnglish: relayStatusLine("hi"),
