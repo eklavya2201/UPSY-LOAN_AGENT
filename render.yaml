@@ -29,11 +29,10 @@ services:
       # persistent disk, which the data/ caveat elsewhere already notes).
       - key: VOICE_PROVIDER
         value: upsy
-      # Does both the hearing (STT) and the speaking (Aura TTS) now — Cartesia's
-      # free tier bills per character and ran dry at ~21 calls a month.
+      # Does BOTH the hearing (STT) and the speaking (Aura TTS), so it is the
+      # single key voice cannot run without. If Deepgram is down, the backup is
+      # STT_PROVIDER=sarvam + TTS_PROVIDER=sarvam — Sarvam covers both halves.
       - key: DEEPGRAM_API_KEY
-        sync: false
-      - key: CARTESIA_API_KEY
         sync: false
       # Hindi, Marathi, Telugu, Tamil, Kannada, Malayalam, Bengali, Gujarati,
       # Punjabi, Odia. NOT interchangeable with the Deepgram key: Aura has no
@@ -46,9 +45,6 @@ services:
       # Render wipes on every deploy - so a caller who rings back is a stranger.
       # Use Supabase's SESSION pooler (port 6543), not the transaction pooler.
       - key: DATABASE_URL
-        sync: false
-      # Only used when VOICE_PROVIDER=cartesia (the hosted agent path).
-      - key: CARTESIA_AGENT_ID
         sync: false
       # Where /upsy-voice-agent's "Schedule call" requests are texted. Unset is
       # fine — they still persist and print to the server log.

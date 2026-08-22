@@ -26,7 +26,7 @@ import { answerDocQuestion, assistConfigured } from "./assist.js";
 import { saveFile, filePath } from "./files.js";
 import { assessEligibility } from "./eligibility.js";
 import { startCall as startLiveAssist, stopCall as stopLiveAssist, getStatus as getLiveAssistStatus } from "./liveAssistManager.js";
-import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, checkAgentReady, voiceProvider } from "./voiceCall.js";
+import { createVoiceSession, voiceConfigured, voiceConfigError, voiceStatusLine, voiceProvider } from "./voiceCall.js";
 import { attachVoiceRelay, relayStatusLine, warmVoiceCache, activeCallCount } from "./voiceRelay.js";
 import { flushAllStores, sweepTempFiles } from "./jsonFile.js";
 import { dbStatusLine, ensureSchema, dbEnabled, closePool, query } from "./db.js";
@@ -1277,13 +1277,6 @@ app.post("/api/voice/session", async (req, res) => {
     res.json(session);
   } catch (e) {
     if (e.code === "NOT_CONFIGURED") return res.status(503).json({ error: e.message });
-    // The agent exists but was never deployed. Worth its own branch: the fix is
-    // one button in the Cartesia dashboard, and without this the caller only
-    // ever sees an opaque 1011 close after the socket opens.
-    if (e.code === "AGENT_NOT_READY") {
-      console.error(`[voice] ${e.message}`);
-      return res.status(503).json({ error: "UPSY's voice line isn't switched on yet. Please try the chat, or check back shortly.", detail: e.message });
-    }
     console.error("[voice] session failed:", e.message);
     res.status(502).json({ error: "Couldn't start the call right now. Please try again in a moment." });
   }
@@ -1454,20 +1447,10 @@ server.listen(PORT, () => {
   if (openaiSide()) readers.push(`${openaiSide().name} (${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o-mini"})`);
   readers.push("OCR (fallback)");
   console.log(`Document reader priority: ${readers.join(" → ")}`);
-  // The agent can be configured (keys present) and still refuse every call
-  // because it was never deployed. Say so at boot rather than letting a caller
-  // find out — this is exactly the failure that looked like our bug on 2026-08-06.
-  // Only the hosted path has a deployment that can be un-published. Our own
-  // relay is live whenever this process is, which is most of the point of it.
-  if (voiceProvider() === "cartesia" && voiceConfigured()) {
-    checkAgentReady({ force: true })
-      .then((r) => {
-        if (!r.ok) console.warn(`⚠️  Voice calls will fail: ${r.reason}`);
-        else if (r.unverified) console.warn(`⚠️  Voice agent readiness unverified: ${r.reason}`);
-        else console.log("Voice agent is deployed and accepting calls.");
-      })
-      .catch((e) => console.warn(`⚠️  Could not check the voice agent: ${e.message}`));
-  }
+  // No readiness check here any more. The removed hosted path had a deployment
+  // that could be un-published behind our backs, which needed preflighting at
+  // boot; our own relay is live whenever this process is, which is most of the
+  // point of owning it.
   // Same reasoning as the reader-priority line: make it obvious at a glance
   // whether the phone-call agent is live, instead of finding out on a 503.
   // Temp files from a process that died mid-write. Harmless - the rename

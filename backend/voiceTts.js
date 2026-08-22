@@ -12,29 +12,34 @@
 // syllable land while the rest is still being generated.
 //
 // ── Providers ───────────────────────────────────────────────────────────────
-// Deepgram Aura by default, Cartesia Sonic behind TTS_PROVIDER=cartesia.
+// Deepgram Aura for English, Sarvam bulbul for every other language.
+// TTS_PROVIDER picks the English engine, and it is the backup switch:
+// TTS_PROVIDER=sarvam moves English onto Sarvam too, which is what to do if
+// Deepgram is having a bad day. Its sibling is STT_PROVIDER=sarvam in
+// voiceStt.js — together they move a whole call off Deepgram with no code
+// change, which is the only fallback here that covers BOTH halves of a call.
 //
-// Cartesia was first and works, but its free tier bills 1 credit per CHARACTER
-// against 20,000 a month — which is about 21 four-turn calls, and ran dry inside
-// a single day of building this. Deepgram bills the same speech at roughly
-// $0.03 per thousand characters against a balance the team already has, which is
-// ~7,000 calls on credit already paid for.
-//
-// Measured head to head on the same sentences before switching (see
-// Desktop/testing-deepgram/FINDINGS.md):
+// There was a third engine, Cartesia Sonic, removed on 2026-08-22. Its free
+// tier bills 1 credit per CHARACTER against 20,000 a month — about 21 four-turn
+// calls, and it ran dry inside a single day of building this. Deepgram bills
+// the same speech at roughly $0.03 per thousand characters. Measured head to
+// head on the same sentences before switching (Desktop/testing-deepgram):
 //
 //   first audio, warm socket   Cartesia ~360ms   Deepgram ~396ms
 //   pace                       Jacqueline 218wpm  athena 195wpm
 //   audio format               raw pcm_s16le 44.1kHz, identical on both
 //   Indian-accented voices     Cartesia 3, Deepgram 0
 //
-// The 40ms latency difference is far below perception, and it is dwarfed by the
-// 1.4-2s the language model takes to produce a first sentence. Cartesia stays as
-// a fallback rather than being deleted: it is proven, and it costs nothing to
-// leave a working second path in place.
+// It was kept for two weeks as "a proven second path that costs nothing to
+// leave in place". That reasoning did not survive asking what a backup is FOR.
+// One key does both hearing and speaking here, so the realistic outage takes
+// Deepgram out entirely — and a spare that can only speak leaves an agent that
+// talks fluently and cannot hear a word. Sarvam covers both halves, so Cartesia
+// was not a fallback, just a second thing to keep working.
 //
-// Sarvam still slots in here for Hindi behind the same interface — neither
-// provider has an Indian-accented voice worth using.
+// Two findings from it outlived it and are kept below: sonic-2's speech-rate
+// control does nothing (voicePacing.js exists because of that), and picking a
+// voice out of a catalogue's prose went wrong twice.
 
 import WebSocket from "ws";
 import { forSpeech } from "./pronounce.js";
@@ -97,33 +102,20 @@ const SPEAK_TIMEOUT_MS = Number(process.env.TTS_SPEAK_TIMEOUT_MS || 30000);
 // socket entirely. Short: this is on the path of the next thing the agent says.
 const CLEAR_TIMEOUT_MS = Number(process.env.TTS_CLEAR_TIMEOUT_MS || 800);
 
-const CARTESIA_HOST = "api.cartesia.ai";
-const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2025-04-16";
-
 // Must match SAMPLE_RATE in frontend/voiceClient.js and the STT sample rate.
 // Everything in this pipeline is 44.1kHz mono PCM end to end, so there is not a
 // single resample step between the caller's microphone and their speaker.
 export const TTS_SAMPLE_RATE = 44100;
 
-// sonic-2 is the current model; sonic-english is sunsetted and returns HTTP 400
-// (confirmed against the live account, so don't "fix" this back to it).
-const CARTESIA_MODEL = process.env.CARTESIA_TTS_MODEL || "sonic-2";
+// ⚠️ PICK A VOICE BY LISTENING, NOT BY READING ITS DESCRIPTION. Kept here
+// because it was learned the expensive way on the removed Cartesia path: four
+// picks in one day, and only the ones made by ear were any good. Skylar (US,
+// "customer care") → Kiara, on the sound-but-wrong reasoning that an
+// Indian-accented voice would be easier for Indian callers to follow → then
+// Jacqueline. Note the register trap especially: Kiara is sold as "joyful… for
+// happy conversations", which is precisely the wrong tone for someone anxious
+// about borrowing fifteen lakh. Avoid anything sold as energetic or cheerful.
 
-// Jacqueline — "confident, young adult female for empathic customer support",
-// which is the closest thing in the catalogue to what this agent actually does.
-//
-// Chosen by listening, after two picks made from written descriptions were both
-// wrong. Skylar (US, "customer care") was the original; Kiara replaced her on
-// the reasoning that an Indian-accented voice would be easier for Indian callers
-// to follow — a sound argument that did not survive contact with the ear, since
-// Cartesia's Indian-accented English is not good. Note the register trap too:
-// Kiara is sold as "joyful… for happy conversations", which is the wrong tone
-// for someone anxious about borrowing fifteen lakh.
-//
-// If this is changed again, LISTEN FIRST. The catalogue has 412 English voices
-// and exactly three Indian-accented ones (Kiara, Devansh, Aarav), so there is
-// not much to choose from on accent — pick on clarity and register instead.
-const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc";
 
 // ⚠️ Cartesia's speech-rate controls do NOT work on sonic-2 — measured, not
 // assumed. The same sentence came back at 4.32s baseline, 4.27s with
@@ -142,7 +134,6 @@ const CARTESIA_VOICE = process.env.CARTESIA_VOICE_ID || "9626c31c-bec5-4cca-baa8
 export function ttsConfigured(language = "en") {
   const provider = ttsProviderFor(language);
   if (provider === "sarvam") return sarvamConfigured();
-  if (provider === "cartesia") return Boolean(process.env.CARTESIA_API_KEY);
   return Boolean(process.env.DEEPGRAM_API_KEY);
 }
 
@@ -150,9 +141,6 @@ export function ttsConfigError(language = "en") {
   if (ttsConfigured(language)) return null;
   const provider = ttsProviderFor(language);
   if (provider === "sarvam") return sarvamConfigError();
-  if (provider === "cartesia") {
-    return "CARTESIA_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak.";
-  }
   return "DEEPGRAM_API_KEY is not set, so the agent has no voice — the relay can hear and think but cannot speak. (The same key does the hearing.)";
 }
 
@@ -161,14 +149,13 @@ export function ttsConfigError(language = "en") {
 export function ttsStatusLine(language = "en") {
   const provider = ttsProviderFor(language);
   if (provider === "sarvam") return sarvamStatusLine(language);
-  if (provider === "cartesia") return `Cartesia Sonic (${CARTESIA_MODEL})`;
   return `Deepgram Aura (${DEEPGRAM_VOICE})`;
 }
 
 /**
  * Deepgram Aura over their streaming WebSocket.
  *
- * Same three methods as CartesiaTts — connect / speak / close — because the
+ * Same three methods as SarvamTts — connect / speak / close — because the
  * relay only knows "give me PCM for this sentence" and must not learn which
  * vendor is behind that.
  *
@@ -467,147 +454,6 @@ class AuraTts {
   }
 }
 
-class CartesiaTts {
-  constructor({ language = "en", onError } = {}) {
-    this.language = language;
-    this.onError = onError || (() => {});
-    this.ws = null;
-    this.ready = null;
-    // Cartesia multiplexes replies by context_id. Barge-in works by moving this
-    // forward: chunks tagged with anything else are dropped on arrival, so audio
-    // already in flight for an abandoned sentence can never reach the caller.
-    this.contextId = null;
-    this.pending = null;
-    this.closed = false;
-  }
-
-  get voiceId() {
-    return `cartesia:${CARTESIA_VOICE}`;
-  }
-
-  connect() {
-    if (this.ready) return this.ready;
-    this.ready = new Promise((resolve, reject) => {
-      const params = new URLSearchParams({
-        api_key: process.env.CARTESIA_API_KEY,
-        cartesia_version: CARTESIA_VERSION,
-      });
-      const ws = new WebSocket(`wss://${CARTESIA_HOST}/tts/websocket?${params}`);
-      this.ws = ws;
-
-      ws.on("open", () => resolve());
-      ws.on("message", (raw) => this.handleMessage(raw));
-      ws.on("error", (e) => {
-        this.onError(`TTS socket error: ${e.message}`);
-        reject(e);
-      });
-      ws.on("close", (code) => {
-        // A mid-call close would otherwise leave speak() hanging forever, and a
-        // caller hearing nothing with no error is the worst version of this bug.
-        this.ws = null;
-        this.ready = null;
-        if (!this.closed && this.pending) {
-          this.pending.reject(new Error(`TTS socket closed mid-sentence (code ${code})`));
-          this.pending = null;
-        }
-      });
-    });
-    return this.ready;
-  }
-
-  handleMessage(raw) {
-    let msg;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch (e) {
-      return;
-    }
-    const pending = this.pending;
-    // Late chunks from a sentence we abandoned during barge-in. Dropping them
-    // here is what makes interruption feel instant rather than "it kept talking".
-    if (!pending || msg.context_id !== this.contextId) return;
-
-    if (msg.type === "chunk" && typeof msg.data === "string") {
-      pending.onAudio(Buffer.from(msg.data, "base64"));
-    } else if (msg.type === "done") {
-      this.pending = null;
-      pending.resolve();
-    } else if (msg.type === "error") {
-      this.pending = null;
-      pending.reject(new Error(msg.error || "Cartesia reported a TTS error"));
-    }
-  }
-
-  /**
-   * Speak one sentence, delivering PCM as it is generated.
-   *
-   * @param {string} text
-   * @param {(pcm: Buffer) => void} onAudio - raw pcm_s16le @ 44.1kHz, mono.
-   * @param {AbortSignal} [signal] - abort to stop mid-sentence (barge-in).
-   */
-  async speak(text, onAudio, signal) {
-    if (!text || !text.trim()) return;
-    if (signal?.aborted) return;
-    await this.connect();
-    if (signal?.aborted) return;
-
-    const contextId = `upsy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.contextId = contextId;
-
-    return new Promise((resolve, reject) => {
-      this.pending = { onAudio, resolve, reject, contextId };
-
-      const onAbort = () => {
-        // Advancing the context is the cancel: anything still arriving for the
-        // old one is now ignored by handleMessage. We resolve rather than reject
-        // because an interrupted sentence is a normal event on a phone call.
-        if (this.pending?.contextId === contextId) {
-          this.pending = null;
-          this.contextId = null;
-          resolve();
-        }
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
-
-      try {
-        this.ws.send(
-          JSON.stringify({
-            model_id: CARTESIA_MODEL,
-            transcript: text,
-            voice: { mode: "id", id: CARTESIA_VOICE },
-            output_format: {
-              container: "raw",
-              encoding: "pcm_s16le",
-              sample_rate: TTS_SAMPLE_RATE,
-            },
-            language: this.language,
-            context_id: contextId,
-            continue: false,
-          })
-        );
-      } catch (e) {
-        this.pending = null;
-        reject(e);
-      }
-    });
-  }
-
-  close() {
-    this.closed = true;
-    this.pending = null;
-    const ws = this.ws;
-    this.ws = null;
-    this.ready = null;
-    if (ws && ws.readyState <= WebSocket.OPEN) {
-      try {
-        ws.close();
-      } catch (e) {
-        /* already gone */
-      }
-    }
-  }
-}
-
 // ── The phrase cache ────────────────────────────────────────────────────────
 // Some of what this agent says is byte-identical on every single call: the
 // anonymous greeting, and the ten acknowledgements in voiceFillers.js. They were
@@ -802,9 +648,5 @@ export function makeTts({ language = "en", onError } = {}) {
     return new CachedTts(new SarvamTts({ language: lang, onError }));
   }
 
-  const engine =
-    provider === "cartesia"
-      ? new CartesiaTts({ language: "en", onError })
-      : new AuraTts({ onError });
-  return new CachedTts(engine);
+  return new CachedTts(new AuraTts({ onError }));
 }

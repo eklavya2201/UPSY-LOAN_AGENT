@@ -176,26 +176,21 @@ registerProcessor("upsy-capture-processor", UpsyCaptureProcessor);
       const reason = (event.reason || "").trim();
       const raw = reason ? `${event.code}: ${reason}` : `code ${event.code}`;
 
-      if (/not.*publish|unpublish|not.*found|no.*agent|draft/i.test(reason)) {
-        return "The voice agent isn't published yet. Open it in the Cartesia dashboard and press Publish, then try again.";
-      }
       if (event.code === 1008 || /unauth|forbidden|token|expired|invalid/i.test(reason)) {
         return "The voice service rejected our credentials. The access token may have expired — try the call again.";
       }
-      // 1011 is the provider's catch-all, and it is what an *undeployed* agent
-      // returns — confirmed 2026-08-07, after this exact close code sent a
-      // debugging session through the whole audio path before anyone looked at
-      // the account. The server now preflights for that case (see
-      // checkAgentReady in backend/voiceCall.js), so by the time a caller gets
-      // here it is genuinely the provider having a bad moment.
+      // 1011 is a catch-all. On the removed hosted path it specifically meant an
+      // undeployed agent, and these strings used to send the caller to a vendor
+      // dashboard for it — wrong advice once the socket terminates on our own
+      // server, which it now always does.
       if (event.code === 1011 || /internal|server error/i.test(reason)) {
-        return `The voice service hit an error on its side (${raw}). Try again in a moment — if it keeps happening, run npm run voice:check.`;
+        return `The voice service hit an error on its side (${raw}). Try again in a moment — if it keeps happening, run npm run voice:relay.`;
       }
       if (/credit|quota|billing|limit/i.test(reason)) {
         return "The voice account is out of credit, so calls cannot connect right now.";
       }
       if (wasOpen) {
-        return `The call ended before it started (${raw}). If this repeats, check the agent is published in the Cartesia dashboard.`;
+        return `The call ended before it started (${raw}). If this repeats, run npm run voice:relay to find which link is broken.`;
       }
       return `Could not connect to the voice service (${raw}).`;
     }

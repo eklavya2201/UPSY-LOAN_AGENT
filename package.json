@@ -13,14 +13,14 @@
     "eval": "node backend/eval-cards.js",
     "eval:income": "node backend/eval-income.js",
     "assist:call": "node backend/liveAssist.js",
-    "voice:check": "node backend/voice-check.js",
     "voice:relay": "node backend/voice-relay-check.js",
     "voice:sarvam": "node backend/voice-sarvam-check.js",
     "eval:voice": "node backend/eval-voice-latency.js",
     "eval:extract": "node backend/eval-extract.js",
     "team:hash": "node backend/team-hash.js",
     "check:store": "node backend/store-check.js",
-    "db:migrate": "node backend/db-migrate.js"
+    "db:migrate": "node backend/db-migrate.js",
+    "db:peek": "node backend/db-peek.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

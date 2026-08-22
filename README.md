@@ -38,7 +38,7 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 |---|---|---|
 | Hearing | **Deepgram** nova-3, `en-IN` | `DEEPGRAM_ENDPOINTING_MS=800` — not their default of 300, which splits one thought into two turns |
 | Thinking | **OpenRouter `gpt-4o-mini`** | ⚠️ **The Anthropic credits ran out on 2026-08-12 and the key is now blank**, so the fallback is what runs — the swap the row below always said would happen, and it needed no code change. Claude Haiku 4.5 returns the moment a key is pasted back into `.env`. The model is ~65% of reply latency, and Haiku measured *faster* than this (1780ms vs 2086ms) — see "Claude, measured" |
-| Speaking | **Deepgram Aura** `aura-2-athena-en` | Moved off Cartesia when its free tier ran out. `TTS_PROVIDER=cartesia` switches back |
+| Speaking | **Deepgram Aura** `aura-2-athena-en` | Moved off Cartesia when its free tier ran out; Cartesia removed entirely 2026-08-22. `TTS_PROVIDER=sarvam` is the backup |
 | Repeated lines | **Phrase cache** | Greeting + 10 acknowledgements bought once, pre-warmed at boot: 1593ms → 25ms |
 
 **One API key now does hearing *and* speaking**, so `DEEPGRAM_API_KEY` is the single thing voice cannot run without. Cartesia's credit is spent until **Sep 1, 2026**.
@@ -82,6 +82,44 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
   **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude.
 
 **On the voice itself, four picks in one day, and only the ones made by listening were any good.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → Jacqueline, "empathic customer support" → **`aura-2-athena-en` on Deepgram**, "calm, smooth, professional". The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good; Deepgram has none at all. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from a catalogue's prose was wrong twice.
+
+### 🧹 Cartesia is gone, and Sarvam is the backup (2026-08-22)
+
+**The question that removed it was "a backup for what, exactly?"** Cartesia had been kept in two places on the same reasoning — *it is proven, and a second path costs nothing to leave in place*. Both were deleted once that sentence was checked against how this stack actually fails.
+
+**One key does both halves.** `DEEPGRAM_API_KEY` runs the hearing (nova-3) **and** the speaking (Aura). So the realistic outage is not "the voice sounds wrong", it is **Deepgram is down and the agent is deaf**. `CartesiaTts` could only ever replace the *speaking*. Flipping to it during a real outage would have produced an agent that talks fluently and cannot hear a word — a fallback that fails in exactly the case it exists for.
+
+**Sarvam covers both halves, and it is already wired and measured.** Two environment variables, no code change:
+
+| | Primary | Backup | Switch |
+|---|---|---|---|
+| Hearing | Deepgram nova-3 `en-IN` | Sarvam `saaras:v3-realtime` | `STT_PROVIDER=sarvam` |
+| Speaking | Deepgram Aura `aura-2-athena-en` | Sarvam `bulbul:v3` | `TTS_PROVIDER=sarvam` |
+
+Both resolve English — `voiceSarvam.js` carries `en: { code: "en-IN" }`, so the backup is not Indian-languages-only. Verified by flipping them and reading the boot line:
+
+```
+Voice relay: Deepgram nova-3 (en-IN) → OpenRouter → Deepgram Aura (aura-2-athena-en)
+Voice relay: Sarvam saaras:v3-realtime (en) → OpenRouter → Sarvam bulbul:v3 (priya, English)
+```
+
+**What went, and why each one was not load-bearing:**
+
+- **The hosted agent path** (`VOICE_PROVIDER=cartesia`, ~150 lines of `voiceCall.js`, all of `voice-check.js`). Unusable since Cartesia paused agent deployments for free accounts, so it had never taken a call. It was also the *whole* call rather than one engine, which is the wrong granularity for a fallback.
+- **`CartesiaTts`** (~140 lines of `voiceTts.js`). Superseded by Sarvam on every axis that matters, including one of its own: `bulbul` has a speech-rate control that **works**, and `sonic-2`'s does not.
+- **`npm run voice:check`** — it preflighted the hosted agent only. `npm run voice:relay` is the live one and always was.
+
+**The footgun that made this urgent.** `voiceCall.js` still *defaulted* to `cartesia`. A deploy that lost `VOICE_PROVIDER` would have sent every caller to an agent that refuses calls, failing in a way that named nothing about voice. The default is now `upsy`, and a stale value gets told what happened:
+
+```
+Voice calls: not configured (VOICE_PROVIDER is "cartesia", which was removed on 2026-08-22 — set VOICE_PROVIDER=upsy.)
+```
+
+**Two findings outlived the vendor and are kept as comments** where the code they explain lives: `sonic-2`'s speech-rate control does nothing (measured across numeric values, nested shapes and two API versions — it is why `voicePacing.js` exists), and **picking a voice from a catalogue's prose went wrong twice**, which is why `voiceTts.js` says to listen first. Deleting the integration should not delete what it taught.
+
+**⚠️ Rotate `CARTESIA_API_KEY` rather than just deleting it** — it was pasted into a chat session during setup, and nothing here reads it any more, so removing it from `.env` is not the same as making it safe.
+
+**Proven after removal**, not assumed: `npm run voice:relay` passes every check including the full hear → think → speak loop (heard 887ms after the caller stopped, answered at 2273ms), and `npm run voice:sarvam` confirms the backup path hears, speaks, and names the language it is hearing.
 
 ### 🗄️ Storage is Postgres now, and a caller who rings back is remembered (2026-08-20)
 
@@ -295,7 +333,7 @@ Measured head to head before switching, on the same sentences (working files in 
 | Audio format | raw pcm_s16le 44.1 kHz | **identical — drop-in** |
 | Indian-accented voices | 3 | **0** |
 
-The 40 ms latency difference is far below perception and is dwarfed by the 1.4–2 s the model takes to write a first sentence. **Cartesia stays behind `TTS_PROVIDER=cartesia`** — it works, and a second proven path costs nothing to keep.
+The 40 ms latency difference is far below perception and is dwarfed by the 1.4–2 s the model takes to write a first sentence. **Cartesia was kept behind `TTS_PROVIDER=cartesia` for two weeks and then removed (2026-08-22)** — see "Cartesia is gone, and Sarvam is the backup".
 
 ⚠️ **Use Aura's WebSocket, never its REST endpoint.** `POST /v1/speak` returns the whole clip in one response: measured at **3.3 seconds before any audio exists at all**, against 396 ms for the first streamed chunk.
 
@@ -319,7 +357,7 @@ Deliberately **not** a general-purpose cache — only exact strings from a known
 - **`language=en` mangles the vocabulary this product is made of.** "fifteen lakh rupees" came back as "15 **locker piece**", and on another run "fifteen" vanished entirely. Fixed with `en-IN` plus keyterm boosting for *lakh / crore / EMI / moratorium / Aadhaar / …* — 3 for 3 exact afterwards. An agent that mishears the loan amount is worse than one that cannot hear at all, because it answers the wrong question confidently.
 - **Deepgram's default 300ms endpointing ends a turn at every sentence boundary.** "I need fifteen lakh for an MBA. Am I eligible?" was answered after the first sentence, and the second sentence then barged in on that answer. Raised to 800ms; one thought is now one turn.
 
-**The old hosted path is still in the repo and still blocked**, deliberately not deleted: Cartesia's dashboard shows *"New agent deployment creation is temporarily paused for free accounts"*, so `VOICE_PROVIDER=cartesia` fails preflight with `is_live: false, deployment_count: 0`. It costs nothing to keep as a fallback. `npm run voice:check` still reports its real state.
+**The old hosted path was removed on 2026-08-22.** It had been blocked since Cartesia paused agent deployments for free accounts, and it was never a real fallback — see "Cartesia is gone, and Sarvam is the backup". `VOICE_PROVIDER=cartesia` now fails at boot with a sentence naming the fix.
 
 **⚠️ There are now TWO voice agents and confusing them will waste your session:**
 
@@ -350,7 +388,7 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 
 1. **Never run two server instances.** `EADDRINUSE` is now fatal on purpose — a zombie second instance once resurrected deleted records from a stale cache. See "Ops & reliability notes".
 2. **The `ANTHROPIC_API_KEY` in `.env` is borrowed and temporary** (added 2026-08-10, a friend of the user's, pasted into chat — **treat it as compromised**). `ANTHROPIC_VISION_MODEL=claude-haiku-4-5` sits beside it purely to stop document reads defaulting to `claude-opus-4-8` and burning someone else's credit; **remove that line when testing document accuracy for real**, because Opus is the whole point there. Without a key, PDFs have *no working reader at all* and digit accuracy is unreliable — the repo has caught `gpt-4o-mini` reading one file as ₹1,39,100 and ₹13,91,000.
-3. **The voice stack is ours, and one key runs all of it.** `DEEPGRAM_API_KEY` does BOTH the hearing and the speaking (Aura TTS) — it is the single thing voice cannot run without. `CARTESIA_API_KEY` is now only read when `TTS_PROVIDER=cartesia`, and **its credit is spent until Sep 1, 2026** (20k characters/month is ~21 calls; a day of building drained it). `CARTESIA_AGENT_ID` is dead weight. The Cartesia key was pasted into chat, so **treat it as compromised and rotate it**. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
+3. **The voice stack is ours, and one key runs all of it.** `DEEPGRAM_API_KEY` does BOTH the hearing and the speaking (Aura TTS) — it is the single thing voice cannot run without. **That is exactly why the backup is `STT_PROVIDER=sarvam` + `TTS_PROVIDER=sarvam`**, which move both halves off Deepgram with no code change. The Cartesia keys are no longer read by anything (removed 2026-08-22) and can be deleted from `.env`; the key was pasted into chat, so **rotate it rather than just deleting it**. Run `npm run voice:relay` before assuming anything about voice is broken on our side.
 4. **`NOTIFY_CHANNEL=mock`** — every SMS/WhatsApp, including live-assist join links, only prints to the server console. Nothing reaches a real phone until Exotel is re-enabled (account balance + WhatsApp sender registration still unresolved).
 5. **AgentCall's free tier is one-time and small**: 6 hours total, **1 concurrent call server-wide**, 1 hour max per call. Test calls already spent some of it. (This limit does **not** apply to `/upsy-voice-agent` — different vendor, different path.)
 6. **Secrets have been pasted into chat more than once** (Exotel, Salesforce incl. a password, Zoho, HubSpot, Twilio, Groq, OpenRouter, LeadSquared, Deepgram, Sarvam, AgentCall). If more appear, flag rotating them and never echo them back.
@@ -410,7 +448,6 @@ npm run voice:sarvam  # preflight the INDIAN-LANGUAGE path: resampler → does b
 npm run db:migrate    # move data/*.json into Postgres. Idempotent; leaves the JSON files alone
 npm run check:store   # atomic writes + clean shutdown, offline. Run after touching any store
 npm run team:hash -- "<password>"   # the TEAM_PASSWORD_HASH value. Never put the password in a file
-npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
 npm run eval:extract  # the branch schema: FOIR maths + flag rules offline, then a scripted call through the real extractor
 npm run eval:extract -- --seed   # ...and write that call into the store, so /team has a real caller to show
 npm run eval:voice    # where the reply latency actually goes — time to first SENTENCE, not total generation
@@ -1620,7 +1657,7 @@ npm start
 - `backend/voiceRelay.js` — **our own voice agent.** A WebSocket server on this process's own port (`/voice/stream`) that terminates the caller's audio socket and orchestrates the call: turn-taking, barge-in, conversation history, per-call teardown. Speaks `voiceClient.js`'s existing vocabulary exactly (`start`/`ack`/`media_input`/`media_output`/`clear`) so the browser never changed. `VOICE_RELAY_MODE=echo` bounces the caller's audio straight back — the transport test, with no AI in the path.
 - `backend/voiceStt.js` — hearing: Deepgram streaming + endpointing. Emits *speech started* (barge-in), interim transcripts (the constellation), and *turn finished*. Falls back to a deliberately deaf engine when no key is set, so the agent still speaks and says plainly that it cannot hear.
 - `backend/voiceBrain.js` — thinking: Claude Haiku 4.5 → OpenRouter, **streamed and split into sentences as it arrives** so speech starts before the reply is finished. Abortable mid-generation (the `respondTo()` lesson from `liveAssist.js`), and it logs Anthropic's cache-hit counters so the cost model is checked against evidence.
-- `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Cartesia Sonic** kept behind `TTS_PROVIDER=cartesia`. One socket per call rather than per sentence, since opening one costs ~1s. **⚠️ Aura's audio frames carry no request id**, so a request that ends any way other than its own `Flushed` marks the socket dirty and the next sentence drains it (`Clear` → `Cleared`, or a fresh socket) — without that, one abandoned sentence's audio plays inside the next one for the rest of the call. Read the header comment before touching `speak()`. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
+- `backend/voiceTts.js` — speaking: **Deepgram Aura** (`aura-2-athena-en`) over its streaming websocket, with **Sarvam bulbul** behind `TTS_PROVIDER=sarvam` — that switch, plus `STT_PROVIDER=sarvam`, is the whole backup story. (Cartesia Sonic lived here until 2026-08-22.) One socket per call rather than per sentence, since opening one costs ~1s. **⚠️ Aura's audio frames carry no request id**, so a request that ends any way other than its own `Flushed` marks the socket dirty and the next sentence drains it (`Clear` → `Cleared`, or a fresh socket) — without that, one abandoned sentence's audio plays inside the next one for the rest of the call. Read the header comment before touching `speak()`. Also holds the **phrase cache**: the greeting and acknowledgements are bought once and replayed (1593ms → 25ms), pre-warmed at boot by `warmVoiceCache()`. Every sentence has a 10s ceiling — without one, a stalled socket hangs the shared speech queue and silences the agent for the rest of the call.
 - `backend/voiceFillers.js` — the spoken acknowledgements that hide model latency ("okay, so you want to know which documents…"), chosen by keyword match **before** the model has decided anything. That is exactly why every line restates the question and stops: a number, rate or verdict here would be this server inventing lending advice. Hindi lines are written and waiting on Sarvam.
 - `backend/voicePacing.js` — slowing the agent down, since the vendor will not. Not resampling (drops the pitch and makes her a different person) and not time-stretching (CPU per sentence, smeared consonants) — it lengthens the **gaps between words**. ⚠️ Gap-widening is OFF by default (`VOICE_PACE_EXTRA_MS=0`) because it stutters mid-word in practice; only the between-sentence pause is on. Read the header before re-enabling it.
 - `backend/sentences.js` — pure sentence helpers, kept out of `liveAssist.js` because that file spawns the AgentCall bridge on import and cannot be loaded from a test. `takeCompleteSentences()` only treats a sentence as complete once it sees whitespace **after** the `.?!` — never merely the end of the buffer, which is the whole trick for streaming speech without cutting decimals in half.
@@ -1632,7 +1669,6 @@ npm start
 - `backend/callExtract.js` — **transcript → branch facts.** Claude → OpenRouter, temperature 0, validated against the schema, every value carrying the caller's own words and a check that the quote is really in the transcript. `fileCall()` is the whole write path (extract → merge → recompute derived) and is what both the relay and `eval:extract` call, so there are not two versions of it.
 - `backend/eval-extract.js` — `npm run eval:extract`: the FOIR maths, lender bands, flag rules and coercion guards offline, then a scripted call through the real extractor. `-- --seed` writes that call into the store for the dashboard.
 - `backend/voicePrompt.js` — that agent's entire system prompt + opening line, deliberately kept in this repo rather than on the vendor's dashboard. Voice-only rules (never ask for an ID number *aloud*), eligibility facts copied from `eligibility.js`, a document checklist generated from `documents.js` so it cannot drift, and **the collection agenda generated from `callSchema.js`** — which shrinks to only what is still missing for that particular caller. The derived branch is deliberately withheld from the agent: it must never tell someone they are a "Lender 3 case", and the surest way is for it never to have been told.
-- `backend/voice-check.js` — `npm run voice:check`: walks the same chain a real call walks (env → agent exists → agent deployed → token mints → socket accepts `start` → the agent actually speaks) and stops at the first thing that is wrong. Written because an undeployed agent's `1011 Internal server error` sent a whole session through the audio code before anyone looked at the account.
 - `backend/voiceAccounts.js` — **`/upsy-voice-agent`'s own accounts**, separate from the lead source on purpose. scrypt password hashing (node crypto, no dependency), server-side sessions, per-account call history and the standing profile earlier calls established. `publicAccount()` is the only shape allowed out of the module; the hash never reaches a route, a prompt or the dashboard. File-backed in `data/voiceAccounts.json`, same ephemeral-storage caveat as the rest of `data/`.
 - `backend/reviews.js` — **what the caller thought of the call.** File-backed like `callbacks.js`, same "a list an officer reads, not a system of record" shape. Owns the 1–5 validation (`parseRating` rejects `0`, `6`, `4.5` and `"abc"` alike), the summary the dashboard shows, and the rule that only a **poor** rating messages ops. **Edit `POOR_RATING` here to change what counts as worth interrupting someone for.**
 - `backend/callbacks.js` — the "Schedule call" queue behind `/upsy-voice-agent`: phone normalization, file-backed storage in `data/callbacks.json`, and the ops message. Deliberately a queue an officer reads, not a system of record.
@@ -1928,7 +1964,7 @@ This is the README's old **Step 2 — in-app voice widget** (below), which was a
 - [x] ~~**4. Wire streaming TTS**~~ — done and **heard**. Cartesia Sonic over their TTS websocket, one socket per call rather than per sentence (opening one costs ~600ms, which would otherwise land on the front of every reply). Verified against the live account: raw `pcm_s16le` @ 44.1kHz, first chunk ~360ms after the request, **524ms from a real browser to first spoken audio**.
 - [x] ~~**5. Barge-in**~~ — implemented, **not yet observed** (it cannot fire without STT). When Deepgram reports speech during playback the relay aborts generation, advances the TTS context id so in-flight audio is dropped on arrival, and sends `clear` — which `voiceClient.js`'s existing regex already matches, so `flushPlayback()` runs untouched.
 - [x] ~~**6. Swap in Sarvam for Hindi**~~ — **done 2026-08-18, and for ten more languages than Hindi.** `backend/voiceSarvam.js` + `backend/voiceResample.js`; `saaras:v3-realtime` hears with `language_code=auto` and names the language on every final, `bulbul:v3` speaks eleven. Deepgram keeps English. The seam held again — `makeStt`/`makeTts` did not change shape, and `voiceClient.js` still has not been touched. `npm run voice:sarvam` proves it end to end. **What is left is not plumbing:** the prompt still tells the agent to refuse to switch, nothing sends a language from the browser, and detection is logged rather than acted on. See "UPSY speaks Indian languages now".
-- [ ] **7. Decide the Cartesia agent path's fate** — **deliberately kept**, not deleted, behind `VOICE_PROVIDER=cartesia`. It costs nothing to leave and it is the only fallback if our relay has a bad day. Revisit once the relay has carried real calls.
+- [x] ~~**7. Decide the Cartesia agent path's fate**~~ — **decided 2026-08-22: removed.** The reasoning that kept it ("the only fallback if our relay has a bad day") turned out to be wrong about what it was a fallback *for* — see "Cartesia is gone, and Sarvam is the backup".
 
 **Still open, and honest about it:**
 - [ ] **Nobody has actually held a conversation with it.** Every link is verified and the loop closes end to end, but the only "caller" so far has been a synthesised voice speaking one clean sentence into a socket. A real person, on a phone, in a noisy room, interrupting, is a different test.

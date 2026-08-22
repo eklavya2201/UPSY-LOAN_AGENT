@@ -1,6 +1,7 @@
 // Preflight for UPSY's own voice relay: npm run voice:relay
 //
-// The sibling of voice-check.js, which preflights the *hosted* Cartesia agent.
+// This is now the ONLY voice preflight. Its sibling voice-check.js preflighted
+// the hosted Cartesia agent and went with it on 2026-08-22.
 // This one walks our own chain and names what is broken, because the failure
 // this replaces — a socket that opens and closes a second later with "1011
 // Internal server error" — cost a whole session once. Anything this script

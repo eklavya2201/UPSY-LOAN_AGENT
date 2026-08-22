@@ -475,7 +475,7 @@ export class SarvamStt {
 /**
  * Sarvam bulbul over their streaming TTS websocket.
  *
- * Same three methods as AuraTts and CartesiaTts — connect / speak / close —
+ * Same three methods as AuraTts — connect / speak / close —
  * plus setLanguage(), which the English-only engines have no use for.
  *
  * ⚠️ THE SAME TRAP AS AURA, AND IT ALREADY REACHED A REAL CALLER ONCE. Audio

@@ -15,20 +15,25 @@
 // the reply back (see frontend/voiceClient.js). That also means no applicant
 // audio is stored on our disk.
 //
-// ── Providers ───────────────────────────────────────────────────────────────
-// Two, selected by VOICE_PROVIDER:
+// ── Provider ────────────────────────────────────────────────────────────────
+// One: "upsy", our own relay (backend/voiceRelay.js). The audio DOES pass
+// through this server, because we are the ones running STT, the LLM and TTS.
+// It speaks eleven languages, keeps the prompt in git, and cannot be switched
+// off by someone else's free-tier policy.
 //
-//   "upsy"     — our own relay (backend/voiceRelay.js). The audio DOES pass
-//                through this server, because we are the ones running STT, the
-//                LLM and TTS. Speaks Hindi, keeps the prompt in git, and cannot
-//                be switched off by someone else's free-tier policy.
-//   "cartesia" — the hosted agent. Kept because it is proven up to the provider
-//                boundary and costs nothing to leave in place, but it is
-//                unusable today: Cartesia has paused agent deployments for free
-//                accounts, so every call fails at checkAgentReady().
+// There used to be a second, "cartesia" — a HOSTED agent, where the browser
+// streamed straight to the vendor and they ran the whole call. It was removed
+// on 2026-08-22. It had been unusable since Cartesia paused agent deployments
+// for free accounts (every call failed at the readiness check), and it was
+// never a real fallback: it could only ever replace the WHOLE call, and this
+// file's own default made "forgot to set VOICE_PROVIDER" route every caller to
+// it. The backup that actually works is per-engine and lives a layer down —
+// STT_PROVIDER=sarvam and TTS_PROVIDER=sarvam move hearing and speaking off
+// Deepgram without touching this file. See voiceSarvam.js.
 //
-// The browser is identical either way. frontend/voiceClient.js only knows "PCM
-// over a WebSocket", which is exactly why this swap is a server-side change.
+// VOICE_PROVIDER is still read, and still rejected loudly if it says anything
+// else, so a stale value in someone's .env or on Render fails with a sentence
+// naming the problem rather than silently doing something different.
 
 import { getApplication } from "./store.js";
 import { buildContextPayload } from "./liveAssistManager.js";
@@ -37,12 +42,11 @@ import { buildVoiceSystemPrompt, buildIntroduction } from "./voicePrompt.js";
 import { accountIdentityFacts } from "./callSchema.js";
 import { mintRelayTicket, relayConfigError, RELAY_PATH, SAMPLE_RATE as RELAY_SAMPLE_RATE } from "./voiceRelay.js";
 
-const PROVIDER = (process.env.VOICE_PROVIDER || "cartesia").toLowerCase();
-
-// Cartesia pins behaviour to a dated API version. Bump this only after
-// re-reading their changelog — a newer date can change event shapes.
-const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2025-04-16";
-const CARTESIA_HOST = "api.cartesia.ai";
+// Defaults to the only implementation there is. It used to default to
+// "cartesia", which meant a deploy that lost this variable sent every caller to
+// a hosted agent that refused the call — the failure had nothing to do with
+// voice and named nothing useful.
+const PROVIDER = (process.env.VOICE_PROVIDER || "upsy").toLowerCase();
 
 // 44.1kHz is what the browser AudioContext runs at natively on most phones, so
 // sending pcm_44100 avoids a resample step on the client. Must match the
@@ -50,16 +54,8 @@ const CARTESIA_HOST = "api.cartesia.ai";
 export const INPUT_FORMAT = "pcm_44100";
 export const SAMPLE_RATE = 44100;
 
-// Short-lived on purpose: this token reaches the browser, so it is scoped to
-// the agent grant only and expires quickly. The account API key never leaves
-// this process. Ten minutes covers a normal call; a longer one reconnects.
-const TOKEN_TTL_SECONDS = 600;
-
 export function voiceConfigured(language = "en") {
   if (PROVIDER === "upsy") return !relayConfigError(language);
-  if (PROVIDER === "cartesia") {
-    return Boolean(process.env.CARTESIA_API_KEY && process.env.CARTESIA_AGENT_ID);
-  }
   return false;
 }
 
@@ -68,115 +64,22 @@ export function voiceConfigured(language = "en") {
 // reader-priority log was added to avoid elsewhere in this repo.
 export function voiceConfigError(language = "en") {
   if (PROVIDER === "upsy") return relayConfigError(language);
-  if (PROVIDER !== "cartesia") {
-    return `VOICE_PROVIDER is "${PROVIDER}", but only "upsy" and "cartesia" are implemented.`;
+  // Names the fix rather than the symptom. "cartesia" gets its own sentence
+  // because it was a working value until 2026-08-22 and will still be sitting
+  // in older .env files and in anyone's Render dashboard.
+  if (PROVIDER === "cartesia") {
+    return 'VOICE_PROVIDER is "cartesia", which was removed on 2026-08-22 — set VOICE_PROVIDER=upsy.';
   }
-  const missing = [];
-  if (!process.env.CARTESIA_API_KEY) missing.push("CARTESIA_API_KEY");
-  if (!process.env.CARTESIA_AGENT_ID) missing.push("CARTESIA_AGENT_ID");
-  if (!missing.length) return null;
-  return `Voice calling isn't configured yet — set ${missing.join(" and ")} in .env (see the Voice calls section of the README).`;
+  return `VOICE_PROVIDER is "${PROVIDER}", but "upsy" is the only implementation.`;
 }
 
 export function voiceStatusLine() {
   if (!voiceConfigured()) return `Voice calls: not configured (${voiceConfigError()})`;
-  if (PROVIDER === "upsy") return `Voice calls: upsy relay at ${RELAY_PATH} (${INPUT_FORMAT})`;
-  return `Voice calls: ${PROVIDER} (agent ${String(process.env.CARTESIA_AGENT_ID).slice(0, 8)}…, ${INPUT_FORMAT})`;
+  return `Voice calls: upsy relay at ${RELAY_PATH} (${INPUT_FORMAT})`;
 }
 
 export function voiceProvider() {
   return PROVIDER;
-}
-
-// ── Agent readiness ─────────────────────────────────────────────────────────
-// A Cartesia agent that has been created but never deployed accepts the
-// WebSocket handshake and then closes it with `1011 Internal server error` —
-// no mention of deployment anywhere in the close reason. From the phone that is
-// indistinguishable from a bug in our own code, and it cost a debugging session
-// once already (the call sheet vanishing a second after "Connecting…").
-//
-// So check it here, where we can say what is actually wrong, instead of letting
-// the browser discover it as an opaque close code.
-const AGENT_READY_TTL_MS = 10 * 60 * 1000;
-let agentReadyUntil = 0;
-
-function notDeployedMessage() {
-  return (
-    "The Cartesia agent exists but has never been deployed, so calls are refused " +
-    "with an unhelpful internal-server-error close. Open the agent at play.cartesia.ai " +
-    "and press Publish/Deploy, then try again."
-  );
-}
-
-/**
- * Ask Cartesia whether the configured agent can actually take a call.
- * @returns {Promise<{ok: boolean, reason?: string, agent?: object}>}
- */
-export async function checkAgentReady({ force = false } = {}) {
-  if (!force && Date.now() < agentReadyUntil) return { ok: true, cached: true };
-
-  const res = await fetch(
-    `https://${CARTESIA_HOST}/agents/${encodeURIComponent(process.env.CARTESIA_AGENT_ID)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
-        "Cartesia-Version": CARTESIA_VERSION,
-      },
-    }
-  );
-
-  if (res.status === 401 || res.status === 403) {
-    return { ok: false, reason: "Cartesia rejected the API key. Check CARTESIA_API_KEY in .env." };
-  }
-  if (res.status === 404) {
-    return { ok: false, reason: `No Cartesia agent with id ${process.env.CARTESIA_AGENT_ID}. Check CARTESIA_AGENT_ID in .env.` };
-  }
-  if (!res.ok) {
-    // Cartesia itself is unhappy for some other reason. Don't block the call on
-    // our own preflight — the socket is the authority, and a working call must
-    // not be prevented by a flaky status endpoint.
-    return { ok: true, unverified: true, reason: `agent status check returned HTTP ${res.status}` };
-  }
-
-  const agent = await res.json();
-  if (agent.is_live === false || agent.deployment_count === 0) {
-    return { ok: false, reason: notDeployedMessage(), agent };
-  }
-
-  agentReadyUntil = Date.now() + AGENT_READY_TTL_MS;
-  return { ok: true, agent };
-}
-
-// Mint a browser-safe credential. Cartesia's account key (sk_car_…) grants full
-// account access and must never be sent to a client; /access-token exchanges it
-// for a scoped, expiring one.
-async function mintCartesiaToken() {
-  const res = await fetch(`https://${CARTESIA_HOST}/access-token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
-      "Cartesia-Version": CARTESIA_VERSION,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ grants: { agent: true }, expires_in: TOKEN_TTL_SECONDS }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Cartesia rejected the token request (HTTP ${res.status}): ${body.slice(0, 200)}`);
-  }
-  const json = await res.json();
-  if (!json?.token) throw new Error("Cartesia returned no token.");
-  return json.token;
-}
-
-// Browsers cannot set headers on a WebSocket handshake, so both the credential
-// and the API version go in the query string — Cartesia documents
-// ?access_token= for exactly this case, and ?cartesia_version= takes precedence
-// over the header.
-function cartesiaSignedUrl(token) {
-  const agentId = encodeURIComponent(process.env.CARTESIA_AGENT_ID);
-  const params = new URLSearchParams({ access_token: token, cartesia_version: CARTESIA_VERSION });
-  return `wss://${CARTESIA_HOST}/agents/stream/${agentId}?${params}`;
 }
 
 // The next document this applicant still owes, so the agent can answer "what's
@@ -251,10 +154,10 @@ function mergeCallerContext(leadContext, account) {
 
 // Our own relay. The prompt is deliberately NOT returned to the browser here —
 // it is stored server-side against the ticket and read back when the socket
-// opens. On the Cartesia path the browser had to forward the prompt because the
-// socket went straight to the vendor; now that the socket terminates on our own
-// server, sending the agent's instructions to the client and trusting them back
-// would be handing an anonymous caller an edit box for the loan rules.
+// opens. The removed hosted path had to forward the prompt through the browser
+// because the socket went straight to the vendor; now that the socket terminates
+// on our own server, sending the agent's instructions to the client and trusting
+// them back would be handing an anonymous caller an edit box for the loan rules.
 // Words this caller is more likely to say than a stranger would be: their own
 // name, and their institute if an earlier call established one. Split into parts
 // as well as the whole, because someone says "Eklavya" far more often than
@@ -329,7 +232,7 @@ function createRelaySession({ leadId, accountId, context, origin, language }) {
  *   record — see the note at the call site. Independent of leadId; both, either
  *   or neither may be present. See mergeCallerContext().
  * @param {string|null} opts.origin - this server's own origin, used to build
- *   the relay URL on the "upsy" path. Ignored by the Cartesia path.
+ *   the relay URL.
  * @param {string} opts.language - "en", any language voiceSarvam.js carries, or
  *   "auto" to let the recogniser name it from the caller's first words.
  * @returns {Promise<object>} everything the browser needs to open the socket.
@@ -345,35 +248,5 @@ export async function createVoiceSession({ leadId = null, account = null, origin
 
   const context = mergeCallerContext(await loadCallerContext(leadId), account);
 
-  if (PROVIDER === "upsy") {
-    return createRelaySession({ leadId, accountId: account?.accountId || null, context, origin, language });
-  }
-
-  // Cheap after the first success (cached for 10 minutes) and it converts the
-  // single most confusing failure this feature has into a sentence that names
-  // the fix. A network problem reaching the check is not a reason to block —
-  // checkAgentReady() reports ok:true/unverified for that case.
-  const ready = await checkAgentReady();
-  if (!ready.ok) throw Object.assign(new Error(ready.reason), { code: "AGENT_NOT_READY" });
-  if (ready.unverified) console.warn(`[voice] proceeding without a readiness check: ${ready.reason}`);
-
-  const token = await mintCartesiaToken();
-
-  return {
-    provider: PROVIDER,
-    signedUrl: cartesiaSignedUrl(token),
-    expiresInSeconds: TOKEN_TTL_SECONDS,
-    // Sent verbatim by the client as the WebSocket `start` event.
-    config: { input_format: INPUT_FORMAT, output_audio_delivery: "as_available" },
-    agent: {
-      system_prompt: buildVoiceSystemPrompt(context),
-      introduction: buildIntroduction(context),
-    },
-    // Non-sensitive routing/reporting facts only. Anything here is visible to
-    // the provider, so it follows the same rule as the prompt: names yes,
-    // ID numbers never.
-    metadata: { product: "upsy-loan-agent", lead_id: leadId || null, known_applicant: Boolean(context) },
-    // Purely so the UI can greet correctly without a second round trip.
-    caller: context ? { name: context.name, known: true } : { name: null, known: false },
-  };
+  return createRelaySession({ leadId, accountId: account?.accountId || null, context, origin, language });
 }
