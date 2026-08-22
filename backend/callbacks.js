@@ -12,6 +12,7 @@
 
 import fs from "fs/promises";
 import { makeJsonWriter } from "./jsonFile.js";
+import { dbEnabled, query } from "./db.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -65,7 +66,7 @@ export function normalizePhone(raw) {
  * @param {string} [req.topic]
  */
 export async function recordCallback({ name, phone, whenText, leadId = null, topic = "" }) {
-  const list = await load();
+  const list = dbEnabled() ? null : await load();
   const entry = {
     id: `CB-${Date.now().toString(36).toUpperCase()}`,
     name: String(name || "").trim().slice(0, 80),
@@ -76,12 +77,37 @@ export async function recordCallback({ name, phone, whenText, leadId = null, top
     status: "pending",
     at: new Date().toISOString(),
   };
+  if (dbEnabled()) {
+    await query(
+      `insert into voice_callbacks (id, name, phone, when_text, topic, lead_id, status, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz)`,
+      [entry.id, entry.name || null, entry.phone, entry.whenText || null,
+       entry.topic || null, entry.leadId, entry.status, entry.at]
+    );
+    return entry;
+  }
   list.unshift(entry);
   await save();
   return entry;
 }
 
 export async function listCallbacks() {
+  if (dbEnabled()) {
+    const { rows } = await query(
+      `select id, name, phone, when_text, topic, lead_id, status, created_at
+         from voice_callbacks order by created_at desc`
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name || "",
+      phone: r.phone,
+      whenText: r.when_text || "",
+      topic: r.topic || "",
+      leadId: r.lead_id,
+      status: r.status,
+      at: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    }));
+  }
   return (await load()).slice();
 }
 

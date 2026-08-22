@@ -6,20 +6,27 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
 
 ## 🧭 Start here (orientation for a new session)
 
-**Where the project is (2026-08-12):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com** and confirmed in production. A second, completely separate voice agent lives at **`/upsy-voice-agent`** — a mobile page where the applicant taps a button and talks to UPSY in the browser, no meeting platform involved. (It was `/m` until 2026-08-12; that path still 301-redirects.)
+**Where the project is (2026-08-20):** everything below is built and running. Applicant flow, team dashboard, document verification, eligibility, lender referral, and a **live voice agent that joins a real Google Meet** are all working, deployed at **https://upsy-loan-agent.onrender.com** and confirmed in production. A second, completely separate voice agent lives at **`/upsy-voice-agent`** — a mobile page where the applicant taps a button and talks to UPSY in the browser, no meeting platform involved. (It was `/m` until 2026-08-12; that path still 301-redirects.)
 
 > ### ⚠️ Read this before doing anything else
 >
-> **The product works. The deployment is not ready for real applicants**, and the gap is storage, not features. Full detail in "Going live on upsy.in" and "what production needs"; the short version:
+> **Five of the six blockers that used to live in this box are fixed (2026-08-20).** The box is kept because the shape of the remaining work is the interesting part, and because a reader arriving cold should be able to tell what is done from what is claimed.
 >
-> 1. **`data/` is wiped on every deploy and every idle spin-down** — `plan: free`, no disk. Applications, uploaded PAN/Aadhaar files, voice accounts and reviews all go. This has already cost real test data more than once.
-> 2. **The JSON stores are not concurrency-safe** — whole-file rewrite, no atomic rename, no serialization. Two simultaneous uploads lose one; a crash mid-write corrupts every application at once.
-> 3. **No SIGTERM handler**, so Render's shutdown on every deploy can cut a write in half. Combine with (2) and it is a corruption path on a schedule.
-> 4. **`/team` and `/api/applications/*` have no authentication.** Fine while it was only the team testing; not fine with real applicants' documents behind it. The decision made was a shared team password + session — **not yet built**.
-> 5. **The reminder sweep is set to demo timings** (3 min stale, 5 min repeat). It is harmless only because `NOTIFY_CHANNEL=mock` and no Exotel credentials are set on Render. **Switch messaging on before changing those numbers and every paused applicant gets SMS + WhatsApp every five minutes.**
-> 6. **PII is logged in plaintext** — full PAN/Aadhaar numbers, names, phones, income.
+> 1. ✅ **Storage survives a deploy.** `DATABASE_URL` points at Supabase Postgres and all four stores read it — applications, voice accounts, reviews, callbacks. **This is what makes "a caller who rings back on Thursday is still known" true**, and it was never a logic problem: the resume worked, the file it depended on got deleted. The JSON files still work when `DATABASE_URL` is absent, which is the rollback.
+> 2. ✅ **Writes are atomic and serialised** — temp file, fsync, rename, one promise chain per file. Measured: 200 concurrent writers, 200/200 changes survive. Postgres does the same job with a row lock.
+> 3. ✅ **SIGTERM drains rather than dropping** — stops the listener and the sweep, gives a live call 8s, flushes every store, closes the pool.
+> 4. ✅ **`/team` is behind a sign-in** — scrypt, HttpOnly session cookie, per-IP rate limiting, and the same error for a wrong email as a wrong password.
+> 5. ✅ **Reminder timings are real (24h/48h)** — and live messaging with demo timings is now a **fatal boot error** rather than a comment nobody reads.
+> 6. ✅ **PII is redacted at the log call**, not at a sink. Partial and deterministic, so the logs keep the job they exist for: `Rahul Sharma → R•••l S••••a`, `ABCDE1234F → ••••••234F`.
 >
-> **Which AI is running:** the Anthropic credits ran out on 2026-08-12, so `ANTHROPIC_API_KEY` is deliberately **blank** and everything runs on OpenRouter `gpt-4o-mini`. Paste a key back into `.env` and Claude returns everywhere with no code change. Two things are unavailable until then: **PDF reading** (Claude is the only reader that does it) and the Phase 0 reader evals, which have still never been run.
+> **What actually remains before real applicants:**
+>
+> - **Uploaded documents are still on local disk.** They belong in S3 with server-side encryption; the database stores the key. This is the last storage item.
+> - **DPDP consent and a privacy policy** covering third-party AI processing of ID documents and call audio. Longest lead time, nothing technical blocks on it, and it should have been started already.
+> - **`DATABASE_URL` must be set on Render.** Without it the deployed instance silently falls back to files and forgets people between deploys — the boot log says which store is live, so check it.
+> - **The nginx work for upsy.in** — WebSocket upgrade headers, 700s idle timeouts, HTTPS. Each fails in a way that names nothing; see "Going live on upsy.in".
+
+**Which AI is running:** the Anthropic credits ran out on 2026-08-12, so `ANTHROPIC_API_KEY` is deliberately **blank** and everything runs on OpenRouter `gpt-4o-mini`. Paste a key back into `.env` and Claude returns everywhere with no code change. Two things are unavailable until then: **PDF reading** (Claude is the only reader that does it) and the Phase 0 reader evals, which have still never been run.
 
 **🇮🇳 And as of 2026-08-18 it talks in eleven languages.** `backend/voiceSarvam.js` is built and measured: `saaras:v3-realtime` hears Hindi, Marathi and Telugu and **correctly names which one it is hearing** (0.93–0.99 confidence), `bulbul:v3` speaks all eleven, and warm first audio is *faster* than Aura. Deepgram keeps English so nothing already tuned gets re-litigated. `npm run voice:sarvam`. **And the whole call happens in that language** — a picker on `/upsy-voice-agent` defaulting to "Detect my language", the agent's own replies, and the acknowledgements. Verified against the real relay: a Hindi caller is detected after two agreeing turns and the conversation continues in Hindi, including the agent reading a salary figure back before using it. Full detail, and the two bugs this surfaced, in "UPSY speaks Indian languages now" and the section after it.
 
@@ -75,6 +82,36 @@ AI loan agent for education loans, modeled on the Kuhoo app's journey. The agent
   **What is still on** is the between-sentence pause (`VOICE_SENTENCE_PAUSE_MS=280`), which is safe because a sentence boundary is a place we actually know about rather than one we infer from amplitude.
 
 **On the voice itself, four picks in one day, and only the ones made by listening were any good.** Skylar (US, "customer care") → Kiara, on the reasoning that an Indian-accented voice would be easier for Indian callers to follow → Jacqueline, "empathic customer support" → **`aura-2-athena-en` on Deepgram**, "calm, smooth, professional". The accent argument was sound and still lost: Cartesia has 412 English voices and exactly three Indian-accented ones, and none of them sound good; Deepgram has none at all. There is also a register trap worth noting — Kiara is sold as "joyful… for happy conversations", which is the wrong tone for someone anxious about borrowing fifteen lakh. **If you change it again, listen first**; picking from a catalogue's prose was wrong twice.
+
+### 🗄️ Storage is Postgres now, and a caller who rings back is remembered (2026-08-20)
+
+**The continuity was never the missing part.** `mergeProfile()` has always written what a call established and `buildVoiceSystemPrompt()` has always read it back — a second call genuinely resumed, and the README recorded one going from 17 fields to 21 without re-asking. What failed is that those facts lived in `data/voiceAccounts.json`, and **Render deletes that on every deploy**. Monday's caller was a stranger on Wednesday because the *file* went, not because the agent forgot.
+
+Supabase Postgres, connected as ordinary Postgres — `backend/db.js`, `backend/sql/schema.sql`, `npm run db:migrate`. Migrated live: **7 accounts, 20 calls, 412 transcript turns**.
+
+| | |
+|---|---|
+| Connection | **Direct host**, `db.<ref>.supabase.co:5432`. The pooler hostnames did not recognise this tenant — worth knowing before debugging it again. Fine for one instance; switch to the pooler if a second ever runs, because direct connections are capped |
+| Shape | Small whole-read records stay `JSONB`. **Transcripts are rows** |
+| Fallback | No `DATABASE_URL` → the JSON files, unchanged. That is the rollback |
+
+**Why not the Supabase client.** The anon/service_role split exists so a *browser* can talk to Supabase under row-level security. Nothing here does that — this Node process is the only client and it is trusted. Plain Postgres gives real transactions, no HTTP hop per query, and moving off Supabase later becomes a connection-string change rather than a rewrite. RLS is enabled on every table anyway, so that *if* a browser is ever pointed at it, the default is "no access".
+
+**Transcripts became rows, and that is the change that mattered.** Measured at ~6KB per call; `voiceAccounts.json` hit 106KB with seven test accounts. Under the old store **every** write — every mid-call extraction pass — rewrote all of it. Appending a turn now touches one row, and `listAccounts()` no longer loads every word anyone ever said to render a table showing a name and a count.
+
+**Two races the files could not see, both settled by the database rather than by being careful:**
+
+- **`mergeProfile` was losing facts.** It read the whole file, merged in memory and wrote it back, so two extraction passes finishing together silently discarded one set. Now one transaction with `for update`. Verified: three concurrent merges, all three survive.
+- **Duplicate signups** are refused by a unique index on phone, not by a read-then-write that two people can both win.
+
+**Proven end to end**, not by fixture — sign up, record a call, resolve the session cold, and confirm the rebuilt prompt already contains Monday's institute **and no longer asks for it**.
+
+**⚠️ Two things that will bite:**
+
+- **`DATABASE_URL` must be set on Render**, or the deployed instance falls back to files and forgets people between deploys. The boot log names the live store (`Storage: Postgres — …` or `Storage: JSON files in data/`). Check it after every deploy.
+- **A password with an `@` must be percent-encoded** in the URI, or the parser splits the authority at the wrong place and the host becomes nonsense.
+
+**Still on local disk: the uploaded documents themselves.** They belong in S3 with server-side encryption and a lifecycle rule matching whatever retention the privacy policy promises; the database keeps the key. That is the last storage item.
 
 ### 🇮🇳 UPSY speaks Indian languages now — the Sarvam adapter (2026-08-18)
 
@@ -332,6 +369,8 @@ The previous priority — *making the live-assist Meet agent precise on Avanse's
 | Change what the agent asks for on a call | `backend/callSchema.js`, then "The extractor is built" |
 | Debug how a call *sounds* | "The first real calls, and the four bugs only a human found" |
 | Work on Hindi / Marathi / Telugu | "UPSY speaks Indian languages now — the Sarvam adapter", then `backend/voiceSarvam.js` |
+| Understand where data lives | "Storage is Postgres now" — then `backend/db.js` |
+| Set up a database from scratch | `backend/sql/schema.sql`, then `npm run db:migrate` |
 | Ask a DEPLOYED instance what it can do | `GET /api/voice/status` — ready/not-ready per language, with the reason. Booleans and provider names only, never a key |
 | Make the agent faster | "Claude, measured" — the prompt is 2,416 tokens and caching is not engaging |
 | Work on the current priority | "▶️ ACTIVE — build our own voice stack" in the roadmap |
@@ -368,6 +407,9 @@ npm run eval          # batch-test PAN/Aadhaar card reading on files in data/upl
 npm run eval:income   # batch-test ITR/Form16/salary-slip income reading (scans project root + data/uploads/, or pass file paths)
 npm run voice:relay   # preflight OUR OWN voice stack: transport → tickets → does it actually speak → does the brain stream
 npm run voice:sarvam  # preflight the INDIAN-LANGUAGE path: resampler → does bulbul speak → does saaras hear → is the language identified
+npm run db:migrate    # move data/*.json into Postgres. Idempotent; leaves the JSON files alone
+npm run check:store   # atomic writes + clean shutdown, offline. Run after touching any store
+npm run team:hash -- "<password>"   # the TEAM_PASSWORD_HASH value. Never put the password in a file
 npm run voice:check   # preflight the hosted Cartesia agent instead (only if VOICE_PROVIDER=cartesia)
 npm run eval:extract  # the branch schema: FOIR maths + flag rules offline, then a scripted call through the real extractor
 npm run eval:extract -- --seed   # ...and write that call into the store, so /team has a real caller to show
@@ -1547,6 +1589,14 @@ npm start
 ## Code map
 
 - `backend/llmProviders.js` — **which endpoint the non-Claude side talks to**, decided in one place: OpenRouter when its key exists, otherwise OpenAI's own API with the `openai/` model prefix stripped. Placeholder values (`your_…_here`) count as absent. Ten modules used to hardcode this URL each, which is how one of them ends up pointing somewhere else. **This is the file that makes "swap providers by editing `.env`" true.**
+- `backend/db.js` — **which store is live**, decided in one place. Postgres when `DATABASE_URL` is set, the JSON files otherwise, checked per call so a lost database degrades instead of throwing. Also the pool, `transaction()`, and the boot-time schema apply.
+- `backend/sql/schema.sql` — seven tables. Small whole-read records are `JSONB`; **transcripts are rows**, which is the change that stopped a 6KB call being rewritten on every extraction pass. Every statement is idempotent, so it runs on every boot.
+- `backend/db-migrate.js` — `npm run db:migrate`. Upserts, so re-running is safe and a half-finished run completes. Leaves `data/*.json` untouched.
+- `backend/voiceAccountsPg.js` — the Postgres half of `voiceAccounts.js`, same interface. Where the loan file actually survives a deploy.
+- `backend/jsonFile.js` — atomic, serialised writes for the JSON stores. Still the fallback, and still what runs with no database. The header explains why `rename` needs a retry on Windows.
+- `backend/teamAuth.js` — the `/team` sign-in. scrypt, HttpOnly cookie, per-IP throttle. Fails OPEN when unconfigured, loudly, so it could be adopted rather than reverted.
+- `backend/redact.js` — PII masking at the log call. Partial and deterministic on purpose: the logs still answer "did the model read this document right".
+- `backend/pronounce.js` — how the brand name is SAID. Every engine spelled "UPSY" as four letters.
 - `backend/voiceSarvam.js` — **hearing and speaking in Indian languages.** `SarvamStt` (`saaras:v3-realtime`, `language_code=auto`, which names the language on every final) and `SarvamTts` (`bulbul:v3`, eleven languages), both behind the same interfaces the Deepgram engines use, so the relay cannot tell which is behind it. Also where the per-language vocabulary hint lives. **Deepgram still carries English** — see `STT_PROVIDER` in `voiceStt.js` for why.
 - `backend/voiceResample.js` — the only resample step in the project, and it exists solely because Sarvam's recogniser takes 8k/16k and closes the socket on anything else. Carries the fractional read position and the seam sample across chunks (otherwise a click 23 times a second) and low-passes before decimating (otherwise 12kHz folds onto 4kHz speech). Both properties asserted in `npm run voice:sarvam`.
 - `backend/documents.js` — the requirements config: stages, documents in collection order, the "why" text, and per-document format rules. **Edit here to change what the agent collects.**
@@ -1691,6 +1741,13 @@ npm start
 - [ ] **Institute-level default language + sticky per account** — the picker is the only way in today. An institute in Pune should default to Marathi, and a second call should open in the language the first one ended in. `voiceAccounts.js` already stores call history, so this is cheap
 - [ ] **Greetings and acknowledgements beyond en/hi/mr** — every model-written reply works in all eleven; only the fixed copy is short, and it should be written by someone who speaks the language. One line each in `GREETINGS` and `RECEIPTS`
 - [ ] **Listen to `data/voice-samples/` and pick the voice properly** — `priya` was chosen from a name, which is how this repo picked wrong twice before
+- [x] **Storage moved to Postgres** (2026-08-20): Supabase, all four stores, migrated live (7 accounts, 20 calls, 412 turns). Transcripts became rows. Two races the files could not see — a losing `mergeProfile` and duplicate signups — settled by a transaction and a unique index. JSON fallback intact
+- [x] **`/team` is behind a sign-in** (2026-08-20): scrypt, HttpOnly session, per-IP throttle, identical error for a wrong email and a wrong password
+- [x] **Atomic writes + a clean shutdown** (2026-08-20): temp/fsync/rename, one write chain per file, SIGTERM drains and flushes. 200 concurrent writers, 200/200 survive
+- [x] **PII redacted at the log call** (2026-08-20), and reminder timings made real — with live messaging on demo timings now a fatal boot error rather than a comment
+- [x] **The upload list comes from the call** (2026-08-19): no standing link on the site; after a call, the documents that conversation established, each with its reason, grouped by whose they are
+- [ ] **Uploaded documents to S3** — the last storage item. Server-side encryption, lifecycle rule, key in the database
+- [ ] **Finish the three remaining stores' `/team` views against Postgres** — the stores read it; the dashboard queries were not re-profiled
 - [ ] **Escape the lead list in `team.js`** — `esc()` exists and the voice views use it; the older applicant-list and detail rendering still interpolate names and notes straight into `innerHTML`
 - [ ] **Three more lenders' field guides** — same pattern as `avanse.js`, pending screenshots/walkthroughs of each
 - [ ] **A fast model to classify which field a question asked** — the one piece that would make `fastAnswer.js` safe to switch on, and the reviewer's original suggestion
@@ -1702,7 +1759,9 @@ npm start
 
 **Real calls have now been held, and they are what drove two rounds of fixes.** A single call fills ~17 of 28 fields correctly; a second call on the same account took it to 21 without re-asking anything. Voice is no longer the unproven part.
 
-**What is unproven now is the deployment, not the product.** The team is preparing to put this in front of ~100 real clients on `upsy.in`, and the six items in the box at the top of this file are what stand between here and that. **Storage is the one that cannot be deferred** — everything else degrades, that one deletes.
+**Storage is no longer the blocker — it moved to Postgres on 2026-08-20.** What is left is documents-to-S3, DPDP consent, and the nginx work for upsy.in. The paragraph below is kept for the reasoning, but read it knowing five of its six items are done.
+
+**What was unproven then was the deployment, not the product.** The team is preparing to put this in front of ~100 real clients on `upsy.in`, and the six items in the box at the top of this file are what stand between here and that. **Storage is the one that cannot be deferred** — everything else degrades, that one deletes.
 
 **The next session should start with the reminder timings, the dashboard password and the PII redaction** — roughly a day between them, all three already agreed, none of them started.
 

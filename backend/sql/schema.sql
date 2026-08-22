@@ -126,6 +126,13 @@ create table if not exists voice_callbacks (
 create index if not exists voice_callbacks_open_idx
   on voice_callbacks (created_at desc) where handled = false;
 
+-- Added after the first version of this file. `create table if not exists` does
+-- NOT add columns to a table that already exists, so a schema change has to
+-- come as its own idempotent statement or it silently does nothing on every
+-- database that already ran the original.
+alter table voice_callbacks add column if not exists topic  text;
+alter table voice_callbacks add column if not exists status text not null default 'pending';
+
 -- ── Row-level security ──────────────────────────────────────────────────────
 -- Only this server talks to the database, never a browser, and it connects as
 -- the table owner, so RLS does not apply to it. Enabling it anyway means that

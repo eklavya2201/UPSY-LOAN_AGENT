@@ -21,6 +21,7 @@
 
 import fs from "fs/promises";
 import { makeJsonWriter } from "./jsonFile.js";
+import { dbEnabled, query } from "./db.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -82,7 +83,7 @@ export function parseRating(raw) {
  * them every low score looks the same in the list.
  */
 export async function recordReview({ rating, comment = "", accountId = null, leadId = null, callSeconds = 0, turns = 0 }) {
-  const list = await load();
+  const list = dbEnabled() ? null : await load();
   const entry = {
     id: `RV-${Date.now().toString(36).toUpperCase()}`,
     rating,
@@ -93,12 +94,41 @@ export async function recordReview({ rating, comment = "", accountId = null, lea
     turns: Number.isFinite(turns) ? Math.max(0, Math.round(turns)) : 0,
     at: new Date().toISOString(),
   };
+  if (dbEnabled()) {
+    // An insert, not a rewrite. Reviews only ever accumulate, so the JSON store
+    // was rewriting every review anyone had left in order to add one.
+    await query(
+      `insert into voice_reviews (id, rating, comment, account_id, lead_id, call_seconds, turns, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz)`,
+      [entry.id, entry.rating, entry.comment || null, entry.accountId, entry.leadId,
+       entry.callSeconds, entry.turns, entry.at]
+    );
+    return entry;
+  }
   list.unshift(entry);
   await save();
   return entry;
 }
 
 export async function listReviews() {
+  if (dbEnabled()) {
+    // Ordered by the database rather than by insertion into an array, so two
+    // processes writing cannot produce a list that is out of order for either.
+    const { rows } = await query(
+      `select id, rating, comment, account_id, lead_id, call_seconds, turns, created_at
+         from voice_reviews order by created_at desc`
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      rating: r.rating,
+      comment: r.comment || "",
+      accountId: r.account_id,
+      leadId: r.lead_id,
+      callSeconds: r.call_seconds,
+      turns: r.turns,
+      at: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    }));
+  }
   return (await load()).slice();
 }
 
@@ -110,7 +140,11 @@ export async function listReviews() {
  * type something is what actually feeds a fix.
  */
 export async function reviewSummary() {
-  const list = await load();
+  // ⚠️ listReviews(), NOT load(). This called load() directly, which reads the
+  // JSON file — so with Postgres live the summary counted a file nobody was
+  // writing to any more and reported zero. Going through listReviews() means
+  // there is one place that knows which store is live, instead of two.
+  const list = await listReviews();
   const count = list.length;
   if (!count) return { count: 0, average: null, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }, withComment: 0, poor: 0 };
 

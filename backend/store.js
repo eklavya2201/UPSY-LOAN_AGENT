@@ -4,6 +4,7 @@
 
 import fs from "fs/promises";
 import { makeJsonWriter } from "./jsonFile.js";
+import { dbEnabled, query } from "./db.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -14,6 +15,16 @@ const FILE = path.join(DATA_DIR, "applications.json");
 let cache = null;
 
 async function load() {
+  if (dbEnabled()) {
+    // Re-read every time rather than caching across calls: with more than one
+    // process writing, a cache held between requests is how one of them serves
+    // an application the other has already changed. The table is small and this
+    // is a primary-key scan.
+    const { rows } = await query("select lead_id, doc from applications");
+    cache = {};
+    for (const r of rows) cache[r.lead_id] = r.doc || { leadId: r.lead_id };
+    return cache;
+  }
   if (cache) return cache;
   try {
     cache = JSON.parse(await fs.readFile(FILE, "utf8"));
@@ -28,8 +39,28 @@ async function load() {
 // each other's change. See backend/jsonFile.js for why both matter.
 const writer = makeJsonWriter(FILE, () => JSON.stringify(cache, null, 2));
 
-function save() {
-  return writer.save();
+/**
+ * Persist one application.
+ *
+ * ⚠️ TAKES A leadId, and that is the whole reason this file needed touching at
+ * all. Every mutator below is unchanged — it loads an application, edits it in
+ * place, and calls save. Only where those bytes land differs.
+ *
+ * Under Postgres it upserts ONE row rather than rewriting the collection, which
+ * is what stops two processes clobbering each other's applications. Under the
+ * JSON store it is exactly what it was.
+ */
+async function save(leadId) {
+  if (!dbEnabled()) return writer.save();
+  const app = cache?.[leadId];
+  if (!app) return;
+  await query(
+    `insert into applications (lead_id, status, doc, updated_at)
+     values ($1, $2, $3::jsonb, now())
+     on conflict (lead_id) do update
+       set status = excluded.status, doc = excluded.doc, updated_at = now()`,
+    [leadId, app.status || "in_progress", JSON.stringify(app)]
+  );
 }
 
 export async function getApplication(leadId) {
@@ -43,7 +74,7 @@ export async function markVerified(leadId, docId, info) {
   app.verifiedDocs[docId] = { ...info, at: new Date().toISOString() };
   if (app.reuploadRequested) delete app.reuploadRequested[docId]; // fresh upload clears the flag
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -52,7 +83,7 @@ export async function setStatus(leadId, status, note) {
   app.status = status;
   if (note !== undefined) app.decisionNote = note;
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -64,7 +95,7 @@ export async function requestReupload(leadId, docId, note) {
   app.reuploadRequested = app.reuploadRequested || {};
   app.reuploadRequested[docId] = { note: note || "", at: new Date().toISOString() };
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -77,7 +108,7 @@ export async function saveProfile(leadId, { profile, total, onFile, eligibility 
   app.onFile = onFile;
   if (eligibility !== undefined) app.eligibility = eligibility;
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -91,7 +122,7 @@ export async function recordNudge(leadId) {
   const app = await getApplication(leadId);
   app.nudgeCount = (app.nudgeCount || 0) + 1;
   app.lastNudgeAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -102,7 +133,7 @@ export async function removeVerified(leadId, docId) {
   const rec = app.verifiedDocs?.[docId] || null;
   if (rec) delete app.verifiedDocs[docId];
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return rec;
 }
 
@@ -112,7 +143,7 @@ export async function saveExtractedIncome(leadId, info) {
   const app = await getApplication(leadId);
   app.extractedIncome = { ...info, at: new Date().toISOString() };
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -123,7 +154,7 @@ export async function saveCoApplicantContact(leadId, info) {
   const app = await getApplication(leadId);
   app.coApplicantContact = { ...info, at: new Date().toISOString() };
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app;
 }
 
@@ -134,7 +165,7 @@ export async function saveLenderDraft(leadId, lenderId, draft) {
   const existing = app.lenderDrafts[lenderId] || {};
   app.lenderDrafts[lenderId] = { ...existing, ...draft };
   app.updatedAt = new Date().toISOString();
-  await save();
+  await save(leadId);
   return app.lenderDrafts[lenderId];
 }
 
@@ -145,7 +176,7 @@ export async function recordLenderShared(leadId, lenderId, info) {
   if (!draft) return null;
   draft.sharedAt = new Date().toISOString();
   draft.sharedVia = info?.via || "outlook";
-  await save();
+  await save(leadId);
   return draft;
 }
 
@@ -154,6 +185,6 @@ export async function recordPacketEmailed(leadId, info) {
   const app = await getApplication(leadId);
   app.packetEmailedAt = new Date().toISOString();
   app.packetEmailedTo = info?.to || null;
-  await save();
+  await save(leadId);
   return app;
 }
