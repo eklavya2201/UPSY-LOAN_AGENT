@@ -189,7 +189,13 @@ export function publicAccount(account) {
     phone: account.phone,
     createdAt: account.createdAt,
     lastCallAt: account.lastCallAt || null,
-    callCount: (account.calls || []).length,
+    // ⚠️ HONOUR A COUNT THAT IS ALREADY THERE. The JSON store nests every call
+    // inside the account, so counting the array was the only way. The Postgres
+    // store returns callCount as an aggregate and deliberately does NOT ship the
+    // calls — the dashboard list shows a name and a number, and loading every
+    // transcript to render it is what the migration was undoing. Recomputing
+    // from a `calls` array that is not there reported 0 for everybody.
+    callCount: account.callCount ?? (account.calls || []).length,
     // Everything the calls have established about this person. Shape is owned
     // by whatever fills it, not by this module — see mergeProfile().
     profile: account.profile || {},
