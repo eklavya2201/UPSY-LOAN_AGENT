@@ -42,6 +42,11 @@ services:
       # Deepgram still carries English. See `npm run voice:sarvam`.
       - key: SARVAM_API_KEY
         sync: false
+      # Postgres. Without it the app falls back to JSON files in data/, which
+      # Render wipes on every deploy - so a caller who rings back is a stranger.
+      # Use Supabase's SESSION pooler (port 6543), not the transaction pooler.
+      - key: DATABASE_URL
+        sync: false
       # Only used when VOICE_PROVIDER=cartesia (the hosted agent path).
       - key: CARTESIA_AGENT_ID
         sync: false

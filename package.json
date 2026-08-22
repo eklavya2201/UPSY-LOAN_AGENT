@@ -19,13 +19,15 @@
     "eval:voice": "node backend/eval-voice-latency.js",
     "eval:extract": "node backend/eval-extract.js",
     "team:hash": "node backend/team-hash.js",
-    "check:store": "node backend/store-check.js"
+    "check:store": "node backend/store-check.js",
+    "db:migrate": "node backend/db-migrate.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
+    "pg": "^8.23.0",
     "tesseract.js": "^7.0.0",
     "ws": "^8.21.1"
   }
